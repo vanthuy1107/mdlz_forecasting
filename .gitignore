@@ -1,0 +1,44 @@
+# Data files
+dataset/**/*.csv
+dataset/**/*.xlsx
+dataset/**/*.xls
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model checkpoints and outputs
+*.pth
+*.pt
+*.h5
+*.ckpt
+checkpoints/
+models/
+outputs/
+logs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+
+

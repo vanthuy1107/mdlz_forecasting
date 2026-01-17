@@ -1,0 +1,89 @@
+# MDLZ Warehouse Quantity Prediction System Configuration
+
+# Data Configuration
+data:
+  data_dir: "./dataset/data_cat"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
+  file_pattern: "data_{year}.csv"  # Pattern for combined year files
+  years: [2023, 2024]
+  
+  # Feature columns
+  feature_cols:
+    - "month_sin"
+    - "month_cos"
+    - "dayofmonth_sin"
+    - "dayofmonth_cos"
+    - "holiday_indicator"
+    - "days_until_next_holiday"
+    - "QTY"
+  
+  # Target column
+  target_col: "QTY"
+  
+  # Category column
+  cat_col: "CATEGORY"
+  cat_id_col: "CATEGORY_ID"
+  time_col: "ACTUALSHIPDATE"
+  
+  # Data split ratios (temporal split)
+  train_size: 0.7
+  val_size: 0.1
+  test_size: 0.2
+
+# Window configuration
+window:
+  input_size: 30
+  horizon: 1
+
+# Model Configuration
+model:
+  name: "RNNWithCategory"  # or "RNNForecastor"
+  num_categories: null  # Will be set dynamically from data
+  cat_emb_dim: 4
+  input_dim: 7
+  hidden_size: 32
+  n_layers: 2
+  output_dim: 1
+  dropout_prob: 0.2  # Only for RNNForecastor
+
+# Training Configuration
+training:
+  batch_size: 64
+  val_batch_size: 16
+  test_batch_size: 16
+  epochs: 20
+  learning_rate: 0.003
+  optimizer: "Adam"
+  
+  # Loss function
+  loss: "MSE"  # or "spike_aware_mse"
+  
+  # Learning rate scheduler
+  scheduler:
+    name: "ReduceLROnPlateau"
+    mode: "min"
+    factor: 0.5
+    patience: 3
+    min_lr: 0.00001
+  
+  # Logging
+  log_interval: 5  # Log every N epochs
+  
+  # Device
+  device: "auto"  # "auto", "cuda", or "cpu"
+
+# Output Configuration
+output:
+  output_dir: "../outputs"
+  save_model: true
+  model_dir: "../outputs/models"
+  
+  # Visualization
+  visualize:
+    save_plots: true
+    show_plots: false
+
+# Inference Configuration
+inference:
+  n_samples_for_plot: 100
+  save_predictions: true
+
