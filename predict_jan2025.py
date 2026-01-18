@@ -1,7 +1,11 @@
-"""Prediction script for January 2025 using MVP test model.
+"""Prediction script for full year 2025 using MVP test model.
 
 This script loads the trained model from mvp_test.py and makes predictions
-for January 2025 data, filtering to DRY category only.
+for full year 2025 data, filtering to DRY category only.
+
+Two modes are supported:
+1. Teacher Forcing (Test Evaluation): Uses actual ground truth QTY values from 2025 as features
+2. Recursive (Production Forecast): Uses model's own predictions as inputs for future dates
 """
 import torch
 import torch.nn as nn
@@ -10,7 +14,7 @@ import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, date
 
 from config import load_config
 from src.data import (
@@ -21,6 +25,7 @@ from src.data import (
     add_holiday_features,
     add_temporal_features
 )
+from src.data.preprocessing import get_us_holidays
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference
@@ -169,22 +174,213 @@ def create_prediction_windows(data, config):
     return X_pred, y_pred, cat_pred, dates
 
 
+def predict_recursive(
+    model,
+    device,
+    initial_window_data: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    config,
+    cat_id: int
+):
+    """
+    Recursive prediction mode: uses model's own predictions as inputs.
+    
+    This function simulates a true production forecast where future QTY values
+    are unknown. It uses the model's previous predictions to build the input
+    window for subsequent predictions.
+    
+    Args:
+        model: Trained PyTorch model (already on device and in eval mode)
+        device: PyTorch device
+        initial_window_data: DataFrame with last 30 days of historical data (Dec 2024)
+                            Must have all feature columns and be sorted by time
+        start_date: First date to predict (e.g., date(2025, 1, 1))
+        end_date: Last date to predict (e.g., date(2025, 1, 31))
+        config: Configuration object
+        cat_id: Category ID (integer)
+    
+    Returns:
+        DataFrame with columns: date, predicted, actual (if available)
+    """
+    window_config = config.window
+    data_config = config.data
+    
+    input_size = window_config['input_size']
+    feature_cols = data_config['feature_cols']
+    target_col = data_config['target_col']
+    time_col = data_config['time_col']
+    
+    # Validate initial window has enough data
+    if len(initial_window_data) < input_size:
+        raise ValueError(
+            f"Initial window must have at least {input_size} samples, "
+            f"got {len(initial_window_data)}"
+        )
+    
+    # Get last input_size rows as the initial window
+    window = initial_window_data.tail(input_size).copy()
+    window = window.sort_values(time_col).reset_index(drop=True)
+    
+    predictions = []
+    current_date = start_date
+    
+    print(f"  - Starting recursive prediction from {start_date} to {end_date}")
+    print(f"  - Initial window: {window[time_col].min()} to {window[time_col].max()}")
+    
+    while current_date <= end_date:
+        # Create feature vector for current_date using current window
+        # Calendar features will be computed for current_date
+        # QTY values come from the window (which includes previous predictions)
+        
+        # Get the feature values from the window (last input_size timesteps)
+        # The window contains: [t-29, t-28, ..., t-1] where t is current_date
+        window_features = window[feature_cols].values  # Shape: (input_size, n_features)
+        
+        # We need to update the last row's calendar features for current_date
+        # But keep QTY from the window (which may be predicted)
+        # For all features except QTY, compute for current_date
+        
+        # Create a row for current_date with correct calendar features
+        current_datetime = pd.Timestamp(current_date)
+        
+        # Compute temporal features for current_date
+        month = current_datetime.month
+        dayofmonth = current_datetime.day
+        month_sin = np.sin(2 * np.pi * (month - 1) / 12)
+        month_cos = np.cos(2 * np.pi * (month - 1) / 12)
+        dayofmonth_sin = np.sin(2 * np.pi * (dayofmonth - 1) / 31)
+        dayofmonth_cos = np.cos(2 * np.pi * (dayofmonth - 1) / 31)
+        
+        # Compute holiday features for current_date
+        extended_end = end_date + timedelta(days=365)
+        holidays = get_us_holidays(current_date, extended_end)
+        holiday_set = set(holidays)
+        
+        holiday_indicator = 1 if current_date in holiday_set else 0
+        
+        # Calculate days until next holiday
+        next_holiday = None
+        for holiday in holidays:
+            if holiday > current_date:
+                next_holiday = holiday
+                break
+        
+        if next_holiday:
+            days_until_next_holiday = (next_holiday - current_date).days
+        else:
+            days_until_next_holiday = 365
+        
+        # Create input tensor from current window
+        # The window contains features from dates [t-30, t-29, ..., t-1]
+        # Calendar features in the window are correct for their respective dates
+        # QTY values in the window include previous predictions for dates >= start_date
+        X_window = torch.tensor(
+            window_features,
+            dtype=torch.float32
+        ).unsqueeze(0).to(device)  # Shape: (1, input_size, n_features)
+        
+        cat_tensor = torch.tensor([cat_id], dtype=torch.long).to(device)
+        
+        # Make prediction
+        with torch.no_grad():
+            pred = model(X_window, cat_tensor).cpu().item()
+        
+        # Store prediction
+        predictions.append({
+            'date': current_date,
+            'predicted': pred
+        })
+        
+        # Update window: remove oldest row, add new row with prediction
+        # Create new row with predicted QTY and calendar features for current_date
+        new_row = window.iloc[-1:].copy()  # Copy last row as template
+        new_row[time_col] = current_datetime
+        new_row[target_col] = pred  # Use predicted QTY
+        new_row['month_sin'] = month_sin
+        new_row['month_cos'] = month_cos
+        new_row['dayofmonth_sin'] = dayofmonth_sin
+        new_row['dayofmonth_cos'] = dayofmonth_cos
+        new_row['holiday_indicator'] = holiday_indicator
+        new_row['days_until_next_holiday'] = days_until_next_holiday
+        
+        # Remove oldest row and append new row
+        window = pd.concat([window.iloc[1:], new_row], ignore_index=True)
+        window = window.sort_values(time_col).reset_index(drop=True)
+        
+        # Move to next date
+        current_date += timedelta(days=1)
+    
+    predictions_df = pd.DataFrame(predictions)
+    return predictions_df
+
+
+def get_historical_window_data(
+    historical_data: pd.DataFrame,
+    end_date: date,
+    config,
+    num_days: int = 30
+):
+    """
+    Extract the last N days of historical data to initialize recursive prediction window.
+    
+    Args:
+        historical_data: DataFrame with historical data (e.g., 2024 data)
+        end_date: Last date to include (e.g., date(2024, 12, 31))
+        config: Configuration object
+        num_days: Number of days to extract (default: 30, matching input_size)
+    
+    Returns:
+        DataFrame with last num_days of data, sorted by time
+    """
+    time_col = config.data['time_col']
+    
+    # Filter to dates up to end_date
+    historical_data = historical_data[
+        pd.to_datetime(historical_data[time_col]).dt.date <= end_date
+    ].copy()
+    
+    # Sort by time
+    historical_data = historical_data.sort_values(time_col).reset_index(drop=True)
+    
+    # Get last num_days (group by date first, then take last num_days of unique dates)
+    # Since there may be multiple rows per date (different categories), we need to handle this
+    historical_data['date_only'] = pd.to_datetime(historical_data[time_col]).dt.date
+    unique_dates = historical_data['date_only'].unique()
+    unique_dates = sorted(unique_dates)
+    
+    if len(unique_dates) < num_days:
+        print(f"  [WARNING] Only {len(unique_dates)} unique dates available, requested {num_days}")
+        selected_dates = unique_dates
+    else:
+        selected_dates = unique_dates[-num_days:]
+    
+    window_data = historical_data[
+        historical_data['date_only'].isin(selected_dates)
+    ].copy()
+    
+    # Remove temporary column
+    window_data = window_data.drop(columns=['date_only'])
+    
+    return window_data.sort_values(time_col).reset_index(drop=True)
+
+
 def main():
-    """Main prediction function."""
+    """Main prediction function with both Teacher Forcing and Recursive modes."""
     print("=" * 80)
-    print("JANUARY 2025 PREDICTION USING MVP TEST MODEL")
+    print("JANUARY 2025 PREDICTION - TEACHER FORCING vs RECURSIVE MODES")
     print("=" * 80)
     
     # Load configuration
-    print("\n[1/6] Loading configuration...")
+    print("\n[1/7] Loading configuration...")
     config = load_config()
     
     # Override to match MVP test settings
     config.set('data.years', [2024])  # For loading category mapping reference
     data_config = config.data
     
-    # Load 2024 data to get category mapping (same as MVP test)
-    print("\n[2/6] Loading reference data to get category mapping...")
+    # Load 2024 data to get category mapping and historical window
+    print("\n[2/7] Loading historical 2024 data...")
     data_reader = DataReader(
         data_dir=data_config['data_dir'],
         file_pattern=data_config['file_pattern']
@@ -204,12 +400,30 @@ def main():
     _, cat2id, num_categories = encode_categories(ref_data, data_config['cat_col'])
     config.set('model.num_categories', num_categories)
     
+    cat_id = cat2id.get("DRY")
+    if cat_id is None:
+        raise ValueError("DRY category not found in training data")
+    
     print(f"  - Category mapping: {cat2id}")
     print(f"  - Number of categories: {num_categories}")
+    print(f"  - DRY category ID: {cat_id}")
+    
+    # Prepare historical 2024 data for recursive prediction initialization
+    print("\n[3/7] Preparing historical 2024 data...")
+    historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id)
+    
+    # Get last 30 days of December 2024 for initial window
+    historical_window = get_historical_window_data(
+        historical_data_prepared,
+        end_date=date(2024, 12, 31),
+        config=config,
+        num_days=config.window['input_size']
+    )
+    print(f"  - Historical window: {len(historical_window)} samples")
+    print(f"  - Date range: {historical_window[data_config['time_col']].min()} to {historical_window[data_config['time_col']].max()}")
     
     # Load 2025 data
-    print("\n[3/6] Loading January 2025 data...")
-    # Load from dataset/test/data_2025.csv
+    print("\n[4/7] Loading 2025 data...")
     data_2025_path = Path("dataset/test/data_2025.csv")
     
     if not data_2025_path.exists():
@@ -218,7 +432,6 @@ def main():
         )
     
     print(f"  - Loading from: {data_2025_path}")
-    # Try different encodings if needed
     try:
         data_2025 = pd.read_csv(data_2025_path, encoding='utf-8', low_memory=False)
     except UnicodeDecodeError:
@@ -228,8 +441,8 @@ def main():
             data_2025 = pd.read_csv(data_2025_path, encoding='cp1252', low_memory=False)
     print(f"  - Loaded {len(data_2025)} samples")
     
-    # Filter to DRY category and January 2025
-    print("\n[4/6] Filtering data...")
+    # Filter to DRY category and January 2025 only
+    print("\n[5/7] Filtering data...")
     cat_col = data_config['cat_col']
     time_col = data_config['time_col']
     
@@ -237,7 +450,7 @@ def main():
     data_2025 = data_2025[data_2025[cat_col] == "DRY"].copy()
     print(f"  - After DRY filter: {len(data_2025)} samples")
     
-    # Filter to January 2025
+    # Filter to January 2025 only
     if not pd.api.types.is_datetime64_any_dtype(data_2025[time_col]):
         data_2025[time_col] = pd.to_datetime(data_2025[time_col])
     
@@ -251,15 +464,9 @@ def main():
         raise ValueError("No data found for January 2025 with DRY category")
     
     # Prepare data (add features, encode categories)
-    print("\n[5/6] Preparing prediction data...")
     data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id)
     
-    # For prediction, we need historical context (last 30 days before Jan 2025)
-    # If we have historical data, we should include it
-    # For now, we'll use what we have in January 2025
-    # Note: We need at least input_size samples to create windows
-    
-    # Create prediction windows
+    # Create prediction windows (for teacher forcing mode)
     X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(data_2025_prepared, config)
     
     if len(X_pred) == 0:
@@ -269,7 +476,7 @@ def main():
         )
     
     # Load trained model
-    print("\n[6/6] Loading trained model...")
+    print("\n[6/7] Loading trained model...")
     model_path = Path("outputs/mvp_test/models/best_model.pth")
     if not model_path.exists():
         raise FileNotFoundError(
@@ -279,6 +486,15 @@ def main():
     
     model, device = load_model_for_prediction(str(model_path), config)
     
+    # ========================================================================
+    # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual 2025 values
+    # ========================================================================
+    print("\n" + "=" * 80)
+    print("MODE 1: TEACHER FORCING (Test Evaluation)")
+    print("=" * 80)
+    print("Using actual ground truth QTY values from 2025 as features.")
+    print("This mode is suitable for model evaluation but not production forecasting.")
+    
     # Create dataset and dataloader
     pred_dataset = ForecastDataset(X_pred, y_actual, cat_pred)
     pred_loader = DataLoader(
@@ -287,34 +503,141 @@ def main():
         shuffle=False
     )
     
-    # Make predictions
-    print("\n" + "=" * 80)
-    print("MAKING PREDICTIONS")
-    print("=" * 80)
-    
     # Create trainer for prediction
     trainer = Trainer(
         model=model,
-        criterion=nn.MSELoss(),  # Not used for prediction, but required
-        optimizer=torch.optim.Adam(model.parameters()),  # Not used, but required
+        criterion=nn.MSELoss(),
+        optimizer=torch.optim.Adam(model.parameters()),
         device=device
     )
     
-    y_true, y_pred = trainer.predict(pred_loader)
+    y_true_tf, y_pred_tf = trainer.predict(pred_loader)
     
-    print(f"  - Predictions made: {len(y_pred)} samples")
+    print(f"  - Predictions made: {len(y_pred_tf)} samples")
     print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
     
     # Calculate metrics
-    mse = np.mean((y_true.flatten() - y_pred.flatten()) ** 2)
-    mae = np.mean(np.abs(y_true.flatten() - y_pred.flatten()))
-    rmse = np.sqrt(mse)
+    mse_tf = np.mean((y_true_tf.flatten() - y_pred_tf.flatten()) ** 2)
+    mae_tf = np.mean(np.abs(y_true_tf.flatten() - y_pred_tf.flatten()))
+    rmse_tf = np.sqrt(mse_tf)
     
-    print(f"\n  - MSE: {mse:.4f}")
-    print(f"  - MAE: {mae:.4f}")
-    print(f"  - RMSE: {rmse:.4f}")
+    print(f"\n  - MSE:  {mse_tf:.4f}")
+    print(f"  - MAE:  {mae_tf:.4f}")
+    print(f"  - RMSE: {rmse_tf:.4f}")
     
-    # Save predictions
+    # ========================================================================
+    # MODE 2: RECURSIVE (Production Forecast) - Uses model's own predictions
+    # ========================================================================
+    print("\n" + "=" * 80)
+    print("MODE 2: RECURSIVE (Production Forecast)")
+    print("=" * 80)
+    print("Using model's own predictions as inputs for future dates.")
+    print("This mode simulates true production forecasting.")
+    
+    # Filter historical window to same category
+    historical_window_filtered = historical_window[
+        historical_window[data_config['cat_id_col']] == cat_id
+    ].copy()
+    
+    if len(historical_window_filtered) < config.window['input_size']:
+        # If not enough data for this category, use all data and duplicate
+        print(f"  [WARNING] Only {len(historical_window_filtered)} samples for category, need {config.window['input_size']}")
+        historical_window_filtered = historical_window[
+            historical_window[data_config['cat_id_col']] == cat_id
+        ].copy()
+        # Take last available samples and repeat if needed
+        if len(historical_window_filtered) > 0:
+            last_row = historical_window_filtered.iloc[-1:].copy()
+            while len(historical_window_filtered) < config.window['input_size']:
+                historical_window_filtered = pd.concat([historical_window_filtered, last_row], ignore_index=True)
+        else:
+            raise ValueError(f"No historical data found for category ID {cat_id}")
+    
+    # Get last input_size samples
+    historical_window_filtered = historical_window_filtered.tail(config.window['input_size']).copy()
+    historical_window_filtered = historical_window_filtered.sort_values(time_col).reset_index(drop=True)
+    
+    # Run recursive prediction
+    recursive_preds = predict_recursive(
+        model=model,
+        device=device,
+        initial_window_data=historical_window_filtered,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        config=config,
+        cat_id=cat_id
+    )
+    
+    # Merge with actual values for comparison
+    # Get actual values grouped by date
+    actuals_by_date = data_2025_prepared.groupby(
+        pd.to_datetime(data_2025_prepared[time_col]).dt.date
+    )[data_config['target_col']].sum().reset_index()
+    actuals_by_date.columns = ['date', 'actual']
+    actuals_by_date['date'] = pd.to_datetime(actuals_by_date['date']).dt.date
+    
+    recursive_results = recursive_preds.merge(
+        actuals_by_date,
+        on='date',
+        how='left'
+    )
+    
+    # Calculate metrics (only for dates with actuals)
+    recursive_results_with_actuals = recursive_results[recursive_results['actual'].notna()]
+    
+    if len(recursive_results_with_actuals) > 0:
+        mse_rec = np.mean((recursive_results_with_actuals['actual'] - recursive_results_with_actuals['predicted']) ** 2)
+        mae_rec = np.mean(np.abs(recursive_results_with_actuals['actual'] - recursive_results_with_actuals['predicted']))
+        rmse_rec = np.sqrt(mse_rec)
+        
+        print(f"\n  - Predictions made: {len(recursive_preds)} samples")
+        print(f"  - Samples with actuals: {len(recursive_results_with_actuals)}")
+        print(f"  - MSE:  {mse_rec:.4f}")
+        print(f"  - MAE:  {mae_rec:.4f}")
+        print(f"  - RMSE: {rmse_rec:.4f}")
+    else:
+        print(f"\n  - Predictions made: {len(recursive_preds)} samples")
+        print(f"  - No actual values available for comparison")
+        mse_rec = mae_rec = rmse_rec = np.nan
+    
+    # ========================================================================
+    # COMPARISON AND SAVING
+    # ========================================================================
+    print("\n" + "=" * 80)
+    print("COMPARISON: TEACHER FORCING vs RECURSIVE")
+    print("=" * 80)
+    
+    # Prepare teacher forcing results for comparison
+    if isinstance(pred_dates, pd.DatetimeIndex):
+        tf_dates = pred_dates.date
+    else:
+        tf_dates = pd.to_datetime(pred_dates).dt.date
+    
+    tf_results = pd.DataFrame({
+        'date': tf_dates,
+        'actual': y_true_tf.flatten(),
+        'predicted': y_pred_tf.flatten()
+    })
+    tf_results = tf_results.groupby('date').agg({
+        'actual': 'sum',
+        'predicted': 'sum'
+    }).reset_index()
+    
+    # Compare metrics
+    print(f"\nMetrics Comparison:")
+    print(f"{'Metric':<15} {'Teacher Forcing':<20} {'Recursive':<20} {'Difference':<20}")
+    print("-" * 75)
+    if not np.isnan(mae_rec):
+        print(f"{'MAE':<15} {mae_tf:<20.4f} {mae_rec:<20.4f} {mae_rec - mae_tf:<20.4f}")
+        print(f"{'RMSE':<15} {rmse_tf:<20.4f} {rmse_rec:<20.4f} {rmse_rec - rmse_tf:<20.4f}")
+        print(f"{'MSE':<15} {mse_tf:<20.4f} {mse_rec:<20.4f} {mse_rec - mse_tf:<20.4f}")
+        print(f"\nError increase: {(mae_rec / mae_tf - 1) * 100:.2f}% (MAE)")
+        print(f"Error increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}% (RMSE)")
+    else:
+        print(f"{'MAE':<15} {mae_tf:<20.4f} {'N/A':<20}")
+        print(f"{'RMSE':<15} {rmse_tf:<20.4f} {'N/A':<20}")
+    
+    # Save results
     print("\n" + "=" * 80)
     print("SAVING RESULTS")
     print("=" * 80)
@@ -322,70 +645,90 @@ def main():
     output_dir = Path("outputs/mvp_test/predictions_jan2025")
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save predictions to CSV with dates (date only, no time)
-    # Convert dates to date strings (MM/DD/YYYY format) for CSV output
-    if isinstance(pred_dates, pd.DatetimeIndex):
-        date_strings = pred_dates.strftime('%m/%d/%Y')
-    else:
-        date_strings = pd.to_datetime(pred_dates).dt.strftime('%m/%d/%Y')
+    # Save Teacher Forcing results
+    tf_output_path = output_dir / "predictions_teacher_forcing.csv"
+    tf_results['date'] = pd.to_datetime(tf_results['date']).dt.strftime('%m/%d/%Y')
+    tf_results['error'] = tf_results['actual'] - tf_results['predicted']
+    tf_results['abs_error'] = np.abs(tf_results['error'])
+    tf_results = tf_results.sort_values('date')
+    tf_results.to_csv(tf_output_path, index=False)
+    print(f"  - Teacher Forcing results: {tf_output_path}")
     
-    predictions_df = pd.DataFrame({
-        'date': date_strings,
-        'actual': y_true.flatten(),
-        'predicted': y_pred.flatten(),
-        'error': (y_true.flatten() - y_pred.flatten()),
-        'abs_error': np.abs(y_true.flatten() - y_pred.flatten())
-    })
+    # Save Recursive results
+    rec_output_path = output_dir / "predictions_recursive.csv"
+    recursive_results['date'] = pd.to_datetime(recursive_results['date']).dt.strftime('%m/%d/%Y')
+    recursive_results['error'] = recursive_results['actual'] - recursive_results['predicted']
+    recursive_results['abs_error'] = np.abs(recursive_results['error'])
+    recursive_results = recursive_results.sort_values('date')
+    recursive_results.to_csv(rec_output_path, index=False)
+    print(f"  - Recursive results: {rec_output_path}")
     
-    # Group by date and aggregate (sum for actual/predicted, sum for errors)
-    predictions_df_grouped = predictions_df.groupby('date').agg({
-        'actual': 'sum',
-        'predicted': 'sum',
-        'error': 'sum',
-        'abs_error': 'sum'
-    }).reset_index()
-    
-    # Recalculate error after aggregation (should match, but ensure consistency)
-    predictions_df_grouped['error'] = predictions_df_grouped['actual'] - predictions_df_grouped['predicted']
-    predictions_df_grouped['abs_error'] = np.abs(predictions_df_grouped['error'])
-    
-    # Sort by date to ensure chronological order
-    # Convert to datetime for proper sorting, then back to string
-    predictions_df_grouped['date_dt'] = pd.to_datetime(predictions_df_grouped['date'], format='%m/%d/%Y')
-    predictions_df_grouped = predictions_df_grouped.sort_values('date_dt').reset_index(drop=True)
-    predictions_df_grouped = predictions_df_grouped.drop(columns=['date_dt'])
-    
-    csv_path = output_dir / "predictions_jan2025.csv"
-    predictions_df_grouped.to_csv(csv_path, index=False)
-    print(f"  - Predictions saved to: {csv_path}")
-    print(f"  - Grouped by date: {len(predictions_df_grouped)} unique dates")
-    
-    # Generate plot
-    plot_path = output_dir / "predictions_jan2025.png"
-    n_samples = min(100, len(y_true))
-    plot_difference(
-        y_true[:n_samples],
-        y_pred[:n_samples],
-        save_path=str(plot_path),
-        show=False
-    )
-    print(f"  - Plot saved to: {plot_path}")
-    
-    # Save summary
-    summary_path = output_dir / "summary.txt"
+    # Save comparison summary
+    summary_path = output_dir / "comparison_summary.txt"
     with open(summary_path, 'w') as f:
-        f.write("January 2025 Prediction Summary\n")
-        f.write("=" * 50 + "\n\n")
+        f.write("January 2025 Prediction Comparison: Teacher Forcing vs Recursive\n")
+        f.write("=" * 70 + "\n\n")
         f.write(f"Model: outputs/mvp_test/models/best_model.pth\n")
         f.write(f"Data: January 2025, DRY category only\n")
-        f.write(f"Data source: dataset/test/data_2025.csv\n")
-        f.write(f"Number of predictions: {len(y_pred)}\n")
-        f.write(f"Date range: {pred_dates.min()} to {pred_dates.max()}\n\n")
-        f.write("Metrics:\n")
-        f.write(f"  MSE:  {mse:.4f}\n")
-        f.write(f"  MAE:  {mae:.4f}\n")
-        f.write(f"  RMSE: {rmse:.4f}\n")
-    print(f"  - Summary saved to: {summary_path}")
+        f.write(f"Data source: dataset/test/data_2025.csv\n\n")
+        
+        f.write("Teacher Forcing Mode (Test Evaluation):\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"  Description: Uses actual ground truth QTY values from 2025 as features\n")
+        f.write(f"  Suitable for: Model evaluation on test set\n")
+        f.write(f"  Number of predictions: {len(y_pred_tf)}\n")
+        f.write(f"  Date range: {pred_dates.min()} to {pred_dates.max()}\n")
+        f.write(f"  MSE:  {mse_tf:.4f}\n")
+        f.write(f"  MAE:  {mae_tf:.4f}\n")
+        f.write(f"  RMSE: {rmse_tf:.4f}\n\n")
+        
+        f.write("Recursive Mode (Production Forecast):\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"  Description: Uses model's own predictions as inputs\n")
+        f.write(f"  Suitable for: Production forecasting of unknown future dates\n")
+        f.write(f"  Number of predictions: {len(recursive_preds)}\n")
+        f.write(f"  Date range: 2025-01-01 to 2025-01-31\n")
+        if not np.isnan(mae_rec):
+            f.write(f"  MSE:  {mse_rec:.4f}\n")
+            f.write(f"  MAE:  {mae_rec:.4f}\n")
+            f.write(f"  RMSE: {rmse_rec:.4f}\n\n")
+        else:
+            f.write(f"  MSE:  N/A (no actual values available)\n")
+            f.write(f"  MAE:  N/A (no actual values available)\n")
+            f.write(f"  RMSE: N/A (no actual values available)\n\n")
+        
+        if not np.isnan(mae_rec):
+            f.write("Comparison:\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"  MAE increase:  {(mae_rec / mae_tf - 1) * 100:.2f}%\n")
+            f.write(f"  RMSE increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}%\n")
+            f.write(f"  MSE increase:  {(mse_rec / mse_tf - 1) * 100:.2f}%\n")
+            f.write(f"\n  Note: Recursive mode shows higher error due to error accumulation.\n")
+            f.write(f"  This is expected and represents true production forecast performance.\n")
+    
+    print(f"  - Comparison summary: {summary_path}")
+    
+    # Generate plots
+    if len(y_true_tf) > 0:
+        plot_path_tf = output_dir / "predictions_teacher_forcing.png"
+        n_samples = min(100, len(y_true_tf))
+        plot_difference(
+            y_true_tf[:n_samples],
+            y_pred_tf[:n_samples],
+            save_path=str(plot_path_tf),
+            show=False
+        )
+        print(f"  - Teacher Forcing plot: {plot_path_tf}")
+    
+    if len(recursive_results_with_actuals) > 0:
+        plot_path_rec = output_dir / "predictions_recursive.png"
+        plot_difference(
+            recursive_results_with_actuals['actual'].values,
+            recursive_results_with_actuals['predicted'].values,
+            save_path=str(plot_path_rec),
+            show=False
+        )
+        print(f"  - Recursive plot: {plot_path_rec}")
     
     print("\n" + "=" * 80)
     print("PREDICTION COMPLETE!")

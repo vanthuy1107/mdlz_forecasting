@@ -1,9 +1,10 @@
 """MVP Test Script for MDLZ Warehouse Prediction System.
 
 This script verifies the entire pipeline using a small subset of data:
-- Loads only 2024 data
+- Loads 2023 and 2024 data
 - Filters to DRY category only
-- Trains for 1 epoch
+- Trains for 20 epochs with spike_aware_mse loss
+- Uses Vietnamese holidays (Tet, Mid-Autumn Festival, etc.)
 - Generates test predictions and plots
 """
 import torch
@@ -12,6 +13,10 @@ from torch.utils.data import DataLoader
 import os
 from pathlib import Path
 import pandas as pd
+import numpy as np
+import time
+from datetime import date, timedelta
+from typing import List
 
 from config import load_config
 from src.data import (
@@ -20,12 +25,145 @@ from src.data import (
     slicing_window_category,
     encode_categories,
     split_data,
-    add_holiday_features,
     add_temporal_features
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
-from src.utils import plot_difference
+from src.utils import plot_difference, spike_aware_mse
+
+
+def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
+    """
+    Get list of Vietnamese holidays between start_date and end_date.
+    
+    Includes:
+    - Lunar New Year (Tet): 2023 (Jan 20-26), 2024 (Feb 8-14), 2025 (Jan 27 - Feb 2)
+    - Mid-Autumn Festival: 2023 (Sep 29), 2024 (Sep 17), 2025 (Oct 6)
+    - Independence Day (Sep 2)
+    - Labor Day (Apr 30 - May 1)
+    
+    Args:
+        start_date: Start date for holiday range.
+        end_date: End date for holiday range.
+    
+    Returns:
+        List of holiday dates.
+    """
+    holidays = []
+    
+    # Define Vietnamese holidays by year
+    vietnam_holidays = {
+        2023: {
+            'tet': [date(2023, 1, 20), date(2023, 1, 21), date(2023, 1, 22), 
+                   date(2023, 1, 23), date(2023, 1, 24), date(2023, 1, 25), date(2023, 1, 26)],
+            'mid_autumn': [date(2023, 9, 29)],
+            'independence': [date(2023, 9, 2)],
+            'labor': [date(2023, 4, 30), date(2023, 5, 1)]
+        },
+        2024: {
+            'tet': [date(2024, 2, 8), date(2024, 2, 9), date(2024, 2, 10),
+                   date(2024, 2, 11), date(2024, 2, 12), date(2024, 2, 13), date(2024, 2, 14)],
+            'mid_autumn': [date(2024, 9, 17)],
+            'independence': [date(2024, 9, 2)],
+            'labor': [date(2024, 4, 30), date(2024, 5, 1)]
+        },
+        2025: {
+            'tet': [date(2025, 1, 27), date(2025, 1, 28), date(2025, 1, 29),
+                   date(2025, 1, 30), date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2)],
+            'mid_autumn': [date(2025, 10, 6)],
+            'independence': [date(2025, 9, 2)],
+            'labor': [date(2025, 4, 30), date(2025, 5, 1)]
+        }
+    }
+    
+    # Collect all holidays in the date range
+    current = start_date
+    while current <= end_date:
+        year = current.year
+        if year in vietnam_holidays:
+            year_holidays = vietnam_holidays[year]
+            holidays.extend(year_holidays['tet'])
+            holidays.extend(year_holidays['mid_autumn'])
+            holidays.extend(year_holidays['independence'])
+            holidays.extend(year_holidays['labor'])
+        current = date(year + 1, 1, 1)
+    
+    # Filter to date range and remove duplicates
+    holidays = [h for h in holidays if start_date <= h <= end_date]
+    holidays = sorted(list(set(holidays)))
+    
+    return holidays
+
+
+def add_holiday_features_vietnam(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    holiday_indicator_col: str = "holiday_indicator",
+    days_until_holiday_col: str = "days_until_next_holiday"
+) -> pd.DataFrame:
+    """
+    Add Vietnamese holiday-related features to DataFrame.
+    
+    Creates:
+    - holiday_indicator: Binary (0 or 1) indicating if date is a Vietnamese holiday
+    - days_until_next_holiday: Number of days until the next Vietnamese holiday
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        holiday_indicator_col: Name for holiday indicator column.
+        days_until_holiday_col: Name for days until next holiday column.
+    
+    Returns:
+        DataFrame with added holiday features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Get date range from data
+    min_date = df[time_col].min().date()
+    max_date = df[time_col].max().date()
+    
+    # Extend range slightly to ensure we have next holidays for all dates
+    extended_max = max_date + timedelta(days=365)
+    
+    # Get Vietnamese holidays
+    holidays = get_vietnam_holidays(min_date, extended_max)
+    holiday_set = set(holidays)
+    
+    # Initialize columns
+    df[holiday_indicator_col] = 0
+    df[days_until_holiday_col] = np.nan
+    
+    # Process each row
+    for idx, row in df.iterrows():
+        current_date = row[time_col].date()
+        
+        # Set holiday indicator
+        if current_date in holiday_set:
+            df.at[idx, holiday_indicator_col] = 1
+        
+        # Calculate days until next holiday
+        next_holiday = None
+        for holiday in holidays:
+            if holiday > current_date:
+                next_holiday = holiday
+                break
+        
+        if next_holiday:
+            days_until = (next_holiday - current_date).days
+            df.at[idx, days_until_holiday_col] = days_until
+        else:
+            # If no holiday found (shouldn't happen with extended range), set to large value
+            df.at[idx, days_until_holiday_col] = 365
+    
+    # Fill any remaining NaN values (shouldn't happen, but safety check)
+    df[days_until_holiday_col] = df[days_until_holiday_col].fillna(365)
+    
+    return df
 
 
 def main():
@@ -40,17 +178,22 @@ def main():
     
     # Override configuration for MVP test
     print("\n[2/8] Applying MVP test overrides...")
-    config.set('data.years', [2024])
-    config.set('training.epochs', 1)
+    config.set('data.years', [2023, 2024])
+    config.set('training.epochs', 8)  # Increased to 20 epochs for better learning
+    config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
     
     # Set dedicated output directory
     mvp_output_dir = "outputs/mvp_test"
+    mvp_models_dir = os.path.join(mvp_output_dir, "models")
     os.makedirs(mvp_output_dir, exist_ok=True)
+    os.makedirs(mvp_models_dir, exist_ok=True)
     config.set('output.output_dir', mvp_output_dir)
-    config.set('output.model_dir', os.path.join(mvp_output_dir, "models"))
+    config.set('output.model_dir', mvp_models_dir)
+    config.set('output.save_model', True)  # Ensure model saving is enabled
     
     print(f"  - Data years: {config.data['years']}")
     print(f"  - Training epochs: {config.training['epochs']}")
+    print(f"  - Loss function: spike_aware_mse (forced)")
     print(f"  - Output directory: {config.output['output_dir']}")
     
     # Load data
@@ -61,7 +204,7 @@ def main():
         file_pattern=data_config['file_pattern']
     )
     
-    # Load 2024 data
+    # Load 2023 and 2024 data
     try:
         data = data_reader.load(years=data_config['years'])
     except FileNotFoundError:
@@ -73,6 +216,17 @@ def main():
         )
     
     print(f"  - Loaded {len(data)} samples before filtering")
+    
+    # Fix DtypeWarning: Cast columns (0, 4) to string/category to resolve mixed types
+    if len(data.columns) > 0:
+        col_0 = data.columns[0]
+        if col_0 in data.columns:
+            data[col_0] = data[col_0].astype(str)
+    if len(data.columns) > 4:
+        col_4 = data.columns[4]
+        if col_4 in data.columns:
+            data[col_4] = data[col_4].astype(str)
+    print("  - Fixed DtypeWarning by casting columns 0 and 4 to string")
     
     # Filter to DRY category only
     print("\n[4/8] Filtering data to DRY category...")
@@ -108,9 +262,9 @@ def main():
         dayofmonth_cos_col="dayofmonth_cos"
     )
     
-    # Feature engineering: Add holiday features
-    print("  - Adding holiday features...")
-    data = add_holiday_features(
+    # Feature engineering: Add Vietnamese holiday features
+    print("  - Adding Vietnamese holiday features...")
+    data = add_holiday_features_vietnam(
         data,
         time_col=time_col,
         holiday_indicator_col="holiday_indicator",
@@ -229,14 +383,9 @@ def main():
     print(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Build loss, optimizer, scheduler
-    loss_name = training_config['loss']
-    if loss_name == 'MSE':
-        criterion = nn.MSELoss()
-    elif loss_name == 'spike_aware_mse':
-        from src.utils import spike_aware_mse
-        criterion = spike_aware_mse
-    else:
-        raise ValueError(f"Unknown loss function: {loss_name}")
+    # Force spike_aware_mse loss function for Vietnamese market demand spikes
+    print("  - Using spike_aware_mse loss (3x weight for top 20% QTY values)...")
+    criterion = spike_aware_mse
     
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -261,7 +410,8 @@ def main():
     print(f"  - Device: {device}")
     
     # Create trainer
-    save_dir = config.output.get('model_dir') if config.output.get('save_model') else None
+    save_dir = config.output.get('model_dir')
+    print(f"  - Model save directory: {save_dir}")
     trainer = Trainer(
         model=model,
         criterion=criterion,
@@ -276,6 +426,9 @@ def main():
     print("\n" + "=" * 80)
     print("TRAINING")
     print("=" * 80)
+    print(f"Starting training at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    start_time = time.time()
+    
     train_losses, val_losses = trainer.fit(
         train_loader=train_loader,
         val_loader=val_loader,
@@ -283,6 +436,11 @@ def main():
         save_best=True,
         verbose=True
     )
+    
+    end_time = time.time()
+    training_time = end_time - start_time
+    print(f"\nTraining completed at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Total training time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
     
     # Evaluate on test set
     print("\n" + "=" * 80)
@@ -318,7 +476,13 @@ def main():
     print(f"Results saved to: {output_dir}")
     print(f"  - Test predictions plot: {plot_path}")
     if save_dir:
-        print(f"  - Model checkpoint: {os.path.join(save_dir, 'best_model.pth')}")
+        model_checkpoint_path = os.path.join(save_dir, 'best_model.pth')
+        print(f"  - Model checkpoint: {model_checkpoint_path}")
+        if os.path.exists(model_checkpoint_path):
+            print(f"    ✓ Model successfully saved")
+        else:
+            print(f"    ⚠ Warning: Model checkpoint not found at expected path")
+    print(f"  - Total training time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
     print("=" * 80)
 
 
