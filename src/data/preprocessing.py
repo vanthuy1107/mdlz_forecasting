@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 from typing import List, Optional, Tuple, Union
 from datetime import datetime, date, timedelta
+from sklearn.preprocessing import StandardScaler
+import pickle
 
 
 def slicing_window(
@@ -405,6 +407,144 @@ def split_data(
         )
     
     return train_data, val_data, test_data
+
+
+def aggregate_daily(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    target_col: str = "QTY",
+    keep_cols: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """
+    Aggregate transaction-level data to daily totals by category.
+    
+    Groups data by date and category, summing QTY values. Preserves temporal
+    and holiday features by taking the first value for each date (since they
+    should be the same for all transactions on the same day).
+    
+    Args:
+        df: DataFrame with transaction-level data.
+        time_col: Name of time column.
+        cat_col: Name of category column.
+        target_col: Name of target column to sum (e.g., "QTY").
+        keep_cols: Additional columns to keep (first value taken per group).
+    
+    Returns:
+        DataFrame with daily aggregated data (one row per date per category).
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Normalize to date only (remove time component)
+    df['date_only'] = pd.to_datetime(df[time_col]).dt.normalize()
+    
+    # Columns to aggregate - sum QTY, take first for other columns
+    agg_dict = {target_col: 'sum'}
+    
+    # For temporal/holiday/weekend features, take first value (should be same for all rows on same date)
+    feature_cols_to_keep = [
+        'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
+        'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
+        'is_weekend', 'day_of_week',
+        'lunar_month', 'lunar_day'
+    ]
+    
+    for col in feature_cols_to_keep:
+        if col in df.columns:
+            agg_dict[col] = 'first'
+    
+    # Add any explicitly requested columns
+    if keep_cols:
+        for col in keep_cols:
+            if col in df.columns and col not in agg_dict:
+                agg_dict[col] = 'first'
+    
+    # Group by date and category
+    grouped = df.groupby(['date_only', cat_col], as_index=False).agg(agg_dict)
+    
+    # Rename date_only back to time_col
+    grouped = grouped.rename(columns={'date_only': time_col})
+    
+    # Sort by category and date
+    grouped = grouped.sort_values([cat_col, time_col]).reset_index(drop=True)
+    
+    return grouped
+
+
+def fit_scaler(
+    train_data: pd.DataFrame,
+    target_col: str = "QTY"
+) -> StandardScaler:
+    """
+    Fit a StandardScaler on training data QTY values.
+    
+    Args:
+        train_data: Training DataFrame.
+        target_col: Name of target column to scale.
+    
+    Returns:
+        Fitted StandardScaler.
+    """
+    scaler = StandardScaler()
+    scaler.fit(train_data[[target_col]])
+    return scaler
+
+
+def apply_scaling(
+    df: pd.DataFrame,
+    scaler: StandardScaler,
+    target_col: str = "QTY",
+    scale_feature: bool = True
+) -> pd.DataFrame:
+    """
+    Apply scaling to QTY column in DataFrame.
+    
+    Args:
+        df: DataFrame to scale.
+        scaler: Fitted StandardScaler.
+        target_col: Name of target column to scale.
+        scale_feature: If True, also scale QTY in feature columns (for input windows).
+                       If False, only scale the target column.
+    
+    Returns:
+        DataFrame with scaled QTY values.
+    """
+    df = df.copy()
+    
+    if target_col not in df.columns:
+        return df
+    
+    # Scale target column
+    df[target_col] = scaler.transform(df[[target_col]]).flatten()
+    
+    return df
+
+
+def inverse_transform_scaling(
+    values: np.ndarray,
+    scaler: StandardScaler,
+    target_col: str = "QTY"
+) -> np.ndarray:
+    """
+    Inverse transform scaled values back to original scale.
+    
+    Args:
+        values: Scaled values (can be 1D array or 2D with shape (n_samples, 1)).
+        scaler: Fitted StandardScaler used for scaling.
+        target_col: Name of target column (for compatibility, not used).
+    
+    Returns:
+        Unscaled values in original scale.
+    """
+    # Ensure values are 2D for scaler
+    if values.ndim == 1:
+        values = values.reshape(-1, 1)
+    
+    return scaler.inverse_transform(values).flatten()
 
 
 def prepare_data(

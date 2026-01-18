@@ -193,7 +193,12 @@ class Trainer:
                     self.save_checkpoint(epoch, is_best=True, config=config)
             
             # Logging
-            if verbose and self.current_epoch % self.log_interval == 0:
+            # Always log first and last epoch, plus at log_interval
+            should_log = (self.current_epoch == 1 or 
+                         self.current_epoch == epochs or 
+                         self.current_epoch % self.log_interval == 0)
+            
+            if verbose and should_log:
                 current_lr = self.optimizer.param_groups[0]['lr']
                 print(
                     f"EPOCH {self.current_epoch}/{epochs}: "

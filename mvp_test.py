@@ -16,8 +16,9 @@ import pandas as pd
 import numpy as np
 import time
 import json
+import pickle
 from datetime import date, timedelta
-from typing import List
+from typing import List, Tuple
 
 from config import load_config
 from src.data import (
@@ -26,7 +27,11 @@ from src.data import (
     slicing_window_category,
     encode_categories,
     split_data,
-    add_temporal_features
+    add_temporal_features,
+    aggregate_daily,
+    fit_scaler,
+    apply_scaling,
+    inverse_transform_scaling
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
@@ -100,7 +105,8 @@ def add_holiday_features_vietnam(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
     holiday_indicator_col: str = "holiday_indicator",
-    days_until_holiday_col: str = "days_until_next_holiday"
+    days_until_holiday_col: str = "days_until_next_holiday",
+    days_since_holiday_col: str = "days_since_holiday"
 ) -> pd.DataFrame:
     """
     Add Vietnamese holiday-related features to DataFrame.
@@ -138,6 +144,7 @@ def add_holiday_features_vietnam(
     # Initialize columns
     df[holiday_indicator_col] = 0
     df[days_until_holiday_col] = np.nan
+    df[days_since_holiday_col] = np.nan
     
     # Process each row
     for idx, row in df.iterrows():
@@ -160,9 +167,267 @@ def add_holiday_features_vietnam(
         else:
             # If no holiday found (shouldn't happen with extended range), set to large value
             df.at[idx, days_until_holiday_col] = 365
+        
+        # Calculate days since last holiday
+        last_holiday = None
+        for holiday in sorted(holidays, reverse=True):
+            if holiday <= current_date:
+                last_holiday = holiday
+                break
+        
+        if last_holiday:
+            days_since = (current_date - last_holiday).days
+            df.at[idx, days_since_holiday_col] = days_since
+        else:
+            # If no holiday found, set to large value
+            df.at[idx, days_since_holiday_col] = 365
     
     # Fill any remaining NaN values (shouldn't happen, but safety check)
     df[days_until_holiday_col] = df[days_until_holiday_col].fillna(365)
+    df[days_since_holiday_col] = df[days_since_holiday_col].fillna(365)
+    
+    return df
+
+
+def solar_to_lunar_date(solar_date: date) -> Tuple[int, int]:
+    """
+    Convert solar (Gregorian) date to lunar (Vietnamese) date approximation.
+    
+    This is a simplified approximation. For production, use a proper lunar calendar library.
+    Tet (Lunar New Year) typically falls between Jan 20 - Feb 20 in solar calendar.
+    
+    Args:
+        solar_date: Gregorian date.
+    
+    Returns:
+        Tuple of (lunar_month, lunar_day) where lunar_month is 1-12.
+    """
+    # Simplified conversion: use solar month/day as approximation
+    # This will be refined with actual lunar calendar data
+    # For now, Tet is typically in late Jan / early Feb
+    if solar_date.month == 1 and solar_date.day >= 20:
+        # Late January = start of lunar year (month 1)
+        lunar_month = 1
+        lunar_day = solar_date.day - 19  # Approximate offset
+    elif solar_date.month == 2:
+        # February continues lunar month 1 or moves to month 2
+        if solar_date.day <= 10:
+            lunar_month = 1
+            lunar_day = solar_date.day + 12  # Continue from Jan
+        else:
+            lunar_month = 2
+            lunar_day = solar_date.day - 10
+    else:
+        # Approximate: lunar months are roughly aligned with solar months
+        lunar_month = solar_date.month
+        lunar_day = solar_date.day
+    
+    # Clamp to valid ranges
+    lunar_month = max(1, min(12, lunar_month))
+    lunar_day = max(1, min(30, lunar_day))  # Lunar months have 29-30 days
+    
+    return lunar_month, lunar_day
+
+
+def add_weekend_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    is_weekend_col: str = "is_weekend",
+    day_of_week_col: str = "day_of_week"
+) -> pd.DataFrame:
+    """
+    Add weekend and day-of-week features to DataFrame.
+    
+    Creates:
+    - is_weekend: Binary (1 for Saturday/Sunday, 0 otherwise)
+    - day_of_week: Integer (0=Monday, 1=Tuesday, ..., 6=Sunday)
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column.
+        is_weekend_col: Name for is_weekend column.
+        day_of_week_col: Name for day_of_week column.
+    
+    Returns:
+        DataFrame with added weekend features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Get day of week (0=Monday, 6=Sunday)
+    df[day_of_week_col] = df[time_col].dt.dayofweek
+    
+    # Weekend indicator: Saturday (5) or Sunday (6)
+    df[is_weekend_col] = (df[day_of_week_col] >= 5).astype(int)
+    
+    return df
+
+
+def add_lunar_calendar_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    lunar_month_col: str = "lunar_month",
+    lunar_day_col: str = "lunar_day"
+) -> pd.DataFrame:
+    """
+    Add lunar calendar features for Vietnamese holiday prediction.
+    
+    Creates:
+    - lunar_month: Lunar month (1-12)
+    - lunar_day: Lunar day (1-30)
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column.
+        lunar_month_col: Name for lunar_month column.
+        lunar_day_col: Name for lunar_day column.
+    
+    Returns:
+        DataFrame with added lunar features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Convert each date to lunar
+    lunar_dates = df[time_col].dt.date.apply(solar_to_lunar_date)
+    df[lunar_month_col] = [ld[0] for ld in lunar_dates]
+    df[lunar_day_col] = [ld[1] for ld in lunar_dates]
+    
+    return df
+
+
+def add_rolling_and_momentum_features(
+    df: pd.DataFrame,
+    target_col: str = "QTY",
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    rolling_7_col: str = "rolling_mean_7d",
+    rolling_30_col: str = "rolling_mean_30d",
+    momentum_col: str = "momentum_3d_vs_14d"
+) -> pd.DataFrame:
+    """
+    Add rolling mean and momentum features to reduce model inertia.
+    
+    Creates:
+    - rolling_mean_7d: 7-day rolling average of QTY
+    - rolling_mean_30d: 30-day rolling average of QTY
+    - momentum_3d_vs_14d: Difference between 3-day and 14-day rolling means
+    
+    These features help the model see "pace" rather than just yesterday's value.
+    
+    Args:
+        df: DataFrame with QTY and time columns (must be sorted by time).
+        target_col: Name of target column (e.g., "QTY").
+        time_col: Name of time column.
+        cat_col: Name of category column (rolling calculated per category).
+        rolling_7_col: Name for 7-day rolling mean column.
+        rolling_30_col: Name for 30-day rolling mean column.
+        momentum_col: Name for momentum column.
+    
+    Returns:
+        DataFrame with added rolling and momentum features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime and sort
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
+    
+    # Initialize new columns
+    df[rolling_7_col] = np.nan
+    df[rolling_30_col] = np.nan
+    df[momentum_col] = np.nan
+    
+    # Calculate rolling features per category
+    for cat, group in df.groupby(cat_col, sort=False):
+        cat_mask = df[cat_col] == cat
+        cat_indices = df[cat_mask].index
+        
+        # Calculate rolling means
+        rolling_7 = group[target_col].rolling(window=7, min_periods=1).mean()
+        rolling_30 = group[target_col].rolling(window=30, min_periods=1).mean()
+        rolling_3 = group[target_col].rolling(window=3, min_periods=1).mean()
+        rolling_14 = group[target_col].rolling(window=14, min_periods=1).mean()
+        
+        # Assign values back to main dataframe
+        df.loc[cat_indices, rolling_7_col] = rolling_7.values
+        df.loc[cat_indices, rolling_30_col] = rolling_30.values
+        
+        # Momentum: difference between short-term and long-term averages
+        momentum = rolling_3 - rolling_14
+        df.loc[cat_indices, momentum_col] = momentum.values
+    
+    # Fill any remaining NaN with forward fill then backward fill
+    for col in [rolling_7_col, rolling_30_col, momentum_col]:
+        df[col] = df[col].ffill().bfill().fillna(0)
+    
+    return df
+
+
+def add_days_since_holiday(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    days_since_holiday_col: str = "days_since_holiday"
+) -> pd.DataFrame:
+    """
+    Add days since last holiday feature.
+    
+    This complements days_until_next_holiday to help model understand
+    post-holiday patterns (e.g., demand drops after Tet).
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column.
+        days_since_holiday_col: Name for days_since_holiday column.
+    
+    Returns:
+        DataFrame with added days_since_holiday feature.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Get date range from data
+    min_date = df[time_col].min().date()
+    max_date = df[time_col].max().date()
+    
+    # Get Vietnamese holidays
+    holidays = get_vietnam_holidays(min_date - timedelta(days=365), max_date)
+    holiday_set = set(holidays)
+    
+    # Initialize column
+    df[days_since_holiday_col] = np.nan
+    
+    # Process each row
+    for idx, row in df.iterrows():
+        current_date = row[time_col].date()
+        
+        # Find last holiday before or on current_date
+        last_holiday = None
+        for holiday in sorted(holidays, reverse=True):
+            if holiday <= current_date:
+                last_holiday = holiday
+                break
+        
+        if last_holiday:
+            days_since = (current_date - last_holiday).days
+            df.at[idx, days_since_holiday_col] = days_since
+        else:
+            # If no holiday found, set to large value
+            df.at[idx, days_since_holiday_col] = 365
+    
+    # Fill any remaining NaN values
+    df[days_since_holiday_col] = df[days_since_holiday_col].fillna(365)
     
     return df
 
@@ -180,7 +445,7 @@ def main():
     # Override configuration for MVP test
     print("\n[2/8] Applying MVP test overrides...")
     config.set('data.years', [2023, 2024])
-    config.set('training.epochs', 8)  # Increased to 20 epochs for better learning
+    config.set('training.epochs', 20)  # Increased to 20 epochs for better learning
     config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
     
     # Set dedicated output directory
@@ -263,13 +528,58 @@ def main():
         dayofmonth_cos_col="dayofmonth_cos"
     )
     
-    # Feature engineering: Add Vietnamese holiday features
+    # Feature engineering: Add weekend features
+    print("  - Adding weekend features (is_weekend, day_of_week)...")
+    data = add_weekend_features(
+        data,
+        time_col=time_col,
+        is_weekend_col="is_weekend",
+        day_of_week_col="day_of_week"
+    )
+    
+    # Feature engineering: Add lunar calendar features
+    print("  - Adding lunar calendar features (lunar_month, lunar_day)...")
+    data = add_lunar_calendar_features(
+        data,
+        time_col=time_col,
+        lunar_month_col="lunar_month",
+        lunar_day_col="lunar_day"
+    )
+    
+    # Feature engineering: Add Vietnamese holiday features (with days_since_holiday)
     print("  - Adding Vietnamese holiday features...")
     data = add_holiday_features_vietnam(
         data,
         time_col=time_col,
         holiday_indicator_col="holiday_indicator",
-        days_until_holiday_col="days_until_next_holiday"
+        days_until_holiday_col="days_until_next_holiday",
+        days_since_holiday_col="days_since_holiday"
+    )
+    
+    # Daily aggregation: Group by date and category, sum QTY
+    # This ensures the model learns daily demand patterns, not individual transaction sizes
+    print("\n[5.5/8] Aggregating to daily totals by category...")
+    samples_before_agg = len(data)
+    data = aggregate_daily(
+        data,
+        time_col=time_col,
+        cat_col=cat_col,
+        target_col=data_config['target_col']
+    )
+    samples_after_agg = len(data)
+    print(f"  - Samples before aggregation: {samples_before_agg}")
+    print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
+    
+    # Feature engineering: Add rolling means and momentum features (after aggregation)
+    print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
+    data = add_rolling_and_momentum_features(
+        data,
+        target_col=data_config['target_col'],
+        time_col=time_col,
+        cat_col=cat_col,
+        rolling_7_col="rolling_mean_7d",
+        rolling_30_col="rolling_mean_30d",
+        momentum_col="momentum_3d_vs_14d"
     )
     
     # Encode categories
@@ -294,6 +604,17 @@ def main():
     print(f"  - Train samples: {len(train_data)}")
     print(f"  - Validation samples: {len(val_data)}")
     print(f"  - Test samples: {len(test_data)}")
+    
+    # Fit scaler on training data and apply to all splits
+    print("\n[6.5/8] Scaling QTY values...")
+    scaler = fit_scaler(train_data, target_col=data_config['target_col'])
+    print(f"  - Scaler fitted on training data:")
+    print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
+    
+    train_data = apply_scaling(train_data, scaler, target_col=data_config['target_col'])
+    val_data = apply_scaling(val_data, scaler, target_col=data_config['target_col'])
+    test_data = apply_scaling(test_data, scaler, target_col=data_config['target_col'])
+    print("  - Scaling applied to train, validation, and test sets")
     
     # Create windows using slicing_window_category
     print("\n[7/8] Creating sliding windows...")
@@ -447,6 +768,12 @@ def main():
     print(f"\nTraining completed at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Total training time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
     
+    # Save scaler for use in prediction
+    scaler_path = os.path.join(save_dir, 'scaler.pkl')
+    with open(scaler_path, 'wb') as f:
+        pickle.dump(scaler, f)
+    print(f"  - Scaler saved to: {scaler_path}")
+    
     # Save training metadata
     print("\n[9/9] Saving training metadata...")
     metadata = {
@@ -462,7 +789,13 @@ def main():
             'years': data_config['years'],
             'cat_col': data_config['cat_col'],
             'feature_cols': data_config['feature_cols'],
-            'target_col': data_config['target_col']
+            'target_col': data_config['target_col'],
+            'daily_aggregation': True,  # Flag indicating daily aggregation was used
+            'scaling': {
+                'method': 'StandardScaler',
+                'scaler_mean': float(scaler.mean_[0]),
+                'scaler_scale': float(scaler.scale_[0])
+            }
         },
         'window_config': dict(window_config),
         'training_results': {
@@ -490,6 +823,11 @@ def main():
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test samples: {len(y_true)}")
     
+    # CRITICAL: Inverse transform predictions and true values back to original scale
+    print("  - Inverse transforming predictions to original scale...")
+    y_true_original = inverse_transform_scaling(y_true, scaler, target_col=data_config['target_col'])
+    y_pred_original = inverse_transform_scaling(y_pred, scaler, target_col=data_config['target_col'])
+    
     # Generate prediction plot
     print("\n" + "=" * 80)
     print("GENERATING PLOTS")
@@ -498,10 +836,10 @@ def main():
     plot_path = os.path.join(output_dir, "test_predictions.png")
     
     # Use a reasonable number of samples for plotting
-    n_samples = min(100, len(y_true))
+    n_samples = min(100, len(y_true_original))
     plot_difference(
-        y_true[:n_samples],
-        y_pred[:n_samples],
+        y_true_original[:n_samples],
+        y_pred_original[:n_samples],
         save_path=plot_path,
         show=False
     )

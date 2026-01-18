@@ -9,7 +9,11 @@ from .preprocessing import (
     split_data,
     prepare_data,
     add_holiday_features,
-    add_temporal_features
+    add_temporal_features,
+    aggregate_daily,
+    fit_scaler,
+    apply_scaling,
+    inverse_transform_scaling
 )
 
 __all__ = [
@@ -22,6 +26,10 @@ __all__ = [
     'split_data',
     'prepare_data',
     'add_holiday_features',
-    'add_temporal_features'
+    'add_temporal_features',
+    'aggregate_daily',
+    'fit_scaler',
+    'apply_scaling',
+    'inverse_transform_scaling'
 ]
 
