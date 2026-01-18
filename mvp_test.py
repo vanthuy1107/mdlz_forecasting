@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import time
+import json
 from datetime import date, timedelta
 from typing import List
 
@@ -429,18 +430,54 @@ def main():
     print(f"Starting training at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     start_time = time.time()
     
+    # Convert config to dictionary for saving in checkpoint and metadata
+    config_dict = config._config.copy()
+    
     train_losses, val_losses = trainer.fit(
         train_loader=train_loader,
         val_loader=val_loader,
         epochs=training_config['epochs'],
         save_best=True,
-        verbose=True
+        verbose=True,
+        config=config_dict
     )
     
     end_time = time.time()
     training_time = end_time - start_time
     print(f"\nTraining completed at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Total training time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
+    
+    # Save training metadata
+    print("\n[9/9] Saving training metadata...")
+    metadata = {
+        'training_config': {
+            'epochs': training_config['epochs'],
+            'batch_size': training_config['batch_size'],
+            'learning_rate': training_config['learning_rate'],
+            'loss_function': training_config['loss'],
+            'device': training_config['device']
+        },
+        'model_config': dict(model_config),
+        'data_config': {
+            'years': data_config['years'],
+            'cat_col': data_config['cat_col'],
+            'feature_cols': data_config['feature_cols'],
+            'target_col': data_config['target_col']
+        },
+        'window_config': dict(window_config),
+        'training_results': {
+            'final_train_loss': train_losses[-1] if train_losses else None,
+            'final_val_loss': val_losses[-1] if val_losses else None,
+            'best_val_loss': trainer.best_val_loss,
+            'training_time_seconds': training_time
+        },
+        'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    metadata_path = os.path.join(save_dir, 'metadata.json')
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
+    print(f"  - Metadata saved to: {metadata_path}")
     
     # Evaluate on test set
     print("\n" + "=" * 80)

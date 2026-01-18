@@ -13,6 +13,8 @@ from torch.utils.data import DataLoader
 import os
 import pandas as pd
 import numpy as np
+import json
+import shutil
 from pathlib import Path
 from datetime import datetime, timedelta, date
 
@@ -29,6 +31,209 @@ from src.data.preprocessing import get_us_holidays
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference
+
+
+def scan_previous_runs(predictions_base_dir: Path):
+    """
+    Scan previous prediction runs to extract metrics for comparison.
+    
+    Args:
+        predictions_base_dir: Base directory containing run directories (e.g., outputs/mvp_test/predictions/)
+    
+    Returns:
+        List of dictionaries with run metadata and metrics, sorted by timestamp (oldest first)
+    """
+    previous_runs = []
+    
+    if not predictions_base_dir.exists():
+        return previous_runs
+    
+    # Scan for directories matching run_YYYYMMDD_HHMMSS pattern
+    for item in predictions_base_dir.iterdir():
+        if item.is_dir() and item.name.startswith('run_'):
+            run_id = item.name
+            summary_path = item / "summary.txt"
+            tf_csv_path = item / "predictions_teacher_forcing.csv"
+            rec_csv_path = item / "predictions_recursive.csv"
+            
+            run_data = {
+                'run_id': run_id,
+                'timestamp': None,
+                'loss_function': 'Unknown',
+                'tf_mae': None,
+                'tf_rmse': None,
+                'tf_mse': None,
+                'rec_mae': None,
+                'rec_rmse': None,
+                'rec_mse': None
+            }
+            
+            # Try to parse timestamp from run_id
+            try:
+                # run_YYYYMMDD_HHMMSS
+                timestamp_str = run_id.replace('run_', '')
+                run_data['timestamp'] = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
+            except ValueError:
+                pass
+            
+            # Try to extract metrics from CSV files
+            try:
+                if tf_csv_path.exists():
+                    tf_df = pd.read_csv(tf_csv_path)
+                    if 'abs_error' in tf_df.columns and 'error' in tf_df.columns:
+                        run_data['tf_mae'] = tf_df['abs_error'].mean()
+                        run_data['tf_mse'] = (tf_df['error'] ** 2).mean()
+                        run_data['tf_rmse'] = np.sqrt(run_data['tf_mse'])
+            except Exception as e:
+                pass
+            
+            try:
+                if rec_csv_path.exists():
+                    rec_df = pd.read_csv(rec_csv_path)
+                    if 'abs_error' in rec_df.columns and 'error' in rec_df.columns:
+                        # Filter out rows without actuals
+                        rec_df_with_actuals = rec_df[rec_df['actual'].notna()]
+                        if len(rec_df_with_actuals) > 0:
+                            run_data['rec_mae'] = rec_df_with_actuals['abs_error'].mean()
+                            run_data['rec_mse'] = ((rec_df_with_actuals['actual'] - rec_df_with_actuals['predicted']) ** 2).mean()
+                            run_data['rec_rmse'] = np.sqrt(run_data['rec_mse'])
+            except Exception as e:
+                pass
+            
+            # Try to extract loss function from metadata.json
+            metadata_path = item / "metadata.json"
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                        if 'training_config' in metadata and 'loss_function' in metadata['training_config']:
+                            run_data['loss_function'] = metadata['training_config']['loss_function']
+                except Exception:
+                    pass
+            
+            previous_runs.append(run_data)
+    
+    # Sort by timestamp (oldest first)
+    previous_runs.sort(key=lambda x: x['timestamp'] if x['timestamp'] else datetime.min)
+    
+    return previous_runs
+
+
+def generate_comparison_table(current_metrics: dict, previous_runs: list) -> str:
+    """
+    Generate a formatted comparison table for historical runs.
+    
+    Args:
+        current_metrics: Dictionary with current run metrics
+        previous_runs: List of previous run data dictionaries
+    
+    Returns:
+        Formatted string table
+    """
+    if not previous_runs:
+        return "No previous runs found for comparison.\n"
+    
+    table_lines = []
+    table_lines.append("\nHistorical Comparison Table")
+    table_lines.append("=" * 120)
+    table_lines.append(
+        f"{'Run ID':<18} {'Loss Function':<20} {'TF MAE':<12} {'TF RMSE':<12} {'TF MSE':<12} "
+        f"{'REC MAE':<12} {'REC RMSE':<12} {'REC MSE':<12}"
+    )
+    table_lines.append("-" * 120)
+    
+    # Add previous runs
+    for run in previous_runs:
+        run_id_short = run['run_id'].replace('run_', '')[:15] if run['run_id'] else 'Unknown'
+        loss_fn = run['loss_function'][:18] if run['loss_function'] else 'Unknown'
+        tf_mae = f"{run['tf_mae']:.4f}" if run['tf_mae'] is not None else "N/A"
+        tf_rmse = f"{run['tf_rmse']:.4f}" if run['tf_rmse'] is not None else "N/A"
+        tf_mse = f"{run['tf_mse']:.4f}" if run['tf_mse'] is not None else "N/A"
+        rec_mae = f"{run['rec_mae']:.4f}" if run['rec_mae'] is not None else "N/A"
+        rec_rmse = f"{run['rec_rmse']:.4f}" if run['rec_rmse'] is not None else "N/A"
+        rec_mse = f"{run['rec_mse']:.4f}" if run['rec_mse'] is not None else "N/A"
+        
+        table_lines.append(
+            f"{run_id_short:<18} {loss_fn:<20} {tf_mae:<12} {tf_rmse:<12} {tf_mse:<12} "
+            f"{rec_mae:<12} {rec_rmse:<12} {rec_mse:<12}"
+        )
+    
+    # Add current run with special marker
+    run_id_current = current_metrics.get('run_id', 'CURRENT')[:15]
+    loss_fn_current = current_metrics.get('loss_function', 'Unknown')[:18]
+    tf_mae_current = f"{current_metrics['tf_mae']:.4f}" if current_metrics.get('tf_mae') is not None else "N/A"
+    tf_rmse_current = f"{current_metrics['tf_rmse']:.4f}" if current_metrics.get('tf_rmse') is not None else "N/A"
+    tf_mse_current = f"{current_metrics['tf_mse']:.4f}" if current_metrics.get('tf_mse') is not None else "N/A"
+    rec_mae_current = f"{current_metrics['rec_mae']:.4f}" if current_metrics.get('rec_mae') is not None else "N/A"
+    rec_rmse_current = f"{current_metrics['rec_rmse']:.4f}" if current_metrics.get('rec_rmse') is not None else "N/A"
+    rec_mse_current = f"{current_metrics['rec_mse']:.4f}" if current_metrics.get('rec_mse') is not None else "N/A"
+    
+    table_lines.append("-" * 120)
+    table_lines.append(
+        f"{run_id_current + ' (*)':<18} {loss_fn_current:<20} {tf_mae_current:<12} {tf_rmse_current:<12} {tf_mse_current:<12} "
+        f"{rec_mae_current:<12} {rec_rmse_current:<12} {rec_mse_current:<12}"
+    )
+    table_lines.append("-" * 120)
+    table_lines.append("(*) Current run\n")
+    
+    return "\n".join(table_lines)
+
+
+def analyze_improvement(current_metrics: dict, previous_runs: list) -> str:
+    """
+    Analyze if current run is an improvement or regression compared to best previous run.
+    
+    Args:
+        current_metrics: Dictionary with current run metrics
+        previous_runs: List of previous run data dictionaries
+    
+    Returns:
+        Formatted string with improvement analysis
+    """
+    if not previous_runs:
+        return "No previous runs available for comparison.\n"
+    
+    # Find best previous run (lowest TF MAE)
+    best_run = None
+    best_tf_mae = float('inf')
+    
+    for run in previous_runs:
+        if run['tf_mae'] is not None and run['tf_mae'] < best_tf_mae:
+            best_tf_mae = run['tf_mae']
+            best_run = run
+    
+    if best_run is None or current_metrics.get('tf_mae') is None:
+        return "Unable to determine improvement (missing metrics).\n"
+    
+    current_tf_mae = current_metrics['tf_mae']
+    improvement_pct = ((best_tf_mae - current_tf_mae) / best_tf_mae) * 100
+    
+    analysis_lines = []
+    analysis_lines.append("Improvement Analysis")
+    analysis_lines.append("-" * 70)
+    analysis_lines.append(f"Best previous run: {best_run['run_id']}")
+    analysis_lines.append(f"  Best TF MAE: {best_tf_mae:.4f}")
+    analysis_lines.append(f"  Loss function: {best_run['loss_function']}")
+    analysis_lines.append(f"\nCurrent run TF MAE: {current_tf_mae:.4f}")
+    
+    if improvement_pct > 0:
+        analysis_lines.append(f"\n✓ IMPROVEMENT: {improvement_pct:.2f}% better (lower MAE)")
+    elif improvement_pct < 0:
+        analysis_lines.append(f"\n✗ REGRESSION: {abs(improvement_pct):.2f}% worse (higher MAE)")
+    else:
+        analysis_lines.append(f"\n= NO CHANGE: Same MAE as best previous run")
+    
+    # Compare RMSE and MSE too
+    if best_run['tf_rmse'] is not None and current_metrics.get('tf_rmse') is not None:
+        rmse_improvement = ((best_run['tf_rmse'] - current_metrics['tf_rmse']) / best_run['tf_rmse']) * 100
+        if rmse_improvement > 0:
+            analysis_lines.append(f"  RMSE: {rmse_improvement:.2f}% improvement")
+        else:
+            analysis_lines.append(f"  RMSE: {abs(rmse_improvement):.2f}% regression")
+    
+    analysis_lines.append("")
+    
+    return "\n".join(analysis_lines)
 
 
 def load_model_for_prediction(model_path: str, config):
@@ -642,8 +847,33 @@ def main():
     print("SAVING RESULTS")
     print("=" * 80)
     
-    output_dir = Path("outputs/mvp_test/predictions_jan2025")
+    # Create timestamped run directory
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    predictions_base_dir = Path("outputs/mvp_test/predictions")
+    predictions_base_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  - Using timestamped directory: {output_dir}")
+    
+    # Load metadata from model directory for comparison (before saving anything)
+    model_dir = Path("outputs/mvp_test/models")
+    metadata_source = model_dir / "metadata.json"
+    if metadata_source.exists():
+        with open(metadata_source, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        loss_function = metadata.get('training_config', {}).get('loss_function', 'Unknown')
+    else:
+        print(f"  - Warning: metadata.json not found in model directory")
+        loss_function = 'Unknown'
+        metadata = None
+    
+    # Scan previous runs BEFORE saving current run (to exclude current run from comparison)
+    print("  - Scanning previous runs for comparison...")
+    all_runs = scan_previous_runs(predictions_base_dir)
+    # Filter out current run if it somehow got included
+    current_run_id = f"run_{run_timestamp}"
+    previous_runs = [run for run in all_runs if run['run_id'] != current_run_id]
+    print(f"    Found {len(previous_runs)} previous run(s)")
     
     # Save Teacher Forcing results
     tf_output_path = output_dir / "predictions_teacher_forcing.csv"
@@ -663,11 +893,35 @@ def main():
     recursive_results.to_csv(rec_output_path, index=False)
     print(f"  - Recursive results: {rec_output_path}")
     
-    # Save comparison summary
-    summary_path = output_dir / "comparison_summary.txt"
-    with open(summary_path, 'w') as f:
+    # Copy metadata.json from model directory if it exists
+    if metadata_source.exists():
+        metadata_dest = output_dir / "metadata.json"
+        shutil.copy2(metadata_source, metadata_dest)
+        print(f"  - Copied metadata.json from model directory to: {metadata_dest}")
+    
+    # Prepare current run metrics
+    current_metrics = {
+        'run_id': f"run_{run_timestamp}",
+        'loss_function': loss_function,
+        'tf_mae': mae_tf,
+        'tf_rmse': rmse_tf,
+        'tf_mse': mse_tf,
+        'rec_mae': mae_rec if not np.isnan(mae_rec) else None,
+        'rec_rmse': rmse_rec if not np.isnan(rmse_rec) else None,
+        'rec_mse': mse_rec if not np.isnan(mse_rec) else None
+    }
+    
+    # Generate comparison table and improvement analysis
+    comparison_table = generate_comparison_table(current_metrics, previous_runs)
+    improvement_analysis = analyze_improvement(current_metrics, previous_runs)
+    
+    # Save comparison summary (renamed to summary.txt)
+    summary_path = output_dir / "summary.txt"
+    with open(summary_path, 'w', encoding='utf-8') as f:
         f.write("January 2025 Prediction Comparison: Teacher Forcing vs Recursive\n")
         f.write("=" * 70 + "\n\n")
+        f.write(f"Run ID: run_{run_timestamp}\n")
+        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Model: outputs/mvp_test/models/best_model.pth\n")
         f.write(f"Data: January 2025, DRY category only\n")
         f.write(f"Data source: dataset/test/data_2025.csv\n\n")
@@ -705,8 +959,12 @@ def main():
             f.write(f"  MSE increase:  {(mse_rec / mse_tf - 1) * 100:.2f}%\n")
             f.write(f"\n  Note: Recursive mode shows higher error due to error accumulation.\n")
             f.write(f"  This is expected and represents true production forecast performance.\n")
+        
+        # Add historical comparison
+        f.write("\n" + comparison_table)
+        f.write("\n" + improvement_analysis)
     
-    print(f"  - Comparison summary: {summary_path}")
+    print(f"  - Summary saved to: {summary_path}")
     
     # Generate plots
     if len(y_true_tf) > 0:

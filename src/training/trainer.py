@@ -145,7 +145,8 @@ class Trainer:
         val_loader: DataLoader,
         epochs: int,
         save_best: bool = True,
-        verbose: bool = True
+        verbose: bool = True,
+        config: Optional[Dict[str, Any]] = None
     ) -> Tuple[List[float], List[float]]:
         """
         Train the model.
@@ -156,6 +157,7 @@ class Trainer:
             epochs: Number of training epochs.
             save_best: Whether to save best model based on validation loss.
             verbose: Whether to print training progress.
+            config: Configuration dictionary to include in checkpoint (optional).
         
         Returns:
             Tuple of (train_losses, val_losses) lists.
@@ -188,7 +190,7 @@ class Trainer:
                 self.best_model_state = self.model.state_dict().copy()
                 
                 if self.save_dir:
-                    self.save_checkpoint(epoch, is_best=True)
+                    self.save_checkpoint(epoch, is_best=True, config=config)
             
             # Logging
             if verbose and self.current_epoch % self.log_interval == 0:
@@ -228,7 +230,8 @@ class Trainer:
         self,
         epoch: int,
         is_best: bool = False,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
     ):
         """
         Save model checkpoint.
@@ -237,6 +240,7 @@ class Trainer:
             epoch: Current epoch number.
             is_best: Whether this is the best model.
             filename: Custom filename (optional).
+            config: Configuration dictionary to include in checkpoint (optional).
         """
         if self.save_dir is None:
             return
@@ -257,6 +261,10 @@ class Trainer:
         
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        
+        # Include config if provided
+        if config is not None:
+            checkpoint['config'] = config
         
         filepath = self.save_dir / filename
         torch.save(checkpoint, filepath)
