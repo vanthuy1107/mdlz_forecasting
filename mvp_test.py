@@ -432,95 +432,78 @@ def add_days_since_holiday(
     return df
 
 
-def main():
-    """Main execution function for MVP test."""
+def train_single_model(data, config, category_filter=None, output_suffix=""):
+    """
+    Train a single model with optional category filtering.
+    
+    Args:
+        data: Full DataFrame with all data
+        config: Configuration object
+        category_filter: Optional category name to filter (None means all categories)
+        output_suffix: Suffix for output directories (e.g., "_DRY", "_all", etc.)
+    
+    Returns:
+        Dictionary with training results and metadata
+    """
+    print("\n" + "=" * 80)
+    if category_filter:
+        print(f"TRAINING MODEL FOR CATEGORY: {category_filter}")
+    else:
+        print("TRAINING MODEL FOR ALL CATEGORIES")
     print("=" * 80)
-    print("MVP TEST: MDLZ Warehouse Prediction System")
-    print("=" * 80)
     
-    # Load default configuration
-    print("\n[1/8] Loading configuration...")
-    config = load_config()
+    data_config = config.data
+    cat_col = data_config['cat_col']
+    time_col = data_config['time_col']
     
-    # Override configuration for MVP test
-    print("\n[2/8] Applying MVP test overrides...")
-    config.set('data.years', [2023, 2024])
-    config.set('training.epochs', 20)  # Increased to 20 epochs for better learning
-    config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
+    # Create a copy of data for this training run
+    filtered_data = data.copy()
     
-    # Set dedicated output directory
-    mvp_output_dir = "outputs/mvp_test"
-    mvp_models_dir = os.path.join(mvp_output_dir, "models")
+    # Apply category filter if specified
+    if category_filter:
+        print(f"\n[4/8] Filtering data to category: {category_filter}...")
+        samples_before = len(filtered_data)
+        
+        if cat_col not in filtered_data.columns:
+            raise ValueError(f"Category column '{cat_col}' not found in data. Available columns: {list(filtered_data.columns)}")
+        
+        filtered_data = filtered_data[filtered_data[cat_col] == category_filter].copy()
+        samples_after = len(filtered_data)
+        
+        print(f"  - Samples before filtering: {samples_before}")
+        print(f"  - Samples after filtering (CATEGORY == '{category_filter}'): {samples_after}")
+        
+        if samples_after == 0:
+            raise ValueError(f"No samples found with CATEGORY == '{category_filter}'. Please check your data.")
+    else:
+        print("\n[4/8] Using all categories (no filtering)...")
+        print(f"  - Total samples: {len(filtered_data)}")
+    
+    # Update output directories with suffix
+    base_output_dir = config.output.get('output_dir', 'outputs/mvp_test')
+    base_models_dir = config.output.get('model_dir', os.path.join(base_output_dir, 'models'))
+    
+    if output_suffix:
+        mvp_output_dir = f"{base_output_dir}{output_suffix}"
+        mvp_models_dir = os.path.join(mvp_output_dir, "models")
+    else:
+        mvp_output_dir = base_output_dir
+        mvp_models_dir = base_models_dir
+    
     os.makedirs(mvp_output_dir, exist_ok=True)
     os.makedirs(mvp_models_dir, exist_ok=True)
     config.set('output.output_dir', mvp_output_dir)
     config.set('output.model_dir', mvp_models_dir)
-    config.set('output.save_model', True)  # Ensure model saving is enabled
-    
-    print(f"  - Data years: {config.data['years']}")
-    print(f"  - Training epochs: {config.training['epochs']}")
-    print(f"  - Loss function: spike_aware_mse (forced)")
-    print(f"  - Output directory: {config.output['output_dir']}")
-    
-    # Load data
-    print("\n[3/8] Loading data...")
-    data_config = config.data
-    data_reader = DataReader(
-        data_dir=data_config['data_dir'],
-        file_pattern=data_config['file_pattern']
-    )
-    
-    # Load 2023 and 2024 data
-    try:
-        data = data_reader.load(years=data_config['years'])
-    except FileNotFoundError:
-        print("[WARNING] Combined year files not found, trying pattern-based loading...")
-        file_prefix = data_config.get('file_prefix', 'Outboundreports')
-        data = data_reader.load_by_file_pattern(
-            years=data_config['years'],
-            file_prefix=file_prefix
-        )
-    
-    print(f"  - Loaded {len(data)} samples before filtering")
-    
-    # Fix DtypeWarning: Cast columns (0, 4) to string/category to resolve mixed types
-    if len(data.columns) > 0:
-        col_0 = data.columns[0]
-        if col_0 in data.columns:
-            data[col_0] = data[col_0].astype(str)
-    if len(data.columns) > 4:
-        col_4 = data.columns[4]
-        if col_4 in data.columns:
-            data[col_4] = data[col_4].astype(str)
-    print("  - Fixed DtypeWarning by casting columns 0 and 4 to string")
-    
-    # Filter to DRY category only
-    print("\n[4/8] Filtering data to DRY category...")
-    cat_col = data_config['cat_col']
-    samples_before = len(data)
-    
-    if cat_col not in data.columns:
-        raise ValueError(f"Category column '{cat_col}' not found in data. Available columns: {list(data.columns)}")
-    
-    data = data[data[cat_col] == "DRY"].copy()
-    samples_after = len(data)
-    
-    print(f"  - Samples before filtering: {samples_before}")
-    print(f"  - Samples after filtering (CATEGORY == 'DRY'): {samples_after}")
-    
-    if samples_after == 0:
-        raise ValueError("No samples found with CATEGORY == 'DRY'. Please check your data.")
     
     # Ensure time column is datetime and sort by time
-    time_col = data_config['time_col']
-    if not pd.api.types.is_datetime64_any_dtype(data[time_col]):
-        data[time_col] = pd.to_datetime(data[time_col])
-    data = data.sort_values(time_col).reset_index(drop=True)
+    if not pd.api.types.is_datetime64_any_dtype(filtered_data[time_col]):
+        filtered_data[time_col] = pd.to_datetime(filtered_data[time_col])
+    filtered_data = filtered_data.sort_values(time_col).reset_index(drop=True)
     
     # Feature engineering: Add temporal features
     print("\n[5/8] Adding temporal features...")
-    data = add_temporal_features(
-        data,
+    filtered_data = add_temporal_features(
+        filtered_data,
         time_col=time_col,
         month_sin_col="month_sin",
         month_cos_col="month_cos",
@@ -530,8 +513,8 @@ def main():
     
     # Feature engineering: Add weekend features
     print("  - Adding weekend features (is_weekend, day_of_week)...")
-    data = add_weekend_features(
-        data,
+    filtered_data = add_weekend_features(
+        filtered_data,
         time_col=time_col,
         is_weekend_col="is_weekend",
         day_of_week_col="day_of_week"
@@ -539,8 +522,8 @@ def main():
     
     # Feature engineering: Add lunar calendar features
     print("  - Adding lunar calendar features (lunar_month, lunar_day)...")
-    data = add_lunar_calendar_features(
-        data,
+    filtered_data = add_lunar_calendar_features(
+        filtered_data,
         time_col=time_col,
         lunar_month_col="lunar_month",
         lunar_day_col="lunar_day"
@@ -548,8 +531,8 @@ def main():
     
     # Feature engineering: Add Vietnamese holiday features (with days_since_holiday)
     print("  - Adding Vietnamese holiday features...")
-    data = add_holiday_features_vietnam(
-        data,
+    filtered_data = add_holiday_features_vietnam(
+        filtered_data,
         time_col=time_col,
         holiday_indicator_col="holiday_indicator",
         days_until_holiday_col="days_until_next_holiday",
@@ -559,21 +542,21 @@ def main():
     # Daily aggregation: Group by date and category, sum QTY
     # This ensures the model learns daily demand patterns, not individual transaction sizes
     print("\n[5.5/8] Aggregating to daily totals by category...")
-    samples_before_agg = len(data)
-    data = aggregate_daily(
-        data,
+    samples_before_agg = len(filtered_data)
+    filtered_data = aggregate_daily(
+        filtered_data,
         time_col=time_col,
         cat_col=cat_col,
         target_col=data_config['target_col']
     )
-    samples_after_agg = len(data)
+    samples_after_agg = len(filtered_data)
     print(f"  - Samples before aggregation: {samples_before_agg}")
     print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
     
     # Feature engineering: Add rolling means and momentum features (after aggregation)
     print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
-    data = add_rolling_and_momentum_features(
-        data,
+    filtered_data = add_rolling_and_momentum_features(
+        filtered_data,
         target_col=data_config['target_col'],
         time_col=time_col,
         cat_col=cat_col,
@@ -584,7 +567,7 @@ def main():
     
     # Encode categories
     print("  - Encoding categories...")
-    data, cat2id, num_categories = encode_categories(data, cat_col)
+    filtered_data, cat2id, num_categories = encode_categories(filtered_data, cat_col)
     cat_id_col = data_config['cat_id_col']
     
     # Update config with num_categories for model
@@ -595,7 +578,7 @@ def main():
     # Split data
     print("\n[6/8] Splitting data...")
     train_data, val_data, test_data = split_data(
-        data,
+        filtered_data,
         train_size=data_config['train_size'],
         val_size=data_config['val_size'],
         test_size=data_config['test_size'],
@@ -788,6 +771,7 @@ def main():
         'data_config': {
             'years': data_config['years'],
             'cat_col': data_config['cat_col'],
+            'category_filter': category_filter,  # Record which category was used (None means all)
             'feature_cols': data_config['feature_cols'],
             'target_col': data_config['target_col'],
             'daily_aggregation': True,  # Flag indicating daily aggregation was used
@@ -845,19 +829,155 @@ def main():
     )
     print(f"  - Prediction plot saved to: {plot_path}")
     
+    result = {
+        'output_dir': output_dir,
+        'model_dir': save_dir,
+        'plot_path': plot_path,
+        'training_time': training_time,
+        'test_loss': test_loss,
+        'category_filter': category_filter
+    }
+    
+    return result
+
+
+def main():
+    """Main execution function for MVP test."""
+    print("=" * 80)
+    print("MVP TEST: MDLZ Warehouse Prediction System")
+    print("=" * 80)
+    
+    # Load default configuration
+    print("\n[1/8] Loading configuration...")
+    config = load_config()
+    
+    # Override configuration for MVP test
+    print("\n[2/8] Applying MVP test overrides...")
+    config.set('data.years', [2023, 2024])
+    config.set('training.epochs', 20)  # Increased to 20 epochs for better learning
+    config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
+    
+    # Set base output directory
+    mvp_output_dir = "outputs/mvp_test"
+    mvp_models_dir = os.path.join(mvp_output_dir, "models")
+    os.makedirs(mvp_output_dir, exist_ok=True)
+    os.makedirs(mvp_models_dir, exist_ok=True)
+    config.set('output.output_dir', mvp_output_dir)
+    config.set('output.model_dir', mvp_models_dir)
+    config.set('output.save_model', True)  # Ensure model saving is enabled
+    
+    # Get category mode from config
+    data_config = config.data
+    category_mode = data_config.get('category_mode', 'single')  # Default to 'single' for backward compatibility
+    category_filter = data_config.get('category_filter', 'DRY')  # Default to 'DRY' for backward compatibility
+    
+    print(f"  - Data years: {config.data['years']}")
+    print(f"  - Training epochs: {config.training['epochs']}")
+    print(f"  - Loss function: spike_aware_mse (forced)")
+    print(f"  - Category mode: {category_mode}")
+    if category_mode == 'single':
+        print(f"  - Category filter: {category_filter}")
+    print(f"  - Base output directory: {mvp_output_dir}")
+    
+    # Load data
+    print("\n[3/8] Loading data...")
+    data_reader = DataReader(
+        data_dir=data_config['data_dir'],
+        file_pattern=data_config['file_pattern']
+    )
+    
+    # Load 2023 and 2024 data
+    try:
+        data = data_reader.load(years=data_config['years'])
+    except FileNotFoundError:
+        print("[WARNING] Combined year files not found, trying pattern-based loading...")
+        file_prefix = data_config.get('file_prefix', 'Outboundreports')
+        data = data_reader.load_by_file_pattern(
+            years=data_config['years'],
+            file_prefix=file_prefix
+        )
+    
+    print(f"  - Loaded {len(data)} samples before filtering")
+    
+    # Fix DtypeWarning: Cast columns (0, 4) to string/category to resolve mixed types
+    if len(data.columns) > 0:
+        col_0 = data.columns[0]
+        if col_0 in data.columns:
+            data[col_0] = data[col_0].astype(str)
+    if len(data.columns) > 4:
+        col_4 = data.columns[4]
+        if col_4 in data.columns:
+            data[col_4] = data[col_4].astype(str)
+    print("  - Fixed DtypeWarning by casting columns 0 and 4 to string")
+    
+    # Get available categories
+    cat_col = data_config['cat_col']
+    if cat_col not in data.columns:
+        raise ValueError(f"Category column '{cat_col}' not found in data. Available columns: {list(data.columns)}")
+    
+    available_categories = sorted(data[cat_col].unique().tolist())
+    print(f"  - Available categories in data: {available_categories}")
+    
+    # Determine training tasks based on category_mode
+    training_tasks = []
+    
+    if category_mode == 'all':
+        # Train on all categories
+        training_tasks.append((None, "_all"))
+    elif category_mode == 'single':
+        # Train on single category
+        if category_filter not in available_categories:
+            raise ValueError(f"Category '{category_filter}' not found in data. Available categories: {available_categories}")
+        training_tasks.append((category_filter, f"_{category_filter}"))
+    elif category_mode == 'both':
+        # Train on all categories first
+        training_tasks.append((None, "_all"))
+        # Then train on each category separately
+        for cat in available_categories:
+            training_tasks.append((cat, f"_{cat}"))
+    else:
+        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all', 'single', or 'both'")
+    
+    print(f"\n[SUMMARY] Will train {len(training_tasks)} model(s):")
+    for i, (cat, suffix) in enumerate(training_tasks, 1):
+        cat_name = cat if cat else "ALL CATEGORIES"
+        print(f"  {i}. {cat_name} -> suffix: {suffix}")
+    
+    # Execute training tasks
+    results = []
+    for task_idx, (category_filter, suffix) in enumerate(training_tasks, 1):
+        print(f"\n{'=' * 80}")
+        print(f"TASK {task_idx}/{len(training_tasks)}")
+        print(f"{'=' * 80}")
+        
+        try:
+            result = train_single_model(data, config, category_filter=category_filter, output_suffix=suffix)
+            results.append(result)
+            
+            print(f"\n✓ Task {task_idx} completed successfully")
+            print(f"  - Results saved to: {result['output_dir']}")
+            print(f"  - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
+        except Exception as e:
+            print(f"\n✗ Task {task_idx} failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            if category_mode == 'single':
+                # If single mode fails, we should raise
+                raise
+    
+    # Print final summary
     print("\n" + "=" * 80)
     print("MVP TEST COMPLETE!")
     print("=" * 80)
-    print(f"Results saved to: {output_dir}")
-    print(f"  - Test predictions plot: {plot_path}")
-    if save_dir:
-        model_checkpoint_path = os.path.join(save_dir, 'best_model.pth')
-        print(f"  - Model checkpoint: {model_checkpoint_path}")
-        if os.path.exists(model_checkpoint_path):
-            print(f"    ✓ Model successfully saved")
-        else:
-            print(f"    ⚠ Warning: Model checkpoint not found at expected path")
-    print(f"  - Total training time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
+    print(f"Total tasks completed: {len(results)}/{len(training_tasks)}")
+    for i, result in enumerate(results, 1):
+        cat_name = result['category_filter'] if result['category_filter'] else "ALL CATEGORIES"
+        print(f"\n{i}. {cat_name}:")
+        print(f"   - Output directory: {result['output_dir']}")
+        print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
+        print(f"   - Test predictions plot: {result['plot_path']}")
+        print(f"   - Test loss: {result['test_loss']:.4f}")
+        print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
     print("=" * 80)
 
 

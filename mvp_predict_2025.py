@@ -32,73 +32,10 @@ from src.data import (
     apply_scaling,
     inverse_transform_scaling
 )
-from src.data.preprocessing import get_us_holidays
+from src.data.preprocessing import get_us_holidays, get_vietnam_holidays
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference
-
-
-def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
-    """
-    Get list of Vietnamese holidays between start_date and end_date.
-    
-    Includes:
-    - Lunar New Year (Tet): 2023 (Jan 20-26), 2024 (Feb 8-14), 2025 (Jan 27 - Feb 2)
-    - Mid-Autumn Festival: 2023 (Sep 29), 2024 (Sep 17), 2025 (Oct 6)
-    - Independence Day (Sep 2)
-    - Labor Day (Apr 30 - May 1)
-    
-    Args:
-        start_date: Start date for holiday range.
-        end_date: End date for holiday range.
-    
-    Returns:
-        List of holiday dates.
-    """
-    holidays = []
-    
-    # Define Vietnamese holidays by year
-    vietnam_holidays = {
-        2023: {
-            'tet': [date(2023, 1, 20), date(2023, 1, 21), date(2023, 1, 22), 
-                   date(2023, 1, 23), date(2023, 1, 24), date(2023, 1, 25), date(2023, 1, 26)],
-            'mid_autumn': [date(2023, 9, 29)],
-            'independence': [date(2023, 9, 2)],
-            'labor': [date(2023, 4, 30), date(2023, 5, 1)]
-        },
-        2024: {
-            'tet': [date(2024, 2, 8), date(2024, 2, 9), date(2024, 2, 10),
-                   date(2024, 2, 11), date(2024, 2, 12), date(2024, 2, 13), date(2024, 2, 14)],
-            'mid_autumn': [date(2024, 9, 17)],
-            'independence': [date(2024, 9, 2)],
-            'labor': [date(2024, 4, 30), date(2024, 5, 1)]
-        },
-        2025: {
-            'tet': [date(2025, 1, 27), date(2025, 1, 28), date(2025, 1, 29),
-                   date(2025, 1, 30), date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2)],
-            'mid_autumn': [date(2025, 10, 6)],
-            'independence': [date(2025, 9, 2)],
-            'labor': [date(2025, 4, 30), date(2025, 5, 1)]
-        }
-    }
-    
-    # Collect all holidays in the date range
-    current = start_date
-    while current <= end_date:
-        year = current.year
-        if year in vietnam_holidays:
-            year_holidays = vietnam_holidays[year]
-            holidays.extend(year_holidays['tet'])
-            holidays.extend(year_holidays['mid_autumn'])
-            holidays.extend(year_holidays['independence'])
-            holidays.extend(year_holidays['labor'])
-        current = date(year + 1, 1, 1)
-    
-    # Filter to date range and remove duplicates
-    holidays = [h for h in holidays if start_date <= h <= end_date]
-    holidays = sorted(list(set(holidays)))
-    
-    return holidays
 
 
 def solar_to_lunar_date(solar_date: date) -> tuple:
@@ -249,6 +186,60 @@ def add_rolling_and_momentum_features(
     for col in [rolling_7_col, rolling_30_col, momentum_col]:
         df[col] = df[col].ffill().bfill().fillna(0)
     return df
+
+
+def calculate_accuracy(y_true, y_pred):
+    """
+    Calculate %accuracy based on the formula:
+    
+    Total_Error = Σ |y_pred - y_true|
+    Total_Actual = Σ y_true
+    
+    If |Total_Error| > Total_Actual:
+        ⟹ Accuracy = 0%
+    
+    If |Total_Error| ≤ Total_Actual:
+        ⟹ %Bias = (|Total_Error| / Total_Actual) × 100%
+        ⟹ Accuracy = 100% - %Bias
+    
+    Args:
+        y_true: Array of true values
+        y_pred: Array of predicted values
+    
+    Returns:
+        Accuracy as a percentage (0-100)
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    
+    # Filter out NaN values
+    valid_mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+    if valid_mask.sum() == 0:
+        return np.nan
+    
+    y_true_valid = y_true[valid_mask]
+    y_pred_valid = y_pred[valid_mask]
+    
+    # Calculate Total_Error (sum of absolute errors)
+    total_error = np.sum(np.abs(y_pred_valid - y_true_valid))
+    
+    # Calculate Total_Actual (sum of actual values)
+    total_actual = np.sum(np.abs(y_true_valid))
+    
+    # Handle edge cases
+    if total_actual == 0:
+        # If there are no actual values, return NaN
+        return np.nan
+    
+    # Check if |Total_Error| > Total_Actual
+    if total_error > total_actual:
+        return 0.0
+    
+    # Calculate %Bias and Accuracy
+    percent_bias = (total_error / total_actual) * 100.0
+    accuracy = 100.0 - percent_bias
+    
+    return accuracy
 
 
 def scan_previous_runs(predictions_base_dir: Path):
@@ -456,12 +447,43 @@ def analyze_improvement(current_metrics: dict, previous_runs: list) -> str:
 
 def load_model_for_prediction(model_path: str, config):
     """Load trained model from checkpoint and scaler."""
-    # Build model with same architecture
-    model_config = config.model
-    num_categories = model_config.get('num_categories')
-    if num_categories is None:
-        raise ValueError("num_categories must be set in config")
+    # Load metadata first to get the num_categories used during training
+    model_dir = Path(model_path).parent
+    metadata_path = model_dir / "metadata.json"
     
+    # Get num_categories from metadata if available, otherwise from config
+    num_categories = None
+    if metadata_path.exists():
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        # Get num_categories from model_config in metadata
+        if 'model_config' in metadata and 'num_categories' in metadata['model_config']:
+            num_categories = metadata['model_config']['num_categories']
+    
+    # Fallback to config if metadata doesn't have it
+    if num_categories is None:
+        model_config = config.model
+        num_categories = model_config.get('num_categories')
+    
+    if num_categories is None:
+        raise ValueError("num_categories must be found in model metadata or config")
+    
+    # Get category_filter from training metadata to know which category(ies) model was trained on
+    trained_category_filter = None
+    if metadata_path.exists():
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        if 'data_config' in metadata and 'category_filter' in metadata['data_config']:
+            trained_category_filter = metadata['data_config']['category_filter']
+    
+    print(f"  - Loading model with num_categories={num_categories} (from trained model)")
+    if trained_category_filter:
+        print(f"  - Model was trained on category: {trained_category_filter}")
+    else:
+        print(f"  - Model was trained on: all categories (num_categories={num_categories})")
+    
+    # Build model with same architecture (use num_categories from trained model)
+    model_config = config.model
     model = RNNWithCategory(
         num_categories=num_categories,
         cat_emb_dim=model_config['cat_emb_dim'],
@@ -481,8 +503,7 @@ def load_model_for_prediction(model_path: str, config):
     print(f"  - Model loaded from: {model_path}")
     print(f"  - Best validation loss: {checkpoint.get('best_val_loss', 'N/A'):.4f}")
     
-    # Load scaler from same directory as model
-    model_dir = Path(model_path).parent
+    # Load scaler from same directory as model (model_dir already defined above)
     scaler_path = model_dir / "scaler.pkl"
     scaler = None
     if scaler_path.exists():
@@ -493,7 +514,7 @@ def load_model_for_prediction(model_path: str, config):
     else:
         print(f"  [WARNING] Scaler not found at {scaler_path}, predictions will be in scaled space")
     
-    return model, device, scaler
+    return model, device, scaler, trained_category_filter
 
 
 def prepare_prediction_data(data, config, cat2id, scaler=None):
@@ -912,18 +933,39 @@ def main():
             file_prefix=data_config.get('file_prefix', 'Outboundreports')
         )
     
-    # Filter to DRY and encode to get category mapping
-    ref_data = ref_data[ref_data[data_config['cat_col']] == "DRY"].copy()
-    _, cat2id, num_categories = encode_categories(ref_data, data_config['cat_col'])
-    config.set('model.num_categories', num_categories)
+    # Get category mode from config
+    inference_config = config.inference
+    category_mode = inference_config.get('category_mode', 'single')  # Default to 'single' for backward compatibility
+    category_filter = inference_config.get('category_filter', 'DRY')  # Default to 'DRY' for backward compatibility
     
-    cat_id = cat2id.get("DRY")
-    if cat_id is None:
-        raise ValueError("DRY category not found in training data")
+    print(f"  - Category mode: {category_mode}")
+    if category_mode == 'single':
+        print(f"  - Category filter: {category_filter}")
+    
+    # Encode all categories from reference data (don't filter yet - need full mapping)
+    # Note: We encode here to get cat2id mapping, but num_categories for model will come from trained model metadata
+    _, cat2id, num_categories_in_data = encode_categories(ref_data, data_config['cat_col'])
+    # Don't overwrite config.model.num_categories here - it will be loaded from trained model metadata
     
     print(f"  - Category mapping: {cat2id}")
-    print(f"  - Number of categories: {num_categories}")
-    print(f"  - DRY category ID: {cat_id}")
+    print(f"  - Number of categories in data: {num_categories_in_data}")
+    
+    # Determine which categories to predict
+    # Filter out NaN values and convert to string to handle mixed types
+    unique_ref_cats = ref_data[data_config['cat_col']].dropna().astype(str).unique().tolist()
+    available_categories = sorted([cat for cat in unique_ref_cats if cat.lower() != 'nan'])
+    print(f"  - Available categories in reference data: {available_categories}")
+    
+    if category_mode == 'single':
+        if category_filter not in available_categories:
+            raise ValueError(f"Category '{category_filter}' not found in reference data. Available: {available_categories}")
+        categories_to_predict = [category_filter]
+    elif category_mode == 'all':
+        categories_to_predict = available_categories
+    else:
+        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all' or 'single'")
+    
+    print(f"  - Categories to predict: {categories_to_predict}")
     
     # Load 2025 data
     print("\n[4/7] Loading 2025 data...")
@@ -944,16 +986,12 @@ def main():
             data_2025 = pd.read_csv(data_2025_path, encoding='cp1252', low_memory=False)
     print(f"  - Loaded {len(data_2025)} samples")
     
-    # Filter to DRY category and full year 2025
+    # Filter to full year 2025 (keep all categories for now - will filter per category later)
     print("\n[5/7] Filtering data...")
     cat_col = data_config['cat_col']
     time_col = data_config['time_col']
     
-    # Filter to DRY category
-    data_2025 = data_2025[data_2025[cat_col] == "DRY"].copy()
-    print(f"  - After DRY filter: {len(data_2025)} samples")
-    
-    # Filter to full year 2025
+    # Filter to full year 2025 first
     if not pd.api.types.is_datetime64_any_dtype(data_2025[time_col]):
         data_2025[time_col] = pd.to_datetime(data_2025[time_col])
     
@@ -963,19 +1001,75 @@ def main():
     ].copy()
     print(f"  - After full year 2025 filter: {len(data_2025)} samples")
     
-    if len(data_2025) == 0:
-        raise ValueError("No data found for full year 2025 with DRY category")
+    # Check which categories are available in 2025 data
+    # Filter out NaN values and convert to string to handle mixed types
+    unique_cats = data_2025[cat_col].dropna().astype(str).unique().tolist()
+    available_2025_categories = sorted([cat for cat in unique_cats if cat.lower() != 'nan'])
+    print(f"  - Available categories in 2025 data: {available_2025_categories}")
+    
+    # Filter categories_to_predict to only those available in both reference and 2025 data
+    categories_to_predict = [cat for cat in categories_to_predict if cat in available_2025_categories]
+    
+    if len(categories_to_predict) == 0:
+        raise ValueError(f"No matching categories found between reference data and 2025 data. "
+                        f"Reference: {available_categories}, 2025: {available_2025_categories}")
+    
+    print(f"  - Final categories to predict: {categories_to_predict}")
     
     # Load trained model (to get scaler before data preparation)
+    # Determine model directory based on inference category_mode
+    # Match the directory structure from mvp_test.py (outputs/mvp_test{suffix}/models/)
     print("\n[6/7] Loading trained model...")
-    model_path = Path("outputs/mvp_test/models/best_model.pth")
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"Model not found at {model_path}. "
-            f"Please run mvp_test.py first to train the model."
-        )
+    base_output_dir = "outputs/mvp_test"
     
-    model, device, scaler = load_model_for_prediction(str(model_path), config)
+    # Determine suffix based on inference category_mode
+    # Note: This should match what mvp_test.py uses when training
+    # For "all": uses suffix "_all" -> outputs/mvp_test_all/models/
+    # For "single": uses suffix "_{category}" -> outputs/mvp_test_{category}/models/
+    # Default (no suffix): outputs/mvp_test/models/
+    
+    if category_mode == 'all':
+        model_suffix = "_all"
+    elif category_mode == 'single' and category_filter:
+        model_suffix = f"_{category_filter}"
+    else:
+        model_suffix = ""  # Default: outputs/mvp_test/models/
+    
+    model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
+    model_path = model_dir_path / "best_model.pth"
+    
+    # If model not found at expected path, try default location as fallback
+    if not model_path.exists():
+        default_model_path = Path(f"{base_output_dir}/models/best_model.pth")
+        if default_model_path.exists():
+            print(f"  [WARNING] Model not found at expected path: {model_path}")
+            print(f"  [INFO] Using default model path: {default_model_path}")
+            model_path = default_model_path
+            model_dir_path = default_model_path.parent  # Update model_dir_path to match
+        else:
+            raise FileNotFoundError(
+                f"Model not found at {model_path} or {default_model_path}. "
+                f"Please run mvp_test.py first to train the model with "
+                f"data.category_mode='{category_mode}'."
+            )
+    else:
+        print(f"  - Using model from: {model_path}")
+    
+    model, device, scaler, trained_category_filter = load_model_for_prediction(str(model_path), config)
+    
+    # IMPORTANT: Filter predictions to only categories the model was trained on
+    # If model was trained on a single category, we can only predict that category
+    if trained_category_filter is not None:
+        print(f"\n[INFO] Model was trained on category '{trained_category_filter}' only.")
+        print(f"       Filtering predictions to match training data (ignoring inference.category_mode).")
+        categories_to_predict = [trained_category_filter] if trained_category_filter in categories_to_predict else []
+        if len(categories_to_predict) == 0:
+            raise ValueError(
+                f"Model was trained on category '{trained_category_filter}', "
+                f"but this category is not available in the prediction data. "
+                f"Available categories: {available_2025_categories}"
+            )
+        print(f"  - Updated categories to predict: {categories_to_predict}")
     
     # Prepare data with scaler if available (matching training pipeline)
     print("\n[6.5/7] Preparing data with scaling...")
@@ -992,8 +1086,23 @@ def main():
     print(f"  - Historical window: {len(historical_window)} samples")
     print(f"  - Date range: {historical_window[data_config['time_col']].min()} to {historical_window[data_config['time_col']].max()}")
     
-    # Recreate windows after scaling
+    # Recreate windows after scaling (all categories or filtered by categories_to_predict)
     X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(data_2025_prepared, config)
+    
+    # Filter predictions to selected categories if needed
+    # Filter if: single category mode OR model was trained on single category
+    if category_mode == 'single' or (trained_category_filter is not None and len(categories_to_predict) == 1):
+        # Filter windows to selected category only
+        cat_id = cat2id.get(categories_to_predict[0])
+        if cat_id is None:
+            raise ValueError(f"Category '{categories_to_predict[0]}' not found in category mapping")
+        mask = cat_pred == cat_id
+        X_pred = X_pred[mask]
+        y_actual = y_actual[mask]
+        cat_pred = cat_pred[mask]
+        pred_dates = pred_dates[mask] if hasattr(pred_dates, '__getitem__') else [pred_dates[i] for i in range(len(pred_dates)) if mask[i]]
+        print(f"  - Filtered prediction windows to category '{categories_to_predict[0]}' (category ID: {cat_id})")
+        print(f"  - Prediction windows after filtering: {len(X_pred)}")
     
     # ========================================================================
     # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual 2025 values
@@ -1030,18 +1139,31 @@ def main():
         print("  - Inverse transforming scaled predictions to original scale...")
         y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
         y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+        # Clip negative predictions to 0 (QTY cannot be negative)
+        negative_count = np.sum(y_pred_tf_unscaled < 0)
+        if negative_count > 0:
+            print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+            y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
     else:
         y_true_tf_unscaled = y_true_tf.flatten()
         y_pred_tf_unscaled = y_pred_tf.flatten()
+        # Clip negative predictions to 0 even if no scaler
+        negative_count = np.sum(y_pred_tf_unscaled < 0)
+        if negative_count > 0:
+            print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+            y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
     
     # Calculate metrics on unscaled values
     mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
     mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
     rmse_tf = np.sqrt(mse_tf)
+    accuracy_tf = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
     
     print(f"\n  - MSE:  {mse_tf:.4f}")
     print(f"  - MAE:  {mae_tf:.4f}")
     print(f"  - RMSE: {rmse_tf:.4f}")
+    if not np.isnan(accuracy_tf):
+        print(f"  - Accuracy: {accuracy_tf:.2f}%")
     
     # ========================================================================
     # MODE 2: RECURSIVE (Production Forecast) - Uses model's own predictions
@@ -1052,7 +1174,24 @@ def main():
     print("Using model's own predictions as inputs for future dates.")
     print("This mode simulates true production forecasting.")
     
-    # Filter historical window to same category
+    # For recursive mode, process each category separately
+    # Get category ID for the category being processed
+    if category_mode == 'single':
+        cat_id = cat2id.get(categories_to_predict[0])
+        if cat_id is None:
+            raise ValueError(f"Category '{categories_to_predict[0]}' not found in category mapping")
+        process_categories = [categories_to_predict[0]]
+    else:
+        # For "all" mode, process each category separately in recursive mode
+        process_categories = categories_to_predict
+    
+    # Filter historical window to same category(s) - process first category for now
+    # (For "all" mode with multiple categories, we'd need to loop here, but let's keep it simple for now)
+    current_category = process_categories[0] if len(process_categories) > 0 else categories_to_predict[0]
+    cat_id = cat2id.get(current_category)
+    if cat_id is None:
+        raise ValueError(f"Category '{current_category}' not found in category mapping")
+    
     historical_window_filtered = historical_window[
         historical_window[data_config['cat_id_col']] == cat_id
     ].copy()
@@ -1107,8 +1246,18 @@ def main():
         recursive_results['predicted_unscaled'] = inverse_transform_scaling(
             recursive_results['predicted'].values, scaler
         )
+        # Clip negative predictions to 0 (QTY cannot be negative)
+        negative_count = np.sum(recursive_results['predicted_unscaled'] < 0)
+        if negative_count > 0:
+            print(f"  [WARNING] Clipping {negative_count} negative recursive predictions to 0 (QTY must be >= 0)")
+            recursive_results['predicted_unscaled'] = np.maximum(recursive_results['predicted_unscaled'], 0.0)
     else:
         recursive_results['predicted_unscaled'] = recursive_results['predicted']
+        # Clip negative predictions to 0 even if no scaler
+        negative_count = np.sum(recursive_results['predicted_unscaled'] < 0)
+        if negative_count > 0:
+            print(f"  [WARNING] Clipping {negative_count} negative recursive predictions to 0 (QTY must be >= 0)")
+            recursive_results['predicted_unscaled'] = np.maximum(recursive_results['predicted_unscaled'], 0.0)
     
     # Calculate metrics (only for dates with actuals, using unscaled values)
     recursive_results_with_actuals = recursive_results[recursive_results['actual'].notna()].copy()
@@ -1117,16 +1266,22 @@ def main():
         mse_rec = np.mean((recursive_results_with_actuals['actual'] - recursive_results_with_actuals['predicted_unscaled']) ** 2)
         mae_rec = np.mean(np.abs(recursive_results_with_actuals['actual'] - recursive_results_with_actuals['predicted_unscaled']))
         rmse_rec = np.sqrt(mse_rec)
+        accuracy_rec = calculate_accuracy(
+            recursive_results_with_actuals['actual'].values,
+            recursive_results_with_actuals['predicted_unscaled'].values
+        )
         
         print(f"\n  - Predictions made: {len(recursive_preds)} samples")
         print(f"  - Samples with actuals: {len(recursive_results_with_actuals)}")
         print(f"  - MSE:  {mse_rec:.4f}")
         print(f"  - MAE:  {mae_rec:.4f}")
         print(f"  - RMSE: {rmse_rec:.4f}")
+        if not np.isnan(accuracy_rec):
+            print(f"  - Accuracy: {accuracy_rec:.2f}%")
     else:
         print(f"\n  - Predictions made: {len(recursive_preds)} samples")
         print(f"  - No actual values available for comparison")
-        mse_rec = mae_rec = rmse_rec = np.nan
+        mse_rec = mae_rec = rmse_rec = accuracy_rec = np.nan
     
     # ========================================================================
     # COMPARISON AND SAVING
@@ -1159,11 +1314,16 @@ def main():
         print(f"{'MAE':<15} {mae_tf:<20.4f} {mae_rec:<20.4f} {mae_rec - mae_tf:<20.4f}")
         print(f"{'RMSE':<15} {rmse_tf:<20.4f} {rmse_rec:<20.4f} {rmse_rec - rmse_tf:<20.4f}")
         print(f"{'MSE':<15} {mse_tf:<20.4f} {mse_rec:<20.4f} {mse_rec - mse_tf:<20.4f}")
+        if not np.isnan(accuracy_tf) and not np.isnan(accuracy_rec):
+            accuracy_diff = accuracy_rec - accuracy_tf
+            print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {accuracy_rec:<19.2f}% {accuracy_diff:<19.2f}%")
         print(f"\nError increase: {(mae_rec / mae_tf - 1) * 100:.2f}% (MAE)")
         print(f"Error increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}% (RMSE)")
     else:
         print(f"{'MAE':<15} {mae_tf:<20.4f} {'N/A':<20}")
         print(f"{'RMSE':<15} {rmse_tf:<20.4f} {'N/A':<20}")
+        if not np.isnan(accuracy_tf):
+            print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {'N/A':<20}")
     
     # Save results
     print("\n" + "=" * 80)
@@ -1171,15 +1331,27 @@ def main():
     print("=" * 80)
     
     # Create timestamped run directory
+    # Use the same suffix logic as model loading to match directory structure
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    predictions_base_dir = Path("outputs/mvp_test/predictions")
+    base_output_dir = "outputs/mvp_test"
+    
+    # Determine suffix based on inference category_mode (same logic as model loading)
+    if category_mode == 'all':
+        model_suffix = "_all"
+    elif category_mode == 'single' and category_filter:
+        model_suffix = f"_{category_filter}"
+    else:
+        model_suffix = ""  # Default: outputs/mvp_test/predictions/
+    
+    predictions_base_dir = Path(f"{base_output_dir}{model_suffix}/predictions")
     predictions_base_dir.mkdir(parents=True, exist_ok=True)
     output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"  - Using timestamped directory: {output_dir}")
     
     # Load metadata from model directory for comparison (before saving anything)
-    model_dir = Path("outputs/mvp_test/models")
+    # Use the same model_dir_path that was determined during model loading
+    model_dir = model_dir_path  # Use the model_dir_path from earlier (line 1038)
     metadata_source = model_dir / "metadata.json"
     if metadata_source.exists():
         with open(metadata_source, 'r', encoding='utf-8') as f:
@@ -1251,8 +1423,9 @@ def main():
         f.write("=" * 70 + "\n\n")
         f.write(f"Run ID: run_{run_timestamp}\n")
         f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Model: outputs/mvp_test/models/best_model.pth\n")
-        f.write(f"Data: Full year 2025, DRY category only\n")
+        f.write(f"Model: {model_path}\n")
+        category_info = f"Full year 2025, {'ALL categories' if category_mode == 'all' else f'{categories_to_predict[0]} category only'}\n"
+        f.write(f"Data: {category_info}")
         f.write(f"Data source: dataset/test/data_2025.csv\n\n")
         
         f.write("Teacher Forcing Mode (Test Evaluation):\n")
@@ -1263,7 +1436,10 @@ def main():
         f.write(f"  Date range: {pred_dates.min()} to {pred_dates.max()}\n")
         f.write(f"  MSE:  {mse_tf:.4f}\n")
         f.write(f"  MAE:  {mae_tf:.4f}\n")
-        f.write(f"  RMSE: {rmse_tf:.4f}\n\n")
+        f.write(f"  RMSE: {rmse_tf:.4f}\n")
+        if not np.isnan(accuracy_tf):
+            f.write(f"  Accuracy: {accuracy_tf:.2f}%\n")
+        f.write("\n")
         
         f.write("Recursive Mode (Production Forecast):\n")
         f.write("-" * 70 + "\n")
@@ -1274,11 +1450,15 @@ def main():
         if not np.isnan(mae_rec):
             f.write(f"  MSE:  {mse_rec:.4f}\n")
             f.write(f"  MAE:  {mae_rec:.4f}\n")
-            f.write(f"  RMSE: {rmse_rec:.4f}\n\n")
+            f.write(f"  RMSE: {rmse_rec:.4f}\n")
+            if not np.isnan(accuracy_rec):
+                f.write(f"  Accuracy: {accuracy_rec:.2f}%\n")
+            f.write("\n")
         else:
             f.write(f"  MSE:  N/A (no actual values available)\n")
             f.write(f"  MAE:  N/A (no actual values available)\n")
-            f.write(f"  RMSE: N/A (no actual values available)\n\n")
+            f.write(f"  RMSE: N/A (no actual values available)\n")
+            f.write(f"  Accuracy: N/A (no actual values available)\n\n")
         
         if not np.isnan(mae_rec):
             f.write("Comparison:\n")

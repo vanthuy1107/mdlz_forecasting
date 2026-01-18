@@ -6,7 +6,13 @@ data:
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
   years: [2023, 2024]
   
-  # Feature columns
+  # Category selection for MVP test
+  # Options:
+  #   "all" - Train on all categories combined
+  #   "single" - Train on one specific category (specify in category_filter)
+  #   "both" - Train on all categories AND each category separately
+  category_mode: "single"  # "all", "single", or "both"
+  category_filter: "DRY"  # Only used when category_mode is "single". Specify category name or null for all
   feature_cols:
     - "month_sin"
     - "month_cos"
@@ -94,4 +100,11 @@ output:
 inference:
   n_samples_for_plot: 100
   save_predictions: true
+  
+  # Category selection for prediction
+  # Options:
+  #   "all" - Predict for all categories
+  #   "single" - Predict for one specific category (specify in category_filter)
+  category_mode: "single"  # "all" or "single"
+  category_filter: "DRY"  # Only used when category_mode is "single". Specify category name
 

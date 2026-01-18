@@ -217,6 +217,69 @@ def get_us_holidays(start_date: date, end_date: date) -> List[date]:
     return holidays
 
 
+def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
+    """
+    Get list of Vietnamese holidays between start_date and end_date.
+    
+    Includes:
+    - Lunar New Year (Tet): 2023 (Jan 20-26), 2024 (Feb 8-14), 2025 (Jan 27 - Feb 2)
+    - Mid-Autumn Festival: 2023 (Sep 29), 2024 (Sep 17), 2025 (Oct 6)
+    - Independence Day (Sep 2)
+    - Labor Day (Apr 30 - May 1)
+    
+    Args:
+        start_date: Start date for holiday range.
+        end_date: End date for holiday range.
+    
+    Returns:
+        List of holiday dates.
+    """
+    holidays = []
+    
+    # Define Vietnamese holidays by year
+    vietnam_holidays = {
+        2023: {
+            'tet': [date(2023, 1, 20), date(2023, 1, 21), date(2023, 1, 22), 
+                   date(2023, 1, 23), date(2023, 1, 24), date(2023, 1, 25), date(2023, 1, 26)],
+            'mid_autumn': [date(2023, 9, 29)],
+            'independence': [date(2023, 9, 2)],
+            'labor': [date(2023, 4, 30), date(2023, 5, 1)]
+        },
+        2024: {
+            'tet': [date(2024, 2, 8), date(2024, 2, 9), date(2024, 2, 10),
+                   date(2024, 2, 11), date(2024, 2, 12), date(2024, 2, 13), date(2024, 2, 14)],
+            'mid_autumn': [date(2024, 9, 17)],
+            'independence': [date(2024, 9, 2)],
+            'labor': [date(2024, 4, 30), date(2024, 5, 1)]
+        },
+        2025: {
+            'tet': [date(2025, 1, 27), date(2025, 1, 28), date(2025, 1, 29),
+                   date(2025, 1, 30), date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2)],
+            'mid_autumn': [date(2025, 10, 6)],
+            'independence': [date(2025, 9, 2)],
+            'labor': [date(2025, 4, 30), date(2025, 5, 1)]
+        }
+    }
+    
+    # Collect all holidays in the date range
+    current = start_date
+    while current <= end_date:
+        year = current.year
+        if year in vietnam_holidays:
+            year_holidays = vietnam_holidays[year]
+            holidays.extend(year_holidays['tet'])
+            holidays.extend(year_holidays['mid_autumn'])
+            holidays.extend(year_holidays['independence'])
+            holidays.extend(year_holidays['labor'])
+        current = date(year + 1, 1, 1)
+    
+    # Filter to date range and remove duplicates
+    holidays = [h for h in holidays if start_date <= h <= end_date]
+    holidays = sorted(list(set(holidays)))
+    
+    return holidays
+
+
 def add_holiday_features(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
