@@ -41,4 +41,9 @@ logs/
 .env
 .env.local
 
+# Credentials and keys
+key.json
+*.json.key
+*.key
+
 
