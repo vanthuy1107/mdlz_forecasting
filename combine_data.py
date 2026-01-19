@@ -186,12 +186,12 @@ def combine_yearly_data(
         else:
             print(f"  [WARNING] Time column '{time_col}' not found. Available columns: {list(year_combined.columns)}")
         
-        # Filter: keep only rows where CATEGORY == "TEST"
+        # Filter: keep only rows where CATEGORY != "TEST" and CATEGORY != "OFFBOM"
         if 'CATEGORY' in year_combined.columns:
             rows_before = len(year_combined)
-            year_combined = year_combined[year_combined['CATEGORY'] != "TEST"]
+            year_combined = year_combined[(year_combined['CATEGORY'] != "TEST") & (year_combined['CATEGORY'] != "OFFBOM")]
             rows_after = len(year_combined)
-            print(f"  Filtered by CATEGORY != 'TEST': {rows_before:,} -> {rows_after:,} rows")
+            print(f"  Filtered by CATEGORY != 'TEST' and CATEGORY != 'OFFBOM': {rows_before:,} -> {rows_after:,} rows")
         else:
             print(f"  [WARNING] CATEGORY column not found. Cannot filter by CATEGORY.")
         
@@ -386,6 +386,88 @@ def create_monthly_summary(saved_files: Dict[int, Path], time_col: str = "ACTUAL
     return summary
 
 
+def create_pivot_summary(saved_files: Dict[int, Path], time_col: str = "ACTUALSHIPDATE", value_col: str = "Total CBM") -> pd.DataFrame:
+    """
+    Create pivot-style monthly summary with months as rows and years as columns.
+    
+    Args:
+        saved_files: Dictionary mapping year to file path.
+        time_col: Name of time column.
+        value_col: Column to aggregate (default: "Total QTY", can be "Total CBM").
+    
+    Returns:
+        DataFrame with columns: Month, 2023, 2024, 2025, ... (years as columns)
+    """
+    print(f"\n[Pivot Summary] Creating pivot summary from {len(saved_files)} year file(s)...")
+    all_data = []
+    
+    for year in sorted(saved_files.keys()):
+        filepath = saved_files[year]
+        df = pd.read_csv(filepath)
+        all_data.append(df)
+    
+    if not all_data:
+        print("[Pivot Summary] No data to summarize")
+        return pd.DataFrame()
+    
+    combined_df = pd.concat(all_data, ignore_index=True)
+    print(f"[Pivot Summary] Total rows: {len(combined_df):,}")
+    
+    # Convert time column to datetime if needed
+    if time_col in combined_df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(combined_df[time_col]):
+            combined_df[time_col] = pd.to_datetime(combined_df[time_col])
+        
+        # Extract Year and Month
+        combined_df['Year'] = combined_df[time_col].dt.year
+        combined_df['Month'] = combined_df[time_col].dt.month
+    else:
+        print(f"[Pivot Summary] WARNING: Time column '{time_col}' not found. Using year from filename.")
+        if 'Year' not in combined_df.columns:
+            print("[Pivot Summary] ERROR: Cannot create pivot summary without time column")
+            return pd.DataFrame()
+    
+    # Check if value column exists
+    if value_col not in combined_df.columns:
+        print(f"[Pivot Summary] WARNING: Column '{value_col}' not found. Available columns: {list(combined_df.columns)}")
+        # Try alternative
+        if value_col == "Total QTY" and "Total CBM" in combined_df.columns:
+            value_col = "Total CBM"
+            print(f"[Pivot Summary] Using '{value_col}' instead")
+        else:
+            return pd.DataFrame()
+    
+    # Group by Year and Month (aggregating across all categories)
+    print(f"[Pivot Summary] Grouping by Year and Month, aggregating '{value_col}'")
+    monthly_agg = combined_df.groupby(['Year', 'Month'], as_index=False)[value_col].sum()
+    
+    # Create pivot table: Month as rows, Year as columns
+    print(f"[Pivot Summary] Creating pivot table...")
+    pivot_df = monthly_agg.pivot_table(
+        index='Month',
+        columns='Year',
+        values=value_col,
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    # Ensure all months 1-12 are present
+    all_months = pd.DataFrame({'Month': range(1, 13)})
+    pivot_df = all_months.merge(pivot_df, on='Month', how='left').fillna(0)
+    
+    # Rename columns: keep 'Month' as is, convert year columns to strings
+    pivot_df.columns = [str(col) if col != 'Month' else col for col in pivot_df.columns]
+    
+    # Sort by Month
+    pivot_df = pivot_df.sort_values('Month').reset_index(drop=True)
+    
+    # Ensure integer Month values
+    pivot_df['Month'] = pivot_df['Month'].astype(int)
+    
+    print(f"[Pivot Summary] Created pivot summary with {len(pivot_df)} rows (months 1-12)")
+    return pivot_df
+
+
 def retry_with_backoff(func, max_retries: int = 5, initial_delay: float = 1.0, max_delay: float = 60.0, backoff_factor: float = 2.0):
     """
     Retry a function with exponential backoff, specifically handling Google Sheets API quota errors.
@@ -547,7 +629,7 @@ def upload_to_google_sheets(
         # Batch updates in chunks to avoid quota issues
         # Google Sheets API limit is typically 10000 cells per request
         # Using smaller batches to be safe and add delays between requests
-        batch_size = 500  # Conservative batch size
+        batch_size = 1000  # Conservative batch size
         if len(values) > batch_size:
             # Upload in batches
             for i in range(0, len(values), batch_size):
@@ -699,6 +781,18 @@ def main():
                     credentials_path=args.credentials,
                     data_df=monthly_summary  # Pass the summary DataFrame directly
                 )
+            
+            # Create and upload pivot summary to Summary sheet
+            pivot_summary = create_pivot_summary(saved_files, time_col=args.time_col, value_col="Total CBM")
+            if not pivot_summary.empty:
+                upload_to_google_sheets(
+                    saved_files={},  # Not used for summary
+                    spreadsheet_id=args.spreadsheet_id,
+                    sheet_name="Summary",
+                    credentials_path=args.credentials,
+                    data_df=pivot_summary  # Pass the pivot summary DataFrame directly
+                )
+            
             print("\n✓ Google Sheets upload completed!")
         else:
             print("\n[Skip] Google Sheets upload skipped (--no-upload flag set)")
