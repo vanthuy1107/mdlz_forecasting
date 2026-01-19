@@ -588,8 +588,17 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"  - Validation samples: {len(val_data)}")
     print(f"  - Test samples: {len(test_data)}")
     
+    # DEBUG: Check test data QTY values BEFORE scaling
+    test_qty_before_scaling = test_data[data_config['target_col']].values
+    print(f"\n  - DEBUG: Test data QTY BEFORE scaling:")
+    print(f"    - Min: {test_qty_before_scaling.min():.4f}")
+    print(f"    - Max: {test_qty_before_scaling.max():.4f}")
+    print(f"    - Mean: {test_qty_before_scaling.mean():.4f}")
+    print(f"    - Non-zero count: {np.sum(test_qty_before_scaling != 0)} / {len(test_qty_before_scaling)}")
+    print(f"    - Zero count: {np.sum(test_qty_before_scaling == 0)} / {len(test_qty_before_scaling)}")
+    
     # Fit scaler on training data and apply to all splits
-    print("\n[6.5/8] Scaling QTY values...")
+    print(f"\n[6.5/8] Scaling {data_config['target_col']} values...")
     scaler = fit_scaler(train_data, target_col=data_config['target_col'])
     print(f"  - Scaler fitted on training data:")
     print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
@@ -800,6 +809,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print("\n" + "=" * 80)
     print("EVALUATION")
     print("=" * 80)
+    
     test_loss, y_true, y_pred = trainer.evaluate(
         test_loader,
         return_predictions=True
@@ -807,10 +817,27 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test samples: {len(y_true)}")
     
+    # DEBUG: Check y_true values (should be in scaled space)
+    print("  - DEBUG: Checking y_true values (scaled):")
+    print(f"    - Min: {y_true.min():.4f}")
+    print(f"    - Max: {y_true.max():.4f}")
+    print(f"    - Mean: {y_true.mean():.4f}")
+    print(f"    - Non-zero count: {np.sum(y_true != 0)} / {len(y_true)}")
+    print(f"    - Zero count: {np.sum(y_true == 0)} / {len(y_true)}")
+    
     # CRITICAL: Inverse transform predictions and true values back to original scale
     print("  - Inverse transforming predictions to original scale...")
     y_true_original = inverse_transform_scaling(y_true, scaler, target_col=data_config['target_col'])
     y_pred_original = inverse_transform_scaling(y_pred, scaler, target_col=data_config['target_col'])
+    
+    # DEBUG: Check y_true_original values (should be in original scale)
+    print("  - DEBUG: Checking y_true_original values (after inverse transform):")
+    print(f"    - Min: {y_true_original.min():.4f}")
+    print(f"    - Max: {y_true_original.max():.4f}")
+    print(f"    - Mean: {y_true_original.mean():.4f}")
+    print(f"    - Non-zero count: {np.sum(y_true_original != 0)} / {len(y_true_original)}")
+    print(f"    - Zero count: {np.sum(y_true_original == 0)} / {len(y_true_original)}")
+    print(f"    - First 10 values: {y_true_original[:10]}")
     
     # Generate prediction plot
     print("\n" + "=" * 80)
@@ -821,9 +848,19 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     
     # Use a reasonable number of samples for plotting
     n_samples = min(100, len(y_true_original))
+    
+    # DEBUG: Verify values being passed to plot_difference
+    y_true_plot = y_true_original[:n_samples]
+    y_pred_plot = y_pred_original[:n_samples]
+    print(f"  - DEBUG: Values being passed to plot_difference:")
+    print(f"    - y_true_plot shape: {y_true_plot.shape}")
+    print(f"    - y_true_plot min: {y_true_plot.min():.4f}, max: {y_true_plot.max():.4f}")
+    print(f"    - y_true_plot first 5: {y_true_plot[:5]}")
+    print(f"    - y_true_plot non-zero: {np.sum(y_true_plot != 0)} / {len(y_true_plot)}")
+    
     plot_difference(
-        y_true_original[:n_samples],
-        y_pred_original[:n_samples],
+        y_true_plot,
+        y_pred_plot,
         save_path=plot_path,
         show=False
     )

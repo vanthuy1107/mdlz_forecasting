@@ -24,6 +24,12 @@ def plot_difference(
     
     y_true = np.asarray(y_true).flatten()
     y_pred = np.asarray(y_pred).flatten()
+    
+    # DEBUG: Check values before plotting
+    if len(y_true) > 0:
+        print(f"  [plot_difference DEBUG] y_true: min={y_true.min():.4f}, max={y_true.max():.4f}, mean={y_true.mean():.4f}, zeros={np.sum(y_true == 0)}/{len(y_true)}")
+        print(f"  [plot_difference DEBUG] y_true first 5: {y_true[:5] if len(y_true) >= 5 else y_true}")
+    
     times = range(len(y_true))
     
     plt.plot(times, y_true, label="True Outbound", marker="o")

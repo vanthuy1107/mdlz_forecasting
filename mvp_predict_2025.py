@@ -618,7 +618,7 @@ def prepare_prediction_data(data, config, cat2id, scaler=None):
     
     # Apply scaling if scaler is provided (matches training pipeline)
     if scaler is not None:
-        print("  - Applying scaling to QTY values...")
+        print(f"  - Applying scaling to {data_config['target_col']} values...")
         data = apply_scaling(data, scaler, target_col=data_config['target_col'])
     
     return data
@@ -1110,7 +1110,7 @@ def main():
     print("\n" + "=" * 80)
     print("MODE 1: TEACHER FORCING (Test Evaluation)")
     print("=" * 80)
-    print("Using actual ground truth QTY values from 2025 as features.")
+    print(f"Using actual ground truth {data_config['target_col']} values from 2025 as features.")
     print("This mode is suitable for model evaluation but not production forecasting.")
     
     # Create dataset and dataloader
@@ -1430,7 +1430,7 @@ def main():
         
         f.write("Teacher Forcing Mode (Test Evaluation):\n")
         f.write("-" * 70 + "\n")
-        f.write(f"  Description: Uses actual ground truth QTY values from 2025 as features\n")
+        f.write(f"  Description: Uses actual ground truth {data_config['target_col']} values from 2025 as features\n")
         f.write(f"  Suitable for: Model evaluation on test set\n")
         f.write(f"  Number of predictions: {len(y_pred_tf)}\n")
         f.write(f"  Date range: {pred_dates.min()} to {pred_dates.max()}\n")

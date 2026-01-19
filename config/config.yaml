@@ -28,10 +28,10 @@ data:
     - "rolling_mean_7d"
     - "rolling_mean_30d"
     - "momentum_3d_vs_14d"
-    - "QTY"
+    - "CUBE_OUT"
   
   # Target column
-  target_col: "QTY"
+  target_col: "CUBE_OUT"
   
   # Category column
   cat_col: "CATEGORY"

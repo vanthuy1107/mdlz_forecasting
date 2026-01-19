@@ -164,20 +164,61 @@ def combine_yearly_data(
         year_combined = pd.concat(year_data, ignore_index=True)
         print(f"  Combined: {len(year_combined)} total rows")
         
-        # Ensure time column is datetime and sort if requested
+        # Ensure time column is datetime first (for date extraction)
         if time_col in year_combined.columns:
             if not pd.api.types.is_datetime64_any_dtype(year_combined[time_col]):
                 print(f"  Converting {time_col} to datetime...")
                 year_combined[time_col] = pd.to_datetime(year_combined[time_col])
             
-            if sort_by_time:
-                print(f"  Sorting by {time_col}...")
-                year_combined = year_combined.sort_values(time_col).reset_index(drop=True)
+            # Convert datetime to date only (remove time component)
+            print(f"  Converting {time_col} to date (removing time component)...")
+            year_combined[time_col] = year_combined[time_col].dt.date
             
             date_range = f"{year_combined[time_col].min()} to {year_combined[time_col].max()}"
             print(f"  Date range: {date_range}")
         else:
             print(f"  [WARNING] Time column '{time_col}' not found. Available columns: {list(year_combined.columns)}")
+        
+        # Group by columns: ACTUALSHIPDATE, TYPENAME, WHSEID, CATEGORY
+        groupby_cols = [time_col, 'TYPENAME', 'WHSEID', 'CATEGORY']
+        available_cols = [col for col in groupby_cols if col in year_combined.columns]
+        
+        if len(available_cols) < len(groupby_cols):
+            missing = set(groupby_cols) - set(available_cols)
+            print(f"  [WARNING] Some groupby columns not found: {missing}")
+            print(f"  Available columns: {list(year_combined.columns)}")
+        
+        if available_cols:
+            # Identify source columns to aggregate: QTY -> Total QTY, CUBE_OUT -> Total CBM
+            agg_dict = {}
+            if 'QTY' in year_combined.columns:
+                agg_dict['Total QTY'] = 'QTY'
+            if 'CUBE_OUT' in year_combined.columns:
+                agg_dict['Total CBM'] = 'CUBE_OUT'
+            
+            if agg_dict:
+                print(f"  Grouping by: {available_cols}")
+                print(f"  Aggregating (sum): {list(agg_dict.values())} -> {list(agg_dict.keys())}")
+                print(f"  Rows before grouping: {len(year_combined):,}")
+                
+                # Group and aggregate - sum the source columns
+                source_cols = list(agg_dict.values())
+                grouped = year_combined.groupby(available_cols, as_index=False)[source_cols].sum()
+                
+                # Rename aggregated columns to output names
+                rename_dict = {old_name: new_name for new_name, old_name in agg_dict.items()}
+                grouped = grouped.rename(columns=rename_dict)
+                
+                year_combined = grouped
+                
+                print(f"  Rows after grouping: {len(year_combined):,}")
+                
+                # Sort by time if requested
+                if sort_by_time and time_col in available_cols:
+                    print(f"  Sorting by {time_col}...")
+                    year_combined = year_combined.sort_values(time_col).reset_index(drop=True)
+            else:
+                print(f"  [WARNING] No aggregation columns found (QTY, CUBE_OUT). Available columns: {list(year_combined.columns)}")
         
         # Save combined file for this year
         output_file = output_dir / output_pattern.format(year=year)
