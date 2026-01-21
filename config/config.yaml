@@ -28,10 +28,10 @@ data:
     - "rolling_mean_7d"
     - "rolling_mean_30d"
     - "momentum_3d_vs_14d"
-    - "CUBE_OUT"
+    - "Total CBM"
   
   # Target column
-  target_col: "CUBE_OUT"
+  target_col: "Total CBM"
   
   # Category column
   cat_col: "CATEGORY"
