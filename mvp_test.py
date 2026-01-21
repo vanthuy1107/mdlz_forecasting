@@ -1294,8 +1294,24 @@ def main():
         # Then train on each category separately
         for cat in available_categories:
             training_tasks.append((cat, f"_{cat}"))
+    elif category_mode == 'each':
+        # Train on each category separately (using major_categories if specified)
+        major_categories = data_config.get("major_categories", [])
+        if major_categories:
+            # Only train on major categories
+            categories_to_train = [cat for cat in major_categories if cat in available_categories]
+            print(f"  - 'each' mode: Training on major_categories only: {categories_to_train}")
+            if not categories_to_train:
+                raise ValueError(f"None of the specified major_categories {major_categories} found in data. Available: {available_categories}")
+        else:
+            # Train on all available categories
+            categories_to_train = available_categories
+            print(f"  - 'each' mode: Training on all available categories: {categories_to_train}")
+        
+        for cat in categories_to_train:
+            training_tasks.append((cat, f"_{cat}"))
     else:
-        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all', 'single', or 'both'")
+        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all', 'single', 'both', or 'each'")
     
     print(f"\n[SUMMARY] Will train {len(training_tasks)} model(s):")
     for i, (cat, suffix) in enumerate(training_tasks, 1):

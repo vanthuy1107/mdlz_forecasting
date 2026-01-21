@@ -37,8 +37,7 @@ from src.data import (
 from src.data.preprocessing import get_us_holidays, get_vietnam_holidays
 from src.models import RNNWithCategory
 from src.training import Trainer
-from src.utils import plot_difference
-from combine_data import upload_to_google_sheets, GSPREAD_AVAILABLE
+from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE
 
 
 ###############################################################################
@@ -1319,8 +1318,18 @@ def main():
         categories_to_predict = [category_filter]
     elif category_mode == 'all':
         categories_to_predict = available_categories
+    elif category_mode == 'each':
+        # For 'each' mode, determine which categories have trained models
+        # Use major_categories if specified, otherwise use all available categories
+        major_categories = data_config.get("major_categories", [])
+        if major_categories:
+            categories_to_predict = [cat for cat in major_categories if cat in available_categories]
+            print(f"  - 'each' mode: Will process major_categories: {categories_to_predict}")
+        else:
+            categories_to_predict = available_categories
+            print(f"  - 'each' mode: Will process all available categories: {categories_to_predict}")
     else:
-        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all' or 'single'")
+        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all', 'single', or 'each'")
     
     print(f"  - Categories to predict: {categories_to_predict}")
     
@@ -1350,7 +1359,13 @@ def main():
     
     # Filter to configured prediction window first
     if not pd.api.types.is_datetime64_any_dtype(data_2025[time_col]):
-        data_2025[time_col] = pd.to_datetime(data_2025[time_col])
+        # The prediction CSV can contain dates like "13/01/2025" (dd/mm/YYYY).
+        # Use a robust parser that supports mixed formats and day-first dates.
+        data_2025[time_col] = pd.to_datetime(
+            data_2025[time_col],
+            format="mixed",
+            dayfirst=True,
+        )
     
     data_2025 = data_2025[
         (data_2025[time_col] >= prediction_filter_start)
@@ -1376,6 +1391,22 @@ def main():
     
     print(f"  - Final categories to predict: {categories_to_predict}")
     
+    # For "each" mode, we need to check that models exist for all categories
+    if category_mode == 'each':
+        print("\n[6/7] Checking for trained models for each category...")
+        base_output_dir = "outputs/mvp_test"
+        missing_models = []
+        for cat in categories_to_predict:
+            model_path = Path(f"{base_output_dir}_{cat}/models/best_model.pth")
+            if not model_path.exists():
+                missing_models.append(cat)
+        if missing_models:
+            raise FileNotFoundError(
+                f"Models not found for categories: {missing_models}. "
+                f"Please run mvp_test.py with category_mode='each' first to train all category models."
+            )
+        print(f"  - All required models found for {len(categories_to_predict)} category(ies)")
+    
     # Load trained model (to get scaler before data preparation)
     # Determine model directory based on inference category_mode
     # Match the directory structure from mvp_test.py (outputs/mvp_test{suffix}/models/)
@@ -1386,6 +1417,7 @@ def main():
     # Note: This should match what mvp_test.py uses when training
     # For "all": uses suffix "_all" -> outputs/mvp_test_all/models/
     # For "single": uses suffix "_{category}" -> outputs/mvp_test_{category}/models/
+    # For "each": will be handled per-category in the loop below
     # Default (no suffix): outputs/mvp_test/models/
     
     if category_mode == 'all':
@@ -1395,31 +1427,86 @@ def main():
     else:
         model_suffix = ""  # Default: outputs/mvp_test/models/
     
-    model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
-    model_path = model_dir_path / "best_model.pth"
-    
-    # If model not found at expected path, try default location as fallback
-    if not model_path.exists():
-        default_model_path = Path(f"{base_output_dir}/models/best_model.pth")
-        if default_model_path.exists():
-            print(f"  [WARNING] Model not found at expected path: {model_path}")
-            print(f"  [INFO] Using default model path: {default_model_path}")
-            model_path = default_model_path
-            model_dir_path = default_model_path.parent  # Update model_dir_path to match
-        else:
-            raise FileNotFoundError(
-                f"Model not found at {model_path} or {default_model_path}. "
-                f"Please run mvp_test.py first to train the model with "
-                f"data.category_mode='{category_mode}'."
-            )
+    # For "each" mode, we'll process each category separately with its own model
+    # Store all results to combine later
+    if category_mode == 'each':
+        all_category_results = []
+        
+        for cat_idx, current_cat in enumerate(categories_to_predict, 1):
+            print(f"\n{'=' * 80}")
+            print(f"PROCESSING CATEGORY {cat_idx}/{len(categories_to_predict)}: {current_cat}")
+            print(f"{'=' * 80}")
+            
+            # Load this category's model
+            model_suffix = f"_{current_cat}"
+            model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
+            model_path = model_dir_path / "best_model.pth"
+            
+            if not model_path.exists():
+                raise FileNotFoundError(
+                    f"Model not found for category '{current_cat}' at {model_path}. "
+                    f"Please run mvp_test.py with category_mode='each' first."
+                )
+            
+            print(f"  - Using model from: {model_path}")
+            model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
+            
+            # Filter data to this category only
+            cat_to_process = [current_cat]
+            
+            # Process this category (will be continued below with rest of prediction logic)
+            # For now, we'll handle it in the main flow by temporarily setting variables
+            all_category_results.append({
+                'category': current_cat,
+                'model': model,
+                'device': device,
+                'scaler': scaler,
+                'trained_category_filter': trained_category_filter,
+                'trained_cat2id': trained_cat2id
+            })
+        
+        # For "each" mode, we need to load a model for Teacher Forcing evaluation
+        # We'll use the first category's model as a placeholder, but process all categories
+        # The recursive section will handle loading each category's model separately
+        print(f"\n[NOTE] 'each' mode: Will process all {len(categories_to_predict)} categories.")
+        print(f"       Teacher Forcing will use first category's model as placeholder.")
+        print(f"       Recursive mode will load each category's model separately.")
+        current_cat = categories_to_predict[0]
+        model_suffix = f"_{current_cat}"
+        model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
+        model_path = model_dir_path / "best_model.pth"
+        print(f"  - Using model from: {model_path} (for Teacher Forcing placeholder)")
+        model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
+        # Keep all categories_to_predict - don't filter to just first category
+        # categories_to_predict remains as is with all categories
     else:
-        print(f"  - Using model from: {model_path}")
-    
-    model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
+        # Normal flow for "all" or "single" mode
+        model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
+        model_path = model_dir_path / "best_model.pth"
+        
+        # If model not found at expected path, try default location as fallback
+        if not model_path.exists():
+            default_model_path = Path(f"{base_output_dir}/models/best_model.pth")
+            if default_model_path.exists():
+                print(f"  [WARNING] Model not found at expected path: {model_path}")
+                print(f"  [INFO] Using default model path: {default_model_path}")
+                model_path = default_model_path
+                model_dir_path = default_model_path.parent  # Update model_dir_path to match
+            else:
+                raise FileNotFoundError(
+                    f"Model not found at {model_path} or {default_model_path}. "
+                    f"Please run mvp_test.py first to train the model with "
+                    f"data.category_mode='{category_mode}'."
+                )
+        else:
+            print(f"  - Using model from: {model_path}")
+        
+        model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
     
     # IMPORTANT: Filter predictions to only categories the model was trained on
     # If model was trained on a single category, we can only predict that category
-    if trained_category_filter is not None:
+    # EXCEPTION: For "each" mode, we want to process all categories separately, so don't filter here
+    if category_mode != 'each' and trained_category_filter is not None:
         print(f"\n[INFO] Model was trained on category '{trained_category_filter}' only.")
         print(f"       Filtering predictions to match training data (ignoring inference.category_mode).")
         categories_to_predict = [trained_category_filter] if trained_category_filter in categories_to_predict else []
@@ -1430,28 +1517,37 @@ def main():
                 f"Available categories: {available_2025_categories}"
             )
         print(f"  - Updated categories to predict: {categories_to_predict}")
+    elif category_mode == 'each':
+        print(f"\n[INFO] 'each' mode: Will process all {len(categories_to_predict)} categories with their respective models.")
     
     # Prepare data with scaler if available (matching training pipeline)
-    print("\n[6.5/7] Preparing data with scaling...")
-    historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler, trained_cat2id)
-    data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler, trained_cat2id)
-    
-    # Get last 30 days of December 2024 for initial window (after aggregation/scaling)
-    historical_window = get_historical_window_data(
-        historical_data_prepared,
-        end_date=date(2024, 12, 31),
-        config=config,
-        num_days=config.window['input_size']
-    )
-    print(f"  - Historical window: {len(historical_window)} samples")
-    print(f"  - Date range: {historical_window[data_config['time_col']].min()} to {historical_window[data_config['time_col']].max()}")
-    
-    # Recreate windows after scaling (all categories or filtered by categories_to_predict)
-    X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(data_2025_prepared, config)
+    # For "each" mode, we'll prepare data separately per category, so skip global preparation
+    if category_mode != 'each':
+        print("\n[6.5/7] Preparing data with scaling...")
+        historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler, trained_cat2id)
+        data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler, trained_cat2id)
+        
+        # Get last 30 days of December 2024 for initial window (after aggregation/scaling)
+        historical_window = get_historical_window_data(
+            historical_data_prepared,
+            end_date=date(2024, 12, 31),
+            config=config,
+            num_days=config.window['input_size']
+        )
+        print(f"  - Historical window: {len(historical_window)} samples")
+        print(f"  - Date range: {historical_window[data_config['time_col']].min()} to {historical_window[data_config['time_col']].max()}")
+        
+        # Recreate windows after scaling (all categories or filtered by categories_to_predict)
+        X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(data_2025_prepared, config)
+    else:
+        # For "each" mode, data preparation will happen per-category in the recursive loop
+        print("\n[6.5/7] Data preparation will be done per-category in recursive mode.")
+        X_pred, y_actual, cat_pred, pred_dates = np.array([]), np.array([]), np.array([]), []
+        historical_window = pd.DataFrame()
     
     # Filter predictions to selected categories if needed
-    # Filter if: single category mode OR model was trained on single category
-    if category_mode == 'single' or (trained_category_filter is not None and len(categories_to_predict) == 1):
+    # Filter if: single category mode OR model was trained on single category (but not "each" mode)
+    if category_mode == 'single' or (category_mode != 'each' and trained_category_filter is not None and len(categories_to_predict) == 1):
         # Filter windows to selected category only
         # Use trained_cat2id if available, otherwise fall back to cat2id
         mapping_to_use = trained_cat2id if trained_cat2id is not None else cat2id
@@ -1465,6 +1561,10 @@ def main():
         pred_dates = pred_dates[mask] if hasattr(pred_dates, '__getitem__') else [pred_dates[i] for i in range(len(pred_dates)) if mask[i]]
         print(f"  - Filtered prediction windows to category '{categories_to_predict[0]}' (category ID: {cat_id})")
         print(f"  - Prediction windows after filtering: {len(X_pred)}")
+    elif category_mode == 'each':
+        # For "each" mode, Teacher Forcing will be skipped (only Recursive mode processes all categories)
+        print("\n[NOTE] Teacher Forcing mode skipped for 'each' mode.")
+        print("       All categories will be processed in Recursive mode with their respective models.")
     
     # ========================================================================
     # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual 2025 values
@@ -1472,21 +1572,16 @@ def main():
     print("\n" + "=" * 80)
     print("MODE 1: TEACHER FORCING (Test Evaluation)")
     print("=" * 80)
-    print(f"Using actual ground truth {data_config['target_col']} values from 2025 as features.")
-    print("This mode is suitable for model evaluation but not production forecasting.")
+    if category_mode == 'each':
+        print("[NOTE] Teacher Forcing is skipped in 'each' mode. Only Recursive mode processes categories.")
+        print("       This is expected - Recursive mode will handle all categories independently.")
+    else:
+        print(f"Using actual ground truth {data_config['target_col']} values from 2025 as features.")
+        print("This mode is suitable for model evaluation but not production forecasting.")
     
-    # Create dataset and dataloader
-    pred_dataset = ForecastDataset(X_pred, y_actual, cat_pred)
-    pred_loader = DataLoader(
-        pred_dataset,
-        batch_size=config.training['test_batch_size'],
-        shuffle=False
-    )
-
-    # If there are no prediction windows (e.g., January 2025 with large input_size/horizon),
-    # skip teacher-forcing evaluation to avoid division-by-zero in the trainer.
-    if len(pred_dataset) == 0:
-        print("  [WARNING] No prediction windows available for Teacher Forcing. Skipping Mode 1 evaluation.")
+    # Skip Teacher Forcing for "each" mode
+    if category_mode == 'each':
+        print("  - Skipping Teacher Forcing evaluation for 'each' mode")
         y_true_tf = np.array([])
         y_pred_tf = np.array([])
         y_true_tf_unscaled = np.array([])
@@ -1495,25 +1590,48 @@ def main():
         mae_tf = np.nan
         rmse_tf = np.nan
         accuracy_tf = np.nan
-        # Also initialize detailed accuracy variants to avoid UnboundLocalError
         accuracy_tf_abs = np.nan
         accuracy_tf_sum = np.nan
     else:
-        # Create trainer for prediction
-        trainer = Trainer(
-            model=model,
-            criterion=nn.MSELoss(),
-            optimizer=torch.optim.Adam(model.parameters()),
-            device=device
+        # Create dataset and dataloader
+        pred_dataset = ForecastDataset(X_pred, y_actual, cat_pred)
+        pred_loader = DataLoader(
+            pred_dataset,
+            batch_size=config.training['test_batch_size'],
+            shuffle=False
         )
 
-        y_true_tf, y_pred_tf = trainer.predict(pred_loader)
-
-        print(f"  - Predictions made: {len(y_pred_tf)} samples")
-        if len(pred_dates) > 0:
-            print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
+        # If there are no prediction windows (e.g., January 2025 with large input_size/horizon),
+        # skip teacher-forcing evaluation to avoid division-by-zero in the trainer.
+        if len(pred_dataset) == 0:
+            print("  [WARNING] No prediction windows available for Teacher Forcing. Skipping Mode 1 evaluation.")
+            y_true_tf = np.array([])
+            y_pred_tf = np.array([])
+            y_true_tf_unscaled = np.array([])
+            y_pred_tf_unscaled = np.array([])
+            mse_tf = np.nan
+            mae_tf = np.nan
+            rmse_tf = np.nan
+            accuracy_tf = np.nan
+            # Also initialize detailed accuracy variants to avoid UnboundLocalError
+            accuracy_tf_abs = np.nan
+            accuracy_tf_sum = np.nan
         else:
-            print("  - Prediction date range: N/A (no prediction windows)")
+            # Create trainer for prediction
+            trainer = Trainer(
+                model=model,
+                criterion=nn.MSELoss(),
+                optimizer=torch.optim.Adam(model.parameters()),
+                device=device
+            )
+
+            y_true_tf, y_pred_tf = trainer.predict(pred_loader)
+
+            print(f"  - Predictions made: {len(y_pred_tf)} samples")
+            if len(pred_dates) > 0:
+                print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
+            else:
+                print("  - Prediction date range: N/A (no prediction windows)")
 
         # Inverse transform predictions and actuals if scaler is available
         if scaler is not None:
@@ -1545,14 +1663,14 @@ def main():
         accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
         # Preserve existing variable name for downstream compatibility
         accuracy_tf = accuracy_tf_abs
-    
-    print(f"\n  - MSE:  {mse_tf:.4f}")
-    print(f"  - MAE:  {mae_tf:.4f}")
-    print(f"  - RMSE: {rmse_tf:.4f}")
-    if not np.isnan(accuracy_tf_abs):
-        print(f"  - Accuracy (Σ|err|):       {accuracy_tf_abs:.2f}%")
-    if not np.isnan(accuracy_tf_sum):
-        print(f"  - Accuracy (|Σ err|):      {accuracy_tf_sum:.2f}%")
+        
+        print(f"\n  - MSE:  {mse_tf:.4f}")
+        print(f"  - MAE:  {mae_tf:.4f}")
+        print(f"  - RMSE: {rmse_tf:.4f}")
+        if not np.isnan(accuracy_tf_abs):
+            print(f"  - Accuracy (Σ|err|):       {accuracy_tf_abs:.2f}%")
+        if not np.isnan(accuracy_tf_sum):
+            print(f"  - Accuracy (|Σ err|):      {accuracy_tf_sum:.2f}%")
     
     # ========================================================================
     # MODE 2: RECURSIVE (Production Forecast) - Uses model's own predictions
@@ -1572,6 +1690,11 @@ def main():
         if cat_id is None:
             raise ValueError(f"Category '{categories_to_predict[0]}' not found in category mapping")
         process_categories = [categories_to_predict[0]]
+    elif category_mode == 'each':
+        # For "each" mode, process all categories from the original list
+        # Each will use its own model loaded separately
+        process_categories = categories_to_predict
+        print(f"  - 'each' mode: Will process {len(process_categories)} categories with separate models")
     else:
         # For "all" mode, start from categories_to_predict but restrict
         # to only those the trained model actually knows about.
@@ -1589,30 +1712,82 @@ def main():
                 f"categories_to_predict={categories_to_predict}, trained_mapping_keys={sorted(known_categories)}"
             )
 
-    # --------------------------------------------------------------------
-    # Build per-(date, category) actuals on ORIGINAL scale once, then reuse
-    # for each category's recursive forecast.
-    # --------------------------------------------------------------------
-    data_2025_unscaled = prepare_prediction_data(
-        data_2025.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id
-    )
-    data_2025_unscaled['date'] = pd.to_datetime(data_2025_unscaled[time_col]).dt.date
-    actuals_by_date_cat = data_2025_unscaled.groupby(
-        ['date', data_config['cat_col']]
-    )[data_config['target_col']].sum().reset_index()
-    actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
-
     recursive_results_list = []
 
     for current_category in process_categories:
-        cat_id = mapping_to_use.get(current_category)
-        if cat_id is None:
-            raise ValueError(f"Category '{current_category}' not found in category mapping")
+        # For "each" mode, load this category's specific model and prepare data independently
+        if category_mode == 'each':
+            print(f"\n{'=' * 80}")
+            print(f"PROCESSING CATEGORY: {current_category}")
+            print(f"{'=' * 80}")
+            print(f"  - Loading model for category: {current_category}")
+            model_suffix_cat = f"_{current_category}"
+            model_dir_path_cat = Path(f"{base_output_dir}{model_suffix_cat}/models")
+            model_path_cat = model_dir_path_cat / "best_model.pth"
+            
+            if not model_path_cat.exists():
+                print(f"    [WARNING] Model not found for {current_category} at {model_path_cat}, skipping...")
+                continue
+            
+            model_cat, device_cat, scaler_cat, trained_cat_filter, trained_cat2id_cat = load_model_for_prediction(str(model_path_cat), config)
+            # Use this category's model and mappings
+            model = model_cat
+            device = device_cat
+            scaler = scaler_cat
+            trained_category_filter = trained_cat_filter
+            mapping_to_use = trained_cat2id_cat if trained_cat2id_cat is not None else cat2id
+            
+            # Prepare data independently for this category using its own scaler/mapping
+            print(f"  - Preparing data for {current_category} using its own scaler/mapping...")
+            historical_data_prepared_cat = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler_cat, trained_cat2id_cat)
+            
+            # Get historical window for this category
+            historical_window_cat = get_historical_window_data(
+                historical_data_prepared_cat,
+                end_date=date(2024, 12, 31),
+                config=config,
+                num_days=config.window['input_size']
+            )
+            print(f"  - Historical window for {current_category}: {len(historical_window_cat)} samples")
+            
+            # Filter historical window to this category only
+            cat_id = mapping_to_use.get(current_category)
+            if cat_id is None:
+                raise ValueError(f"Category '{current_category}' not found in category mapping")
+            historical_window_filtered = historical_window_cat[
+                historical_window_cat[data_config['cat_id_col']] == cat_id
+            ].copy()
+            
+            # Prepare actuals for this category
+            data_2025_unscaled_cat = prepare_prediction_data(
+                data_2025.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id_cat
+            )
+            data_2025_unscaled_cat['date'] = pd.to_datetime(data_2025_unscaled_cat[time_col]).dt.date
+            actuals_by_date_cat = data_2025_unscaled_cat.groupby(
+                ['date', data_config['cat_col']]
+            )[data_config['target_col']].sum().reset_index()
+            actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
+        else:
+            # For non-"each" mode, use the global prepared data
+            # Build per-(date, category) actuals on ORIGINAL scale once, then reuse
+            if current_category == process_categories[0]:  # Only do this once for first category
+                data_2025_unscaled = prepare_prediction_data(
+                    data_2025.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id
+                )
+                data_2025_unscaled['date'] = pd.to_datetime(data_2025_unscaled[time_col]).dt.date
+                actuals_by_date_cat = data_2025_unscaled.groupby(
+                    ['date', data_config['cat_col']]
+                )[data_config['target_col']].sum().reset_index()
+                actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
+            
+            cat_id = mapping_to_use.get(current_category)
+            if cat_id is None:
+                raise ValueError(f"Category '{current_category}' not found in category mapping")
 
-        # Filter historical window to this category
-        historical_window_filtered = historical_window[
-            historical_window[data_config['cat_id_col']] == cat_id
-        ].copy()
+            # Filter historical window to this category
+            historical_window_filtered = historical_window[
+                historical_window[data_config['cat_id_col']] == cat_id
+            ].copy()
 
         if len(historical_window_filtered) < config.window['input_size']:
             # If not enough data for this category, use available data and duplicate
@@ -1721,13 +1896,25 @@ def main():
         )
         rmse_rec = np.sqrt(mse_rec)
 
+        # --------------------------------------------------------------------
+        # TOTAL accuracy across all months, using MONTHLY aggregates
+        # (matches manual calculation from monthly Total_Actual / Total_Pred)
+        # --------------------------------------------------------------------
+        totals_by_day['date'] = pd.to_datetime(totals_by_day['date'])
+        totals_by_day['month'] = totals_by_day['date'].dt.to_period('M')
+
+        totals_by_month = totals_by_day.groupby('month').agg(
+            actual=('actual', 'sum'),
+            predicted_unscaled=('predicted_unscaled', 'sum'),
+        ).reset_index()
+
         accuracy_rec_total_abs = calculate_accuracy(
-            totals_by_day['actual'].values,
-            totals_by_day['predicted_unscaled'].values,
+            totals_by_month['actual'].values,
+            totals_by_month['predicted_unscaled'].values,
         )
         accuracy_rec_total_sum = calculate_accuracy_sum_before_abs(
-            totals_by_day['actual'].values,
-            totals_by_day['predicted_unscaled'].values,
+            totals_by_month['actual'].values,
+            totals_by_month['predicted_unscaled'].values,
         )
         # Preserve legacy variable name (backwards compatibility)
         accuracy_rec = accuracy_rec_total_abs
@@ -1745,8 +1932,6 @@ def main():
         # --------------------------------------------------------------------
         # Accuracy BY MONTH (TOTAL across all categories)
         # --------------------------------------------------------------------
-        totals_by_day['date'] = pd.to_datetime(totals_by_day['date'])
-        totals_by_day['month'] = totals_by_day['date'].dt.to_period('M')
 
         print("\n  - Monthly accuracy (recursive, unscaled):")
         for month, group in totals_by_day.groupby('month'):
@@ -1836,10 +2021,23 @@ def main():
             'abs_error',
         ]
         monthly_results_by_cat = monthly_group[ordered_cols]
+
+        # Build a separate SummaryByMonth-style table with SAME format as
+        # combine_data.create_monthly_summary: Year, CATEGORY, Total QTY, Total CBM, Month.
+        # Here, Total QTY is left blank (NaN) and Total CBM uses predicted volume.
+        summary_by_month_df = pd.DataFrame({
+            'Year': np.nan,
+            data_config['cat_col']: monthly_group[data_config['cat_col']].values,
+            'Total QTY': np.nan,
+            'Total CBM': monthly_group['predicted'].values,
+            'Month': monthly_group['Month'].values,
+        })
     else:
         print(f"\n  - Predictions made: 0 samples")
         print(f"  - No actual values available for comparison")
         mse_rec = mae_rec = rmse_rec = accuracy_rec_total_abs = accuracy_rec_total_sum = accuracy_rec = np.nan
+        monthly_results_by_cat = None
+        summary_by_month_df = None
     
     # ========================================================================
     # COMPARISON AND SAVING
@@ -1849,10 +2047,8 @@ def main():
     print("=" * 80)
     
     # Prepare teacher forcing results for comparison
-    if isinstance(pred_dates, pd.DatetimeIndex):
-        tf_dates = pred_dates.date
-    else:
-        tf_dates = pd.to_datetime(pred_dates).dt.date
+    # Normalize pred_dates to plain Python date objects
+    tf_dates = pd.to_datetime(pred_dates).date
     
     tf_results = pd.DataFrame({
         'date': tf_dates,
@@ -1916,6 +2112,15 @@ def main():
     output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"  - Using timestamped directory: {output_dir}")
+
+    # Add UpdateTime column (same for all rows in this run)
+    update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # For daily Result sheet
+    if 'UpdateTime' not in recursive_results.columns:
+        recursive_results['UpdateTime'] = update_time
+    # For monthly ResultByMonth sheet (may be None if no monthly results)
+    if monthly_results_by_cat is not None and 'UpdateTime' not in monthly_results_by_cat.columns:
+        monthly_results_by_cat['UpdateTime'] = update_time
     
     # Load metadata from model directory for comparison (before saving anything)
     # Use the same model_dir_path that was determined during model loading
@@ -1960,14 +2165,14 @@ def main():
     recursive_results['error'] = recursive_results['actual'] - recursive_results['predicted']
     recursive_results['abs_error'] = np.abs(recursive_results['error'])
     recursive_results = recursive_results.sort_values('date')
-    # Drop intermediate columns for cleaner output (but keep category column)
-    output_cols = ['date', data_config['cat_col'], 'predicted', 'actual', 'error', 'abs_error']
+    # Drop intermediate columns for cleaner output (but keep category column and UpdateTime if present)
+    output_cols = ['date', data_config['cat_col'], 'predicted', 'actual', 'error', 'abs_error', 'UpdateTime']
     recursive_results = recursive_results[[c for c in output_cols if c in recursive_results.columns]]
     recursive_results.to_csv(rec_output_path, index=False)
     print(f"  - Recursive results: {rec_output_path}")
 
     # Optionally upload recursive results to Google Sheets "Result" and "ResultByMonth" sheets
-    # Reuses the shared upload_to_google_sheets helper from combine_data.py
+    # Uses the upload_to_google_sheets helper from src.utils.google_sheets
     if GSPREAD_AVAILABLE:
         spreadsheet_id = os.getenv(
             "GOOGLE_SHEET_ID",
@@ -1975,23 +2180,37 @@ def main():
         )
         credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "key.json")
 
-        print(f"  - Uploading recursive results to Google Sheets sheet 'Result' (spreadsheet_id={spreadsheet_id})")
+        print(f"  - Uploading recursive results to Google Sheets sheet 'Result' (spreadsheet_id={spreadsheet_id}, update mode)")
         upload_to_google_sheets(
             saved_files={},  # not used when data_df is provided
             spreadsheet_id=spreadsheet_id,
             sheet_name="Result",
             credentials_path=credentials_path,
             data_df=recursive_results,
+            update_mode=True,  # Update instead of overwrite to preserve data from multiple category runs
         )
 
         if monthly_results_by_cat is not None and not monthly_results_by_cat.empty:
-            print(f"  - Uploading monthly recursive results to Google Sheets sheet 'ResultByMonth'")
+            print(f"  - Uploading monthly recursive results to Google Sheets sheet 'ResultByMonth' (update mode)")
             upload_to_google_sheets(
                 saved_files={},
                 spreadsheet_id=spreadsheet_id,
                 sheet_name="ResultByMonth",
                 credentials_path=credentials_path,
                 data_df=monthly_results_by_cat,
+                update_mode=True,  # Update instead of overwrite to preserve data from multiple category runs
+            )
+
+        # Upload SummaryByMonth sheet derived from ResultByMonth-style data
+        if 'summary_by_month_df' in locals() and summary_by_month_df is not None and not summary_by_month_df.empty:
+            print(f"  - Uploading summary results to Google Sheets sheet 'SummaryByMonth' (update mode)")
+            upload_to_google_sheets(
+                saved_files={},
+                spreadsheet_id=spreadsheet_id,
+                sheet_name="SummaryByMonth",
+                credentials_path=credentials_path,
+                data_df=summary_by_month_df,
+                update_mode=True,
             )
         else:
             print("  - No monthly results to upload to 'ResultByMonth'.")
