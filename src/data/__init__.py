@@ -11,6 +11,7 @@ from .preprocessing import (
     add_holiday_features,
     add_temporal_features,
     aggregate_daily,
+    add_cbm_density_features,
     fit_scaler,
     apply_scaling,
     inverse_transform_scaling
@@ -28,6 +29,7 @@ __all__ = [
     'add_holiday_features',
     'add_temporal_features',
     'aggregate_daily',
+    'add_cbm_density_features',
     'fit_scaler',
     'apply_scaling',
     'inverse_transform_scaling'

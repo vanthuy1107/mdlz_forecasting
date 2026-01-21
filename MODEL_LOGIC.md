@@ -1,637 +1,502 @@
-# Model Logic Documentation
+## Model Logic Documentation
 
-## Project Overview
-This is a **Warehouse Quantity Prediction System** for MDLZ (Mondelēz International) that uses deep learning to forecast warehouse shipment quantities based on historical data and product categories.
+This document describes the **current end‑to‑end logic** of the MDLZ warehouse
+forecasting MVP as implemented in `mvp_test.py`, `src/data/preprocessing.py`,
+`src/models.py` and `src/training/trainer.py`.
+
+The previous version of this document referred to an older US‑holiday,
+`QTY`–only pipeline driven by `main.py`. That entrypoint has been removed and
+replaced by the MVP test script described here.
 
 ---
 
 ## 1. Problem Definition
 
-**Objective**: Predict future shipment quantities (`QTY`) for different product categories based on:
-- Historical quantity patterns
-- Temporal features (month, day of month) - cyclical encoding
-- Holiday features (holiday indicators, days until next holiday)
-- Product category information
+- **Objective**: Forecast future shipment volume (currently `Total CBM`) for
+  MDLZ warehouse outbound flows, per product category, while:
+  - Capturing **Vietnamese holiday spikes** (Tet, Mid‑Autumn, etc.)
+  - Respecting **lunar calendar seasonality**
+  - Using **structural priors** such as CBM/QTY density and last‑year density
+  - Handling high‑ and low‑volume categories differently
+- **Type**: Multivariate time‑series forecasting with:
+  - Temporal and calendar features (solar + lunar)
+  - Holiday countdown and “days‑since‑holiday” features
+  - Category embeddings and category‑aware LSTM
+  - Optional **residual target** (model learns deviations from a causal baseline)
 
-**Type**: Time Series Forecasting with Category Information and Holiday Context
-
----
-
-## 2. Data Pipeline
-
-### 2.1 Data Preparation (`combine_data.py`)
-
-Before training, raw data files are combined into yearly files:
-- Input: Files like `Outboundreports_YYYYMMDD_YYYYMMDD.csv` in `dataset/data_cat/`
-- Output: Combined files `data_{year}.csv` (e.g., `data_2023.csv`, `data_2024.csv`)
-- Process: Groups files by year, concatenates, sorts by date, removes duplicates
-- Usage: Run `python combine_data.py` before training
-
-### 2.2 Data Loading (`DataReader`)
-
-Located in `src/data/loader.py`:
-- Loads CSV files from `dataset/data_cat/data_{year}.csv`
-- Supports multiple years concatenation
-- Fallback: Can load by file pattern if combined files don't exist
-- Methods: `load(years)`, `load_year(year)`, `load_by_file_pattern(years, file_prefix)`
-
-### 2.3 Feature Engineering
-
-#### Temporal Features (Cyclical Encoding):
-```
-- month_sin: sin(2π × (month - 1) / 12)
-- month_cos: cos(2π × (month - 1) / 12)
-- dayofmonth_sin: sin(2π × (day - 1) / 31)
-- dayofmonth_cos: cos(2π × (day - 1) / 31)
-```
-
-**Why Cyclical Encoding?**
-- Captures periodic patterns (e.g., December is close to January)
-- Prevents artificial ordering (month 12 ≠ 12× month 1)
-- Maintains continuity in temporal space
-
-#### Holiday Features:
-```
-- holiday_indicator: Binary (0 or 1) indicating if date is a US holiday
-- days_until_next_holiday: Number of days until the next holiday
-```
-
-**Holidays Included**: New Year's Day, MLK Day, Presidents' Day, Memorial Day, Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, Christmas
-
-#### Quantity Feature:
-```
-- QTY: Historical quantity values (included in input window)
-```
-
-**Total Features**: 7 features per timestep (4 temporal + 2 holiday + 1 quantity)
-
-#### Category Encoding:
-Located in `src/data/preprocessing.py`:
-```python
-categories = sorted(data["CATEGORY"].unique())
-cat2id = {cat: i for i, cat in enumerate(categories)}
-data["CATEGORY_ID"] = data["CATEGORY"].map(cat2id)
-```
-
-### 2.4 Data Splitting
-```python
-Train: 70% (temporal split)
-Validation: 10%
-Test: 20%
-```
-
-**Important**: Uses temporal split (not random) to avoid data leakage
-
-### 2.5 Window Slicing (`slicing_window_category`)
-
-Located in `src/data/preprocessing.py`. Creates overlapping sequences for time series prediction:
-
-```
-For each category group:
-  Input window: [t-30, t-29, ..., t-2, t-1]
-  Target: [t]
-  
-  Features per timestep: [month_sin, month_cos, dayofmonth_sin, dayofmonth_cos, 
-                          holiday_indicator, days_until_next_holiday, QTY]
-```
-
-**Parameters** (from `config/config.yaml`):
-- `input_size = 30`: Look back 30 time steps
-- `horizon = 1`: Predict 1 step ahead
-- `feature_cols`: 7 features (4 temporal + 2 holiday + 1 quantity)
-- `target_col`: QTY to predict
-
-**Output Shapes**:
-```
-X: (N_samples, 30, 7)  # N samples, 30 timesteps, 7 features
-y: (N_samples, 1)      # N samples, 1 prediction
-cat: (N_samples,)      # N samples, category ID
-```
-
-**Dataset Creation**:
-- Uses `ForecastDataset` class from `src/data/dataset.py`
-- Returns tuples of (X, cat, y) for each sample
+The **target column** is currently `Total CBM` (see `config/config.yaml`), but
+the pipeline is written so that another numeric target could be used via
+configuration.
 
 ---
 
-## 3. Model Architecture
+## 2. End‑to‑End MVP Test Pipeline (`mvp_test.py`)
 
-### 3.1 RNNWithCategory (Currently Used)
+The main entrypoint is `mvp_test.py`. Its `main()` function runs a complete
+experiment with fixed, reproducible overrides:
 
-Located in `src/models/rnn_model.py`.
+1. **Configuration**
+   - Loads `config/config.yaml` via `load_config()`.
+   - Overrides for MVP test:
+     - `data.years = [2023, 2024]`
+     - `training.epochs = 20`
+     - `training.loss = "spike_aware_mse"` (forced in code)
+     - `output.output_dir = "outputs/mvp_test"`
+     - `output.model_dir = "outputs/mvp_test/models"`
+   - Reads **category behavior switches** from `data` config:
+     - `category_mode`: `"all"`, `"single"`, or `"both"`
+     - `category_filter`: used when `category_mode == "single"` (default `"DRY"`)
+     - `major_categories`: categories allowed into the LSTM when training
+       a global head (default: `["DRY", "FRESH"]`)
+     - `minor_categories`: low‑volume categories handled by simple heuristics
+       (default: `["POSM", "OTHER"]`)
 
-**Architecture Components**:
+2. **Data Loading (`DataReader`)**
+   - Uses `DataReader` from `src/data/loader.py`:
+     - Primary path: `data_reader.load(years=data_config["years"])`
+       (expects `data_YYYY.csv` under `dataset/data_cat/`).
+     - Fallback path if combined files are missing:
+       `load_by_file_pattern(years, file_prefix="Outboundreports")`.
+   - Fixes `DtypeWarning` by casting the first and fifth columns to `str` to
+     avoid mixed types.
 
-```
-Input: 
-  - x_seq: (Batch, Time=30, Features=7)
-  - x_cat: (Batch, 1) or (Batch,)
-
-Layer 1: Category Embedding
-  - Embedding(num_categories, emb_dim=4)
-  - Maps category ID → dense vector
-  
-Layer 2: Hidden State Initialization
-  - h0_fc: Linear(emb_dim=4, hidden_size=32)
-  - Initializes LSTM hidden state from category embedding
-  - Repeated across num_layers (2 layers)
-  - Cell state c0: zeros
-  
-Layer 3: Feature Concatenation
-  - Concatenate time-series features with category embedding
-  - Input shape: (Batch, Time=30, Features=7+4=11)
-  
-Layer 4: LSTM
-  - input_size: 11 (7 time features + 4 category embedding)
-  - hidden_size: 32
-  - num_layers: 2
-  - batch_first: True
-  
-Layer 5: Output Layer
-  - Takes last timestep output: out[:, -1, :]
-  - fc: Linear(hidden_size=32, output_dim=1)
-  
-Output: (Batch, 1) - predicted quantity
-```
-
-**Forward Pass**:
-```python
-1. x_cat → cat_vec (B, 4)
-2. cat_vec → h0 (num_layers=2, B, 32) via h0_fc
-3. cat_vec expanded over time → cat_seq (B, T=30, 4)
-4. [x_seq, cat_seq] concatenated → x (B, T=30, 11)
-5. LSTM(x, (h0, c0)) → out (B, T=30, 32)
-6. Take last timestep: out[:, -1, :] → (B, 32)
-7. fc → prediction (B, 1)
-```
-
-**Key Design Choices**:
-- **Category embedding in hidden state**: Allows LSTM to condition its processing on product category from the start
-- **Category embedding concatenated to input**: Provides category context at every timestep
-- **Dual category integration**: Both initialization and concatenation ensure category information flows throughout
-
-### 3.2 RNNForecastor (Alternative Baseline)
-
-Located in `src/models/rnn_model.py`. Simpler baseline model without category information:
-
-```
-Input: (Batch, Time, Features)
-  ↓
-RNN(input_size=embedding_dim, hidden_size=32, layers=2)
-  ↓
-Take last timestep output
-  ↓
-LayerNorm (optional, currently commented out)
-  ↓
-Dropout(p=0.2)
-  ↓
-Linear(hidden_size → output_dim)
-  ↓
-Output: (Batch, output_dim)
-```
-
-**Note**: Currently not used as default model; can be selected via config.
+3. **Category Discovery and Training Tasks**
+   - Uses `data.cat_col` (typically `CATEGORY`) to list available categories.
+   - Builds a list of **training tasks**:
+     - `category_mode == "all"` → single model on **all major categories**.
+     - `category_mode == "single"` → single model on `category_filter`
+       (e.g. `"DRY"`).
+     - `category_mode == "both"` → one global model (`ALL CATEGORIES`) plus
+       one model per individual category.
+   - Each task calls `train_single_model(...)` with a `category_filter` and an
+     `output_suffix` (e.g. `"_all"`, `"_DRY"`), resulting in separate
+     `outputs/mvp_test_*/` directories.
 
 ---
 
-## 4. Configuration System
+## 3. Feature Engineering in the MVP Pipeline
 
-The project uses YAML-based configuration via `config/config.yaml` and `config/config.py`.
+Most of the feature engineering happens inside `train_single_model` in
+`mvp_test.py`, using utilities from `src/data/preprocessing.py` plus some
+additional MVP‑specific logic.
 
-### 4.1 Configuration File Structure
+### 3.1 Base Configuration of Features
 
-```yaml
-data:
-  data_dir: "./dataset/data_cat"
-  file_pattern: "data_{year}.csv"
-  years: [2023, 2024]
-  feature_cols: [month_sin, month_cos, dayofmonth_sin, dayofmonth_cos, 
-                 holiday_indicator, days_until_next_holiday, QTY]
-  target_col: "QTY"
-  cat_col: "CATEGORY"
-  train_size: 0.7
-  val_size: 0.1
-  test_size: 0.2
+In `config/config.yaml` (section `data.feature_cols`) the **base feature set**
+is:
 
-window:
-  input_size: 30
-  horizon: 1
+- `month_sin`, `month_cos`
+- `dayofmonth_sin`, `dayofmonth_cos`
+- `holiday_indicator`
+- `days_until_next_holiday`
+- `days_since_holiday`
+- `is_weekend`, `day_of_week`
+- `lunar_month`, `lunar_day`
+- `rolling_mean_7d`, `rolling_mean_30d`
+- `momentum_3d_vs_14d`
+- `Total CBM` (current numeric target used also as an input feature)
 
-model:
-  name: "RNNWithCategory"
-  num_categories: null  # Set dynamically
-  cat_emb_dim: 4
-  input_dim: 7
-  hidden_size: 32
-  n_layers: 2
-  output_dim: 1
+At runtime, `train_single_model` **extends** this list with:
 
-training:
-  batch_size: 64
-  val_batch_size: 16
-  test_batch_size: 16
-  epochs: 20
-  learning_rate: 0.003
-  optimizer: "Adam"
-  loss: "MSE"  # or "spike_aware_mse"
-  device: "auto"  # auto, cuda, or cpu
-```
+- `lunar_month_sin`, `lunar_month_cos`
+- `lunar_day_sin`, `lunar_day_cos`
+- `days_to_tet` (continuous countdown to next Tet window)
+- `cbm_per_qty`
+- `cbm_per_qty_last_year`
 
-### 4.2 Hyperparameters (Current Defaults)
+The combined list is written back into the config at
+`data.feature_cols` and the model’s `input_dim` is updated dynamically to match
+the final feature count.
 
-```python
-# Model
-num_categories: Dynamic (based on data)
-cat_emb_dim: 4
-input_dim: 7  # 4 temporal + 2 holiday + 1 quantity
-hidden_size: 32
-n_layers: 2
-output_dim: 1
-dropout_prob: 0.2 (only in RNNForecastor)
+### 3.2 Temporal Features (`add_temporal_features`)
 
-# Window
-input_size: 30  # Look back 30 timesteps
-horizon: 1      # Predict 1 step ahead
+Function: `add_temporal_features` in `src/data/preprocessing.py`.
 
-# Training
-batch_size: 64 (train), 16 (val/test)
-learning_rate: 0.003
-epochs: 20
-optimizer: Adam
-```
+Given the time column `ACTUALSHIPDATE`, it creates:
 
-### 4.2 Loss Function
+- `month_sin = sin(2π × (month − 1) / 12)`
+- `month_cos = cos(2π × (month − 1) / 12)`
+- `dayofmonth_sin = sin(2π × (day − 1) / 31)`
+- `dayofmonth_cos = cos(2π × (day − 1) / 31)`
 
-**MSELoss** (Mean Squared Error):
-```
-Loss = (1/N) Σ(predicted - actual)²
-```
+These encodings capture **yearly** and **monthly** periodicity while treating
+the calendar as cyclic rather than linear.
 
-**Alternative Available**: `spike_aware_mse` (in `src/utils/losses.py`)
-- Assigns 3x weight to top 20% values (spikes)
-- Useful for handling sudden demand surges
-- Can be selected via config: `training.loss: "spike_aware_mse"`
+### 3.3 Weekend and Day‑of‑Week Features (`add_weekend_features`)
 
-### 4.3 Learning Rate Scheduler
+Defined in `mvp_test.py`:
 
-**ReduceLROnPlateau**:
-```python
-mode: "min"           # Minimize validation loss
-factor: 0.5           # Reduce LR by half
-patience: 3           # Wait 3 epochs before reduction
-min_lr: 1e-5          # Minimum learning rate
-```
+- `day_of_week`: integer \(0 = Monday, ..., 6 = Sunday\).
+- `is_weekend`: 1 if `day_of_week ∈ {5, 6}` (Saturday or Sunday), else 0.
 
-**Behavior**:
-- Monitors validation loss
-- If no improvement for 3 epochs → LR × 0.5
-- Prevents overfitting and helps convergence
+This lets the model distinguish weekday vs weekend behavior and capture
+weekly seasonality.
 
----
+### 3.4 Vietnamese Holiday Features
 
-## 5. Training Process
+`mvp_test.py` defines:
 
-### 5.1 Trainer Class (`src/training/trainer.py`)
+- `VIETNAM_HOLIDAYS_BY_YEAR`: a map of years → Tet window,
+  Mid‑Autumn, Independence Day (2 Sep) and Labor Day (30 Apr–1 May).
+- `get_vietnam_holidays(start_date, end_date)`: retrieves all configured
+  holiday dates in a given range.
+- `add_holiday_features_vietnam(df, ...)`: builds:
+  - `holiday_indicator`: 1 if the date is in the Vietnamese holiday set,
+    otherwise 0.
+  - `days_until_next_holiday`: days until the **next** Vietnamese holiday,
+    up to an extended horizon.
+  - `days_since_holiday`: days since the **last** Vietnamese holiday.
+- `add_days_since_holiday(df, ...)`: an additional helper (not always used by
+  the MVP pipeline) that separately computes “days since holiday” using an
+  extended look‑back window.
 
-The project uses an OOP `Trainer` class for training and evaluation.
+Compared to the older US‑holiday version, the MVP now uses **Vietnam‑specific
+holidays** throughout the pipeline, which is critical for Tet‑driven demand.
 
-**Initialization**:
-```python
-trainer = Trainer(
-    model=model,
-    criterion=criterion,
-    optimizer=optimizer,
-    device=device,
-    scheduler=scheduler,
-    log_interval=5,
-    save_dir="../outputs/models"
-)
-```
+### 3.5 Lunar Calendar and Cyclical Lunar Features
 
-**Features**:
-- Automatic best model tracking and saving
-- Learning curve history
-- Checkpoint saving/loading
-- Progress logging
+MVP logic approximates the Vietnamese lunar calendar:
 
-### 5.2 Training Loop (`fit` method)
+- `solar_to_lunar_date(solar_date)`: converts a Gregorian date into an
+  approximate `(lunar_month, lunar_day)`.
+- `add_lunar_calendar_features(df, ...)`:
+  - `lunar_month` ∈ [1, 12]
+  - `lunar_day` ∈ [1, 30]
+- `add_lunar_cyclical_features(df, ...)`:
+  - `lunar_month_sin`, `lunar_month_cos` from `lunar_month`
+  - `lunar_day_sin`, `lunar_day_cos` from `lunar_day`
 
-```python
-train_losses, val_losses = trainer.fit(
-    train_loader=train_loader,
-    val_loader=val_loader,
-    epochs=20,
-    save_best=True,
-    verbose=True
-)
-```
+These features allow the model to see **lunar periodicity** (e.g. Tet timing)
+without hardcoding specific Gregorian dates beyond the holiday table.
 
-**Process**:
-1. For each epoch:
-   - Train one epoch (`train_epoch`)
-   - Evaluate on validation set
-   - Update learning rate scheduler
-   - Save best model if validation loss improves
-   - Log metrics every `log_interval` epochs
+### 3.6 Tet Countdown Feature (`add_days_to_tet_feature`)
 
-2. After training:
-   - Load best model state based on validation loss
-   - Return training and validation loss histories
+`add_days_to_tet_feature(df, ...)` in `mvp_test.py`:
 
-### 5.3 Evaluation (`evaluate` method)
+- Uses the **start dates** of Tet windows (first day in each Tet period) across
+  years 2023–2025.
+- For each date, computes `days_to_tet` as the number of days until the next
+  Tet start (0 if already inside the Tet window).
+- Provides a **smooth countdown signal** that allows the model to ramp up
+  expectations before the actual spike.
 
-```python
-avg_loss, y_true, y_pred = trainer.evaluate(
-    dataloader=test_loader,
-    return_predictions=True
-)
-```
+### 3.7 Daily Aggregation (`aggregate_daily`)
 
-**Process**:
-- Set model to eval mode
-- Disable gradient computation (with `torch.no_grad()`)
-- For each batch:
-  - Forward pass
-  - Compute loss
-  - Collect predictions and labels (if `return_predictions=True`)
-- Return average loss and optionally predictions
+Function: `aggregate_daily` in `src/data/preprocessing.py`.
 
-### 5.4 Prediction (`predict` method)
+Purpose: convert transaction‑level rows to **daily totals per category** while
+preserving temporal / holiday features.
 
-```python
-y_true, y_pred = trainer.predict(dataloader)
-```
+- Groups by:
+  - `date_only = normalize(ACTUALSHIPDATE)`
+  - `CATEGORY`
+- Aggregates:
+  - `target_col` (e.g. `Total CBM`): sum
+  - Optionally `Total QTY`: sum
+  - Temporal and holiday features (`month_sin`, `holiday_indicator`, etc.):
+    first value per day (should be identical within each day).
+- Renames `date_only` back to `ACTUALSHIPDATE` and sorts by
+  `[CATEGORY, ACTUALSHIPDATE]`.
 
-Returns predictions and true labels for visualization or analysis.
+The result is **one row per date per category**, which is what the LSTM sees.
 
----
+### 3.8 CBM Density and Last‑Year Density Prior (`add_cbm_density_features`)
 
-## 6. Prediction & Visualization
+Function: `add_cbm_density_features` in `src/data/preprocessing.py`.
 
-### 6.1 Inference
+Assumes:
 
-```python
-model.eval()
-with torch.no_grad():
-    outputs = model(inputs, cat)
-```
+- Target column (`cbm_col`) is e.g. `Total CBM` (daily total per category).
+- `qty_col` is `Total QTY` (daily quantity).
 
-### 6.2 Evaluation Metrics
+Creates:
 
-- **Primary**: MSE (Mean Squared Error)
-- **Visual**: Actual vs Predicted plots
+- `cbm_per_qty = Total CBM / max(Total QTY, eps)` (per‑day density).
+- `cbm_per_qty_last_year`: density for the **same category and same calendar
+  date one year earlier**, using:
+  - A shifted copy of the data where `ACTUALSHIPDATE` is moved by +1 year,
+    then left‑joined.
+  - If no exact match exists (e.g. first year of history), falls back to a
+    **category‑level median density**.
 
-### 6.3 Output Files
+This functions as a **structural prior** for how “bulky” shipments are expected
+to be around the same lunar/seasonal period.
 
-Located in `outputs/` directory (configurable via `config.output.output_dir`):
+### 3.9 Rolling Means and Momentum
 
-```
-outputs/
-  ├── learning_curve.png        # Train/val loss over epochs
-  ├── train_fit.png             # Training set predictions
-  ├── test_predictions.png      # Test set predictions
-  ├── predictions.txt           # Numerical predictions (actual vs predicted)
-  └── models/
-      └── best_model.pth        # Best model checkpoint (if save_model=True)
-```
+Function: `add_rolling_and_momentum_features` in `mvp_test.py`.
 
-**Visualization Functions** (in `src/utils/visualization.py`):
-- `plot_learning_curve()`: Plots training/validation loss over epochs
-- `plot_difference()`: Plots actual vs predicted values
+Per category and date (after daily aggregation), it computes:
+
+- `rolling_mean_7d`: 7‑day rolling mean of the target.
+- `rolling_mean_30d`: 30‑day rolling mean.
+- `momentum_3d_vs_14d = rolling_mean_3d − rolling_mean_14d`.
+
+These features:
+
+- Provide a **short‑ and medium‑term pace signal**.
+- Reduce the need for the LSTM to re‑learn simple local averages.
+
+### 3.10 Residual Target and Causal Baseline
+
+Configured in `config.yaml` under `data`:
+
+- `use_residual_target: true`
+- `baseline_source_col: "rolling_mean_30d"`
+- `baseline_col: "baseline_for_target"`
+- `residual_col: "target_residual"`
+
+When `use_residual_target` is true:
+
+1. For each `(CATEGORY, date)` row, build a **causal baseline**:
+   - Start from `baseline_source_col` (e.g. `rolling_mean_30d`).
+   - Shift by 1 step **within each category** so that the baseline for day *t*
+     only uses information up to day *t − 1*.
+   - Fill missing initial baseline values with the unshifted source.
+2. Compute residual target:
+   - `target_residual_t = target_t − baseline_for_target_t`.
+3. The model is trained to predict `target_residual` rather than the raw
+   `Total CBM`.
+4. After inverse‑scaling, predictions are **reconstructed** during evaluation as:
+   - `y_true_original = y_true_residual + baseline`
+   - `y_pred_original = y_pred_residual + baseline`
+
+This makes training **scale‑invariant** and focuses the LSTM on deviations from
+the statistical baseline.
 
 ---
 
-## 7. Model Workflow Summary
+## 4. Category Handling and Multi‑Target Decomposition
 
-```
-1. Data Preparation (combine_data.py)
-   Raw files → Combined yearly files (data_YYYY.csv)
-   
-2. Main Pipeline (main.py)
-   ├── Load Configuration (config/config.yaml)
-   ├── Data Pipeline (prepare_data_pipeline)
-   │   ├── Load Data (DataReader)
-   │   ├── Add Temporal Features (month_sin, month_cos, etc.)
-   │   ├── Add Holiday Features
-   │   ├── Encode Categories
-   │   ├── Temporal Split (70/10/20)
-   │   └── Create Windows (input_size=30)
-   ├── Build Model (RNNWithCategory)
-   ├── Build Criterion, Optimizer, Scheduler
-   ├── Train (Trainer.fit)
-   │   ├── Train Epoch
-   │   ├── Validate
-   │   ├── Update LR Scheduler
-   │   └── Save Best Model
-   ├── Evaluate on Test Set
-   └── Generate Visualizations
-       ├── Learning Curve
-       ├── Test Predictions
-       ├── Train Predictions
-       └── Save Predictions Text
-```
+Inside `train_single_model`:
 
-**Entry Point**: `python main.py --mode train --config config/config.yaml`
+- **Single‑category mode** (`category_filter` not `None`):
+  - Filters the full dataset to rows where `CATEGORY == category_filter`.
+  - Trains one model whose outputs apply to that category only.
+- **Global mode (no `category_filter`)**:
+  - Restricts the training data to `major_categories` only (e.g. `DRY`, `FRESH`).
+  - **Excludes minor categories** from the LSTM, to avoid backpropagating
+    noisy, low‑volume signals into the shared hidden state.
+  - Minor categories are intended to be modeled by simple baselines such as
+    `moving_average_forecast_by_category` in `src/data/preprocessing.py`.
+
+The category column is encoded via `encode_categories`:
+
+- Creates `CATEGORY_ID` and a `cat2id` mapping.
+- Number of categories is written to `model.num_categories` at runtime.
 
 ---
 
-## 8. Key Technical Decisions
+## 5. Data Splitting, Scaling and Windowing
 
-### 8.1 Why LSTM over RNN?
-- **LSTM** (RNNWithCategory): Better at capturing long-term dependencies
-- Can handle vanishing gradient problem better
-- Has cell state for maintaining long-term memory
+### 5.1 Temporal Split (`split_data`)
 
-### 8.2 Why Category Embedding?
-- Different product categories have different demand patterns
-- Learned embedding captures category-specific characteristics
-- Enables transfer learning across similar categories
+Function: `split_data` in `src/data/preprocessing.py`.
 
-### 8.3 Why Batch First?
-- `batch_first=True` → shape: (Batch, Time, Features)
-- More intuitive for processing
-- Matches typical data organization
+- Uses **temporal** (sequential) split, not random, to avoid leakage:
+  - `train_size = 0.7`
+  - `val_size = 0.1`
+  - `test_size = 0.2`
+- Returns `train_data`, `val_data`, `test_data`, preserving chronological
+  ordering.
 
-### 8.4 Why Take Last Timestep?
-```python
-out = out[:, -1, :]  # Take output at last timestep
-```
-- Sequence-to-one prediction (not sequence-to-sequence)
-- Last hidden state contains aggregated information from entire sequence
-- Predicting 1 step ahead based on 30 historical steps
+### 5.2 Target Scaling
 
-### 8.5 Why Configuration File?
-- Centralized hyperparameter management
-- Easy experiment tracking and reproducibility
-- No code changes needed for different configurations
-- Supports dynamic values (e.g., `num_categories` set from data)
+- `fit_scaler(train_data, target_col=target_col_for_model)` fits a
+  `StandardScaler` on the **training target** (residual or absolute).
+- `apply_scaling` applies the same scaler to train/val/test target columns.
+- The scaler is saved to disk as `scaler.pkl` alongside the trained model so
+  that inference and plotting can invert the transformation later.
 
----
+Inverse scaling during evaluation is performed with
+`inverse_transform_scaling(...)` from `src/data/preprocessing.py`.
 
-## 9. Potential Improvements
+### 5.3 Sliding Windows (`slicing_window_category`)
 
-### 9.1 Model Enhancements
-- [ ] Add attention mechanism to weigh important timesteps
-- [ ] Try GRU instead of LSTM (fewer parameters)
-- [ ] Add residual connections for deeper networks
-- [ ] Implement multi-horizon prediction (predict multiple steps ahead)
+Function: `slicing_window_category` in `src/data/preprocessing.py`.
 
-### 9.2 Feature Engineering
-- [x] Include holiday indicators (implemented)
-- [ ] Add day-of-week features (cyclical)
-- [ ] Add seasonal trend decomposition
-- [ ] Incorporate external variables (promotions, weather)
-- [ ] Add lag features (previous day/week values)
+Per category group:
 
-### 9.3 Training Improvements
-- [ ] Use `spike_aware_mse` for imbalanced data
-- [ ] Implement early stopping
-- [ ] Add gradient clipping for stability
-- [ ] Use cross-validation for hyperparameter tuning
+- Input window length: `input_size = 30` timesteps.
+- Horizon: `horizon = 1` step ahead.
 
-### 9.4 Data Processing
-- [ ] Normalize/standardize input features
-- [ ] Handle missing values explicitly
-- [ ] Add data augmentation (noise injection)
-- [ ] Implement stratified sampling by category
+Shapes:
+
+- `X`: \((N_\text{samples}, 30, n_\text{features})\) with
+  `n_features = len(data.feature_cols)` after all dynamic extensions.
+- `y`: \((N_\text{samples}, 1)\) containing the (scaled) supervised target
+  (residual or absolute).
+- `cats`: \((N_\text{samples},)\) with integer `CATEGORY_ID`s.
+
+These are wrapped into PyTorch datasets (`ForecastDataset`) and then into
+`DataLoader`s for train/val/test.
 
 ---
 
-## 10. File Structure
+## 6. Model Architecture (`RNNWithCategory` and Baseline)
 
-```
-mdlz_wh_prediction/
-├── main.py                    # Main entry point (train/predict)
-├── combine_data.py            # Data preparation script
-├── config/
-│   ├── config.py              # Configuration management class
-│   └── config.yaml            # Configuration file (hyperparameters)
-├── src/
-│   ├── data/
-│   │   ├── loader.py          # DataReader class for loading CSV files
-│   │   ├── preprocessing.py   # Feature engineering, windowing, splitting
-│   │   └── dataset.py         # ForecastDataset PyTorch dataset class
-│   ├── models/
-│   │   └── rnn_model.py       # RNNWithCategory, RNNForecastor models
-│   ├── training/
-│   │   └── trainer.py         # Trainer class for training/evaluation
-│   └── utils/
-│       ├── losses.py          # Custom loss functions (spike_aware_mse)
-│       ├── visualization.py   # Plotting utilities
-│       └── saving.py          # Save predictions and results
-├── dataset/
-│   ├── data_cat/              # Input data directory
-│   │   ├── data_2023.csv      # Combined yearly files
-│   │   ├── data_2024.csv
-│   │   └── ...
-│   └── data_2025.csv
-├── outputs/                   # Output directory (generated)
-│   ├── models/                # Saved model checkpoints
-│   ├── learning_curve.png
-│   ├── train_fit.png
-│   ├── test_predictions.png
-│   └── predictions.txt
-├── requirements.txt           # Python dependencies
-├── README.md                  # Project README
-└── MODEL_LOGIC.md             # This documentation
-```
+### 6.1 `RNNWithCategory` (Primary Model)
+
+Location: `src/models.py`.
+
+**Inputs**:
+
+- `x_seq`: \((B, T, D)\) feature sequence with `D = model.input_dim`.
+- `x_cat`: category IDs, shape \((B,)\) or \((B, 1)\).
+
+**Layers**:
+
+1. **Category Embedding**
+   - `Embedding(num_categories, cat_emb_dim)`.
+   - Produces `cat_vec` of shape \((B, cat_emb_dim)\).
+2. **Hidden State Initialization**
+   - Linear layer `h0_fc(cat_vec)` → \((B, hidden_size)\).
+   - Tanh non‑linearity, then repeat across `n_layers` to build initial
+     hidden state `h0`.
+   - Cell state `c0` initialized to zeros.
+3. **Category‑Augmented Input**
+   - Expand `cat_vec` over time into `cat_seq` \((B, T, cat_emb_dim)\).
+   - Concatenate with `x_seq` along feature axis:
+     - `x = concat([x_seq, cat_seq])` → \((B, T, D + cat_emb_dim)\).
+4. **LSTM**
+   - `nn.LSTM(input_size=D + cat_emb_dim, hidden_size=hidden_size,
+     num_layers=n_layers, batch_first=True)`.
+   - Produces `out` of shape \((B, T, hidden_size)\).
+5. **Layer Normalization (Optional)**
+   - If `use_layer_norm` is true, applies `LayerNorm(hidden_size)` to the last
+     timestep output.
+6. **Output Layer**
+   - Takes `last_out = out[:, -1, :]`.
+   - Passes through a linear layer `fc(last_out)` → prediction of shape
+     \((B, output_dim)\).
+
+This architecture injects category information both into the **initial hidden
+state** and into every timestep’s input.
+
+### 6.2 `RNNForecastor` (Baseline Without Category Embedding)
+
+Also in `src/models.py`:
+
+- Plain LSTM with input size `embedding_dim`, hidden size `hidden_size`,
+  `n_layers` layers and optional dropout before the final linear head.
+- API is compatible with `RNNWithCategory` but ignores `x_cat`.
+- Can be selected via `model.name = "RNNForecastor"` in the config if a
+  simpler baseline is desired.
 
 ---
 
-## 11. Usage Example
+## 7. Training Loop and Loss
 
-### 11.1 Command Line Usage
+### 7.1 Trainer (`src/training/trainer.py`)
 
-**Step 1: Prepare Data**
+`mvp_test.py` builds a `Trainer` instance with:
+
+- `model`: `RNNWithCategory` (or `RNNForecastor`).
+- `criterion`: **always** `spike_aware_mse` for the MVP test, even if
+  `training.loss` is set differently in the YAML.
+- `optimizer`: Adam with `learning_rate` from config.
+- Optional `ReduceLROnPlateau` scheduler if configured.
+- Device: `"auto"`, `"cuda"`, or `"cpu"` as per config.
+
+The `fit(...)` method:
+
+- Trains for `training.epochs` epochs.
+- Tracks and saves the **best model** by validation loss.
+- Records training and validation loss histories.
+
+The `evaluate(...)` method:
+
+- Runs the model on `test_loader` without gradients.
+- Returns mean test loss plus flattened `y_true` and `y_pred` (in scaled space).
+
+### 7.2 `spike_aware_mse` Loss
+
+Location: `src/utils/losses.py`.
+
+- Extends standard MSE by giving **3× weight** to the top ~20% of target values.
+- Ensures Tet and other extreme peaks contribute more strongly to the loss and
+  gradient signal.
+- In the MVP test, this loss is **forced** regardless of the YAML `loss`
+  setting, to prioritize spike accuracy on Vietnamese data.
+
+---
+
+## 8. Evaluation, Inverse Scaling and Plots
+
+After training:
+
+1. **Test Evaluation**
+   - `trainer.evaluate(test_loader, return_predictions=True)` computes
+     test loss in scaled space.
+2. **Inverse Scaling**
+   - Uses `inverse_transform_scaling` and the saved `StandardScaler` to
+     convert `y_true` and `y_pred` back to the **original target scale**.
+   - If residual learning is enabled, adds back the aligned baseline as
+     described earlier to reconstruct absolute `Total CBM`.
+3. **Plotting**
+   - Takes up to `n_samples = min(100, len(y_true_original))`.
+   - Calls `plot_difference(y_true_plot, y_pred_plot, save_path=...)` from
+     `src/utils/visualization.py`.
+   - Saves `test_predictions.png` under the task‑specific
+     `outputs/mvp_test*_*/` directory.
+4. **Metadata**
+   - Writes a `metadata.json` file under `model_dir` with:
+     - Model, data, window and training configs
+     - Best validation and test loss
+     - Training time
+     - Category mapping (`cat2id`) and category filter used
+   - Saves the fitted scaler as `scaler.pkl` next to the best model checkpoint.
+
+---
+
+## 9. Workflow Summary and Usage
+
+### 9.1 Standard MVP Test Run
+
+From the project root:
+
 ```bash
-python combine_data.py
+python mvp_test.py
 ```
 
-**Step 2: Train Model**
-```bash
-python main.py --mode train --config config/config.yaml
-```
+This will:
 
-**Step 3: Make Predictions**
-```bash
-python main.py --mode predict --config config/config.yaml --model-path outputs/models/best_model.pth
-```
+- Load years 2023–2024.
+- Apply Vietnam‑specific calendar and holiday features.
+- Train one or more models according to `data.category_mode`.
+- Save checkpoints, scalers, plots and metadata into
+  `outputs/mvp_test*/` subdirectories.
 
-### 11.2 Programmatic Usage
+### 9.2 Configuration Tweaks
 
-```python
-from config import load_config
-from main import train, predict
+Typical changes are made in `config/config.yaml`, for example:
 
-# Train with default config
-trainer, config, data_dict = train()
+- Switch between **global** and **per‑category** training:
+  - `data.category_mode: "all" | "single" | "both"`.
+  - `data.category_filter: "DRY"` when using `"single"`.
+- Enable/disable residual learning:
+  - `data.use_residual_target: true | false`.
+- Adjust window and horizon:
+  - `window.input_size`, `window.horizon`.
+- Adjust model size:
+  - `model.hidden_size`, `model.n_layers`, `model.cat_emb_dim`.
 
-# Or with custom config
-trainer, config, data_dict = train(config_path="config/config.yaml")
-
-# Make predictions
-y_true, y_pred = predict(
-    model_path="outputs/models/best_model.pth",
-    config_path="config/config.yaml"
-)
-```
-
-### 11.3 Custom Configuration
-
-```python
-from config import load_config
-
-# Load config
-config = load_config("config/config.yaml")
-
-# Modify programmatically
-config.set('training.epochs', 50)
-config.set('training.learning_rate', 0.001)
-config.set('data.years', [2023, 2024, 2025])
-
-# Use in training
-trainer, _, _ = train()
-```
+Note: `mvp_test.py` may still override some defaults (e.g. years, epochs,
+loss) to keep the MVP experiment reproducible; check the top of `main()` if you
+need to change those behaviors.
 
 ---
 
-## 12. Dependencies
+## 10. Key Differences vs. Legacy Version
 
-See `requirements.txt` for full list. Key dependencies:
+Compared with the earlier version of this project (US‑holiday, `QTY`‑only,
+`main.py` pipeline), the MVP implemented here:
 
-```
-torch          # PyTorch for deep learning
-numpy          # Numerical operations
-pandas         # Data manipulation
-scikit-learn   # Preprocessing utilities (train_test_split)
-matplotlib     # Visualization (plotting)
-pyyaml         # YAML configuration parsing
-```
-
-**Installation**:
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Conclusion
-
-This warehouse prediction system leverages **category-aware LSTM** architecture to forecast shipment quantities. The model:
-- Integrates product category information via embeddings
-- Uses cyclical time features to capture temporal patterns
-- Incorporates holiday features to account for seasonal demand variations
-- Employs a robust OOP training pipeline with learning rate scheduling
-- Uses YAML-based configuration for easy hyperparameter management
-- Provides comprehensive evaluation and visualization
-
-**Key Improvements Over Previous Version**:
-- Extended input window from 6 to 30 timesteps for better context
-- Added holiday features (2 additional features)
-- Restructured into modular package structure (`src/` directory)
-- Introduced configuration management system
-- Added data preparation script (`combine_data.py`)
-- Implemented OOP Trainer class with checkpoint management
-
-The dual integration of category information (initialization + concatenation) allows the model to specialize its predictions for different product categories while learning from shared temporal patterns. The extended window size and holiday features enable better capture of long-term trends and seasonal variations.
+- Switches to **Vietnamese holidays** and adds a **Tet countdown** feature.
+- Incorporates **lunar calendar + cyclical lunar features**.
+- Predicts `Total CBM` and adds **CBM/QTY density + last‑year density prior**.
+- Uses **residual learning** against a causal rolling‑mean baseline.
+- Applies **spike‑aware MSE** by default to focus on Tet and other spikes.
+- Supports **multi‑task category configurations** and separates major from
+  minor categories for more stable shared representations.
 

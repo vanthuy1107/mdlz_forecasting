@@ -11,8 +11,30 @@ data:
   #   "all" - Train on all categories combined
   #   "single" - Train on one specific category (specify in category_filter)
   #   "both" - Train on all categories AND each category separately
-  category_mode: "all"  # "all", "single", or "both"
+  category_mode: "single"  # "all", "single", or "both"
   category_filter: "DRY"  # Only used when category_mode is "single". Specify category name or null for all
+  # Category behavior rules for multi-target decomposition:
+  #   - major_categories: High-volume, structurally stable categories that should be modeled with the LSTM
+  #                       and full entity embeddings (e.g., DRY, FRESH).
+  #   - minor_categories: Low-volume / noisy categories that should be handled by simple statistical
+  #                       heuristics (e.g., moving average) instead of the LSTM, to avoid corrupting
+  #                       the shared hidden state.
+  major_categories:
+    - "DRY"
+    - "FRESH"
+  minor_categories:
+    - "POSM"
+    - "OTHER"
+  # Residual / baseline configuration for scale-invariant forecasting
+  # When enabled, the model is trained to predict the residual
+  #   residual_t = target_col_t - baseline_col_t
+  # where baseline_col_t is a causal baseline derived from historical data.
+  # The baseline is then added back after inverse-scaling to recover
+  # absolute Total CBM for evaluation and plotting.
+  use_residual_target: false         # If true, train on residuals instead of raw target
+  baseline_source_col: "rolling_mean_30d"   # Source column for baseline (must be in feature_cols)
+  baseline_col: "baseline_for_target"       # Name of derived causal baseline column
+  residual_col: "target_residual"           # Name of residual target column
   feature_cols:
     - "month_sin"
     - "month_cos"
@@ -53,19 +75,20 @@ model:
   name: "RNNWithCategory"  # or "RNNForecastor"
   num_categories: null  # Will be set dynamically from data
   cat_emb_dim: 4
-  input_dim: 15  # Updated to 15 features (7 original + 8 new)
-  hidden_size: 64
+  input_dim: 15  # Updated dynamically in code to match feature_cols length
+  hidden_size: 128
   n_layers: 2
   output_dim: 1
   dropout_prob: 0.2  # Only for RNNForecastor
+  use_layer_norm: true  # Apply LayerNorm on final hidden state before output
 
 # Training Configuration
 training:
   batch_size: 64
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 20
-  learning_rate: 0.003
+  epochs: 50
+  learning_rate: 0.001
   optimizer: "Adam"
   
   # Loss function
@@ -103,4 +126,11 @@ inference:
   
   # Category selection for prediction now reuses data.category_mode and
   # data.category_filter so train & prediction share one setting.
+
+  # Prediction horizon (time range and data file for inference script)
+  # These values are used by mvp_predict_2025.py so you can easily change
+  # which period to forecast without editing code.
+  prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
+  prediction_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
+  prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD)
 

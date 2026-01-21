@@ -221,11 +221,11 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     """
     Get list of Vietnamese holidays between start_date and end_date.
     
-    Includes:
-    - Lunar New Year (Tet): 2023 (Jan 20-26), 2024 (Feb 8-14), 2025 (Jan 27 - Feb 2)
-    - Mid-Autumn Festival: 2023 (Sep 29), 2024 (Sep 17), 2025 (Oct 6)
-    - Independence Day (Sep 2)
-    - Labor Day (Apr 30 - May 1)
+    Includes the official Vietnam day‑off calendar for:
+    - New Year
+    - Tet (Lunar New Year)
+    - Hung Kings / Reunification / Labor
+    - Independence Day
     
     Args:
         start_date: Start date for holiday range.
@@ -234,31 +234,95 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     Returns:
         List of holiday dates.
     """
-    holidays = []
+    holidays: List[date] = []
     
-    # Define Vietnamese holidays by year
+    # Canonical Vietnam holiday calendar (days off) aligned with business rules.
+    # NOTE: These dates must stay in sync with the prediction/training scripts.
     vietnam_holidays = {
         2023: {
-            'tet': [date(2023, 1, 20), date(2023, 1, 21), date(2023, 1, 22), 
-                   date(2023, 1, 23), date(2023, 1, 24), date(2023, 1, 25), date(2023, 1, 26)],
-            'mid_autumn': [date(2023, 9, 29)],
-            'independence': [date(2023, 9, 2)],
-            'labor': [date(2023, 4, 30), date(2023, 5, 1)]
+            "new_year": [
+                date(2023, 1, 1),
+                date(2023, 1, 2),
+            ],
+            "tet": [
+                date(2023, 1, 20),
+                date(2023, 1, 21),
+                date(2023, 1, 22),
+                date(2023, 1, 23),
+                date(2023, 1, 24),
+                date(2023, 1, 25),
+                date(2023, 1, 26),
+            ],
+            "hung_kings_reunification_labor": [
+                date(2023, 4, 29),
+                date(2023, 4, 30),
+                date(2023, 5, 1),
+                date(2023, 5, 2),
+                date(2023, 5, 3),
+            ],
+            "independence_day": [
+                date(2023, 9, 1),
+                date(2023, 9, 2),
+                date(2023, 9, 3),
+                date(2023, 9, 4),
+            ],
         },
         2024: {
-            'tet': [date(2024, 2, 8), date(2024, 2, 9), date(2024, 2, 10),
-                   date(2024, 2, 11), date(2024, 2, 12), date(2024, 2, 13), date(2024, 2, 14)],
-            'mid_autumn': [date(2024, 9, 17)],
-            'independence': [date(2024, 9, 2)],
-            'labor': [date(2024, 4, 30), date(2024, 5, 1)]
+            "new_year": [
+                date(2024, 1, 1),
+            ],
+            "tet": [
+                date(2024, 2, 8),
+                date(2024, 2, 9),
+                date(2024, 2, 10),
+                date(2024, 2, 11),
+                date(2024, 2, 12),
+                date(2024, 2, 13),
+                date(2024, 2, 14),
+            ],
+            "hung_kings": [
+                date(2024, 4, 18),
+            ],
+            "reunification_labor": [
+                date(2024, 4, 30),
+                date(2024, 5, 1),
+            ],
+            "independence_day": [
+                date(2024, 8, 31),
+                date(2024, 9, 1),
+                date(2024, 9, 2),
+                date(2024, 9, 3),
+            ],
         },
         2025: {
-            'tet': [date(2025, 1, 27), date(2025, 1, 28), date(2025, 1, 29),
-                   date(2025, 1, 30), date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2)],
-            'mid_autumn': [date(2025, 10, 6)],
-            'independence': [date(2025, 9, 2)],
-            'labor': [date(2025, 4, 30), date(2025, 5, 1)]
-        }
+            "new_year": [
+                date(2025, 1, 1),
+            ],
+            "tet": [
+                date(2025, 1, 25),
+                date(2025, 1, 26),
+                date(2025, 1, 27),
+                date(2025, 1, 28),
+                date(2025, 1, 29),
+                date(2025, 1, 30),
+                date(2025, 1, 31),
+                date(2025, 2, 1),
+                date(2025, 2, 2),
+            ],
+            "hung_kings": [
+                date(2025, 4, 7),
+            ],
+            "reunification_labor": [
+                date(2025, 4, 30),
+                date(2025, 5, 1),
+            ],
+            "independence_day": [
+                date(2025, 8, 30),
+                date(2025, 8, 31),
+                date(2025, 9, 1),
+                date(2025, 9, 2),
+            ],
+        },
     }
     
     # Collect all holidays in the date range
@@ -266,11 +330,9 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     while current <= end_date:
         year = current.year
         if year in vietnam_holidays:
-            year_holidays = vietnam_holidays[year]
-            holidays.extend(year_holidays['tet'])
-            holidays.extend(year_holidays['mid_autumn'])
-            holidays.extend(year_holidays['independence'])
-            holidays.extend(year_holidays['labor'])
+            for dates in vietnam_holidays[year].values():
+                holidays.extend(dates)
+        # Jump to next year boundary
         current = date(year + 1, 1, 1)
     
     # Filter to date range and remove duplicates
@@ -505,19 +567,28 @@ def aggregate_daily(
     # Normalize to date only (remove time component)
     df['date_only'] = pd.to_datetime(df[time_col]).dt.normalize()
     
-    # Columns to aggregate - sum QTY, take first for other columns
+    # Columns to aggregate - sum target_col, optionally sum additional numeric totals
     agg_dict = {target_col: 'sum'}
+
+    # If a separate total quantity column exists (e.g. "Total QTY" when predicting "Total CBM"),
+    # aggregate it as well so downstream features can use both volume and quantity.
+    if "Total QTY" in df.columns and "Total QTY" != target_col:
+        agg_dict["Total QTY"] = "sum"
     
     # For temporal/holiday/weekend features, take first value (should be same for all rows on same date)
     feature_cols_to_keep = [
         'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
         'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
         'is_weekend', 'day_of_week',
-        'lunar_month', 'lunar_day'
+        'lunar_month', 'lunar_day',
+        # Lunar cyclical encodings and Tet countdown should also persist after aggregation
+        'lunar_month_sin', 'lunar_month_cos',
+        'lunar_day_sin', 'lunar_day_cos',
+        'days_to_tet',
     ]
     
     for col in feature_cols_to_keep:
-        if col in df.columns:
+        if col in df.columns and col not in agg_dict:
             agg_dict[col] = 'first'
     
     # Add any explicitly requested columns
@@ -536,6 +607,85 @@ def aggregate_daily(
     grouped = grouped.sort_values([cat_col, time_col]).reset_index(drop=True)
     
     return grouped
+
+
+def add_cbm_density_features(
+    df: pd.DataFrame,
+    cbm_col: str = "Total CBM",
+    qty_col: str = "Total QTY",
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    density_col: str = "cbm_per_qty",
+    density_last_year_col: str = "cbm_per_qty_last_year",
+    eps: float = 1e-3,
+) -> pd.DataFrame:
+    """
+    Add volume–quantity density features, including a "last-year" structural prior.
+
+    Creates:
+    - cbm_per_qty:      Current-day density (CBM / QTY) per (date, category)
+    - cbm_per_qty_last_year: Density observed on the same calendar date one year earlier
+                              for the same category.
+
+    This gives the model an explicit prior about how "bulky" shipments were in the
+    same seasonal window last year, which is especially useful around Tet / peak seasons.
+
+    Assumptions:
+    - df is already aggregated at daily granularity per category.
+    - cbm_col and qty_col exist in the dataframe.
+    """
+    df = df.copy()
+
+    # Basic checks
+    if cbm_col not in df.columns or qty_col not in df.columns:
+        # Nothing to do if we don't have both volume and quantity
+        return df
+
+    # Ensure time column is datetime for DateOffset operations
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+
+    # Coerce CBM and QTY to numeric to avoid string arithmetic issues coming from CSV dtypes
+    cbm_numeric = pd.to_numeric(df[cbm_col], errors="coerce")
+    qty_numeric = pd.to_numeric(df[qty_col], errors="coerce")
+
+    # Safety handling:
+    # - Replace NaN/zero quantities with small epsilon to avoid division by zero
+    # - Replace NaN CBM with 0.0 (no volume recorded)
+    qty_safe = qty_numeric.replace(0, eps).fillna(eps)
+    cbm_safe = cbm_numeric.fillna(0.0)
+
+    # Current-day density: CBM / max(QTY, eps)
+    df[density_col] = cbm_safe / qty_safe
+    # Optional stability cap: prevent extreme densities from dominating
+    df[density_col] = df[density_col].clip(lower=0.0, upper=1.0)
+
+    # Build a mapping from (category, date_minus_1y) -> density.
+    # We construct an auxiliary dataframe where we shift dates by +1 year,
+    # then left-join back on (CATEGORY, ACTUALSHIPDATE).
+    aux = df[[time_col, cat_col, density_col]].copy()
+    aux[time_col] = aux[time_col] + pd.DateOffset(years=1)
+    aux = aux.rename(columns={density_col: density_last_year_col})
+
+    # Merge back to align each row with the density from exactly one year before
+    df = df.merge(
+        aux[[time_col, cat_col, density_last_year_col]],
+        on=[time_col, cat_col],
+        how="left",
+    )
+
+    # For dates where we don't have data from a full prior year (e.g., the first year),
+    # fall back to a stable per-category statistic to avoid NaNs.
+    if df[density_last_year_col].isna().any():
+        # Category-level median density as a robust fallback
+        cat_median = (
+            df.groupby(cat_col)[density_col]
+            .transform("median")
+            .fillna(df[density_col].median())
+        )
+        df[density_last_year_col] = df[density_last_year_col].fillna(cat_median)
+
+    return df
 
 
 def fit_scaler(
@@ -582,7 +732,14 @@ def apply_scaling(
         return df
     
     # Scale target column
-    df[target_col] = scaler.transform(df[[target_col]]).flatten()
+    # NOTE: We intentionally pass a NumPy array to the scaler to avoid
+    # strict feature-name checks (feature_names_in_) that can differ
+    # between training and inference (e.g., residual vs absolute target
+    # column names). The scaler statistics (mean_, scale_) are still
+    # applied consistently.
+    values = df[[target_col]].to_numpy()
+    scaled = scaler.transform(values)
+    df[target_col] = scaled.flatten()
     
     return df
 
@@ -652,4 +809,38 @@ def prepare_data(
         'num_categories': num_categories,
         'cat_id_col': f"{cat_col}_ID"
     }
+
+
+def moving_average_forecast_by_category(
+    df: pd.DataFrame,
+    cat_col: str = "CATEGORY",
+    time_col: str = "ACTUALSHIPDATE",
+    target_col: str = "QTY",
+    window: int = 7,
+) -> pd.DataFrame:
+    """
+    Simple heuristic forecaster: category-wise moving average baseline.
+
+    This is intended for *minor* / low-volume categories (e.g., POSM, OTHER)
+    whose noisy behavior should not be backpropagated through the LSTM.
+
+    The function computes, for each (category, date), a trailing moving average
+    of the target over the previous `window` days and stores it in a new column
+    `<target_col>_MA{window}`. This can be used as a lightweight statistical
+    head for minor entities during inference.
+    """
+    df = df.copy()
+
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+
+    df = df.sort_values([cat_col, time_col])
+    ma_col = f"{target_col}_MA{window}"
+
+    df[ma_col] = (
+        df.groupby(cat_col)[target_col]
+        .transform(lambda s: s.rolling(window=window, min_periods=1).mean())
+    )
+
+    return df
 

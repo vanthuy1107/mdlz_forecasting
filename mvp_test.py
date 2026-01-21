@@ -29,6 +29,7 @@ from src.data import (
     split_data,
     add_temporal_features,
     aggregate_daily,
+    add_cbm_density_features,
     fit_scaler,
     apply_scaling,
     inverse_transform_scaling
@@ -36,6 +37,60 @@ from src.data import (
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, spike_aware_mse
+
+
+###############################################################################
+# Holiday and Lunar Calendar Utilities
+###############################################################################
+
+# NOTE:
+# We keep a single source of truth for Vietnamese holidays (including Tet)
+# so that both the discrete holiday indicators and the continuous
+# "days-to-lunar-event" features stay perfectly aligned.
+VIETNAM_HOLIDAYS_BY_YEAR = {
+    2023: {
+        "tet": [
+            date(2023, 1, 20),
+            date(2023, 1, 21),
+            date(2023, 1, 22),
+            date(2023, 1, 23),
+            date(2023, 1, 24),
+            date(2023, 1, 25),
+            date(2023, 1, 26),
+        ],
+        "mid_autumn": [date(2023, 9, 29)],
+        "independence": [date(2023, 9, 2)],
+        "labor": [date(2023, 4, 30), date(2023, 5, 1)],
+    },
+    2024: {
+        "tet": [
+            date(2024, 2, 8),
+            date(2024, 2, 9),
+            date(2024, 2, 10),
+            date(2024, 2, 11),
+            date(2024, 2, 12),
+            date(2024, 2, 13),
+            date(2024, 2, 14),
+        ],
+        "mid_autumn": [date(2024, 9, 17)],
+        "independence": [date(2024, 9, 2)],
+        "labor": [date(2024, 4, 30), date(2024, 5, 1)],
+    },
+    2025: {
+        "tet": [
+            date(2025, 1, 27),
+            date(2025, 1, 28),
+            date(2025, 1, 29),
+            date(2025, 1, 30),
+            date(2025, 1, 31),
+            date(2025, 2, 1),
+            date(2025, 2, 2),
+        ],
+        "mid_autumn": [date(2025, 10, 6)],
+        "independence": [date(2025, 9, 2)],
+        "labor": [date(2025, 4, 30), date(2025, 5, 1)],
+    },
+}
 
 
 def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
@@ -56,42 +111,17 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
         List of holiday dates.
     """
     holidays = []
-    
-    # Define Vietnamese holidays by year
-    vietnam_holidays = {
-        2023: {
-            'tet': [date(2023, 1, 20), date(2023, 1, 21), date(2023, 1, 22), 
-                   date(2023, 1, 23), date(2023, 1, 24), date(2023, 1, 25), date(2023, 1, 26)],
-            'mid_autumn': [date(2023, 9, 29)],
-            'independence': [date(2023, 9, 2)],
-            'labor': [date(2023, 4, 30), date(2023, 5, 1)]
-        },
-        2024: {
-            'tet': [date(2024, 2, 8), date(2024, 2, 9), date(2024, 2, 10),
-                   date(2024, 2, 11), date(2024, 2, 12), date(2024, 2, 13), date(2024, 2, 14)],
-            'mid_autumn': [date(2024, 9, 17)],
-            'independence': [date(2024, 9, 2)],
-            'labor': [date(2024, 4, 30), date(2024, 5, 1)]
-        },
-        2025: {
-            'tet': [date(2025, 1, 27), date(2025, 1, 28), date(2025, 1, 29),
-                   date(2025, 1, 30), date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2)],
-            'mid_autumn': [date(2025, 10, 6)],
-            'independence': [date(2025, 9, 2)],
-            'labor': [date(2025, 4, 30), date(2025, 5, 1)]
-        }
-    }
-    
+
     # Collect all holidays in the date range
     current = start_date
     while current <= end_date:
         year = current.year
-        if year in vietnam_holidays:
-            year_holidays = vietnam_holidays[year]
-            holidays.extend(year_holidays['tet'])
-            holidays.extend(year_holidays['mid_autumn'])
-            holidays.extend(year_holidays['independence'])
-            holidays.extend(year_holidays['labor'])
+        if year in VIETNAM_HOLIDAYS_BY_YEAR:
+            year_holidays = VIETNAM_HOLIDAYS_BY_YEAR[year]
+            holidays.extend(year_holidays["tet"])
+            holidays.extend(year_holidays["mid_autumn"])
+            holidays.extend(year_holidays["independence"])
+            holidays.extend(year_holidays["labor"])
         current = date(year + 1, 1, 1)
     
     # Filter to date range and remove duplicates
@@ -99,6 +129,26 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     holidays = sorted(list(set(holidays)))
     
     return holidays
+
+
+def get_tet_start_dates(start_year: int, end_year: int) -> List[date]:
+    """
+    Get Tet (Lunar New Year) *start dates* for a year range.
+
+    These are the anchor points for the "days_to_tet" continuous feature,
+    representing the surge window that the model struggles with.
+    """
+    tet_dates: List[date] = []
+    for year in range(start_year, end_year + 1):
+        if year in VIETNAM_HOLIDAYS_BY_YEAR:
+            tet_window = VIETNAM_HOLIDAYS_BY_YEAR[year]["tet"]
+            if tet_window:
+                # Use the first day of Tet as the event start
+                tet_dates.append(tet_window[0])
+
+    # Remove duplicates and sort
+    tet_dates = sorted(list(set(tet_dates)))
+    return tet_dates
 
 
 def add_holiday_features_vietnam(
@@ -302,6 +352,42 @@ def add_lunar_calendar_features(
     return df
 
 
+def add_lunar_cyclical_features(
+    df: pd.DataFrame,
+    lunar_month_col: str = "lunar_month",
+    lunar_day_col: str = "lunar_day",
+    lunar_month_sin_col: str = "lunar_month_sin",
+    lunar_month_cos_col: str = "lunar_month_cos",
+    lunar_day_sin_col: str = "lunar_day_sin",
+    lunar_day_cos_col: str = "lunar_day_cos",
+) -> pd.DataFrame:
+    """
+    Add sine/cosine cyclical encodings for the lunar calendar.
+
+    This turns the discrete lunar month/day into smooth, high-frequency signals
+    so the model can learn periodic spikes like Tet without relying on
+    fixed Gregorian dates.
+    """
+    df = df.copy()
+
+    # Ensure base lunar features exist
+    if lunar_month_col not in df.columns or lunar_day_col not in df.columns:
+        raise ValueError(
+            "Lunar calendar columns not found. "
+            "Call add_lunar_calendar_features before add_lunar_cyclical_features."
+        )
+
+    # Month: 1-12 -> [0, 2π)
+    df[lunar_month_sin_col] = np.sin(2 * np.pi * (df[lunar_month_col] - 1) / 12.0)
+    df[lunar_month_cos_col] = np.cos(2 * np.pi * (df[lunar_month_col] - 1) / 12.0)
+
+    # Day: 1-30 -> [0, 2π). We use 30 as an upper bound for simplicity.
+    df[lunar_day_sin_col] = np.sin(2 * np.pi * (df[lunar_day_col] - 1) / 30.0)
+    df[lunar_day_cos_col] = np.cos(2 * np.pi * (df[lunar_day_col] - 1) / 30.0)
+
+    return df
+
+
 def add_rolling_and_momentum_features(
     df: pd.DataFrame,
     target_col: str = "QTY",
@@ -432,6 +518,63 @@ def add_days_since_holiday(
     return df
 
 
+def add_days_to_tet_feature(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    days_to_tet_col: str = "days_to_tet",
+) -> pd.DataFrame:
+    """
+    Add a continuous "days_to_tet" feature based on the lunar Tet window.
+
+    For each date, this feature is the number of days until the *start* of
+    the next Tet holiday period (Lunar New Year). When the date falls inside
+    the Tet window itself, the value is 0.
+
+    This smooth countdown signal helps the model anticipate Tet-driven
+    demand surges well before they appear in the immediate look-back window.
+    """
+    df = df.copy()
+
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+
+    min_date = df[time_col].min().date()
+    max_date = df[time_col].max().date()
+
+    # Extend a bit so all dates have a "next Tet"
+    extended_max = max_date + timedelta(days=365)
+    tet_start_dates = get_tet_start_dates(min_date.year, extended_max.year)
+
+    if not tet_start_dates:
+        # Fallback: no Tet dates configured, set large constant
+        df[days_to_tet_col] = 365
+        return df
+
+    tet_start_dates = sorted(tet_start_dates)
+
+    df[days_to_tet_col] = np.nan
+
+    for idx, row in df.iterrows():
+        current_date = row[time_col].date()
+
+        # Find the next Tet start on or after current_date
+        next_tet = None
+        for tet_date in tet_start_dates:
+            if tet_date >= current_date:
+                next_tet = tet_date
+                break
+
+        if next_tet is None:
+            # If we're beyond the last configured Tet, use a large value
+            df.at[idx, days_to_tet_col] = 365
+        else:
+            df.at[idx, days_to_tet_col] = (next_tet - current_date).days
+
+    df[days_to_tet_col] = df[days_to_tet_col].fillna(365)
+    return df
+
+
 def train_single_model(data, config, category_filter=None, output_suffix=""):
     """
     Train a single model with optional category filtering.
@@ -455,29 +598,82 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     data_config = config.data
     cat_col = data_config['cat_col']
     time_col = data_config['time_col']
+    target_col_name = data_config['target_col']
+    major_categories = data_config.get("major_categories", ["DRY", "FRESH"])
+    minor_categories = data_config.get("minor_categories", [])
+
+    # Dynamically extend feature list with lunar cyclical + Tet distance features
+    extra_features = [
+        "lunar_month_sin",
+        "lunar_month_cos",
+        "lunar_day_sin",
+        "lunar_day_cos",
+        "days_to_tet",
+        # Structural prior on payload density (CBM per QTY)
+        "cbm_per_qty",
+        "cbm_per_qty_last_year",
+    ]
+    current_features = list(data_config["feature_cols"])
+    for feat in extra_features:
+        if feat not in current_features:
+            current_features.append(feat)
+    # Update config so downstream components see the full feature list
+    data_config["feature_cols"] = current_features
+    config.set("data.feature_cols", current_features)
     
     # Create a copy of data for this training run
     filtered_data = data.copy()
-    
+
     # Apply category filter if specified
     if category_filter:
         print(f"\n[4/8] Filtering data to category: {category_filter}...")
         samples_before = len(filtered_data)
-        
+
         if cat_col not in filtered_data.columns:
-            raise ValueError(f"Category column '{cat_col}' not found in data. Available columns: {list(filtered_data.columns)}")
-        
+            raise ValueError(
+                f"Category column '{cat_col}' not found in data. "
+                f"Available columns: {list(filtered_data.columns)}"
+            )
+
         filtered_data = filtered_data[filtered_data[cat_col] == category_filter].copy()
         samples_after = len(filtered_data)
-        
+
         print(f"  - Samples before filtering: {samples_before}")
         print(f"  - Samples after filtering (CATEGORY == '{category_filter}'): {samples_after}")
-        
+
         if samples_after == 0:
-            raise ValueError(f"No samples found with CATEGORY == '{category_filter}'. Please check your data.")
+            raise ValueError(
+                f"No samples found with CATEGORY == '{category_filter}'. Please check your data."
+            )
     else:
-        print("\n[4/8] Using all categories (no filtering)...")
-        print(f"  - Total samples: {len(filtered_data)}")
+        # Multi-target decomposition rule:
+        # When training a *global* head (no category_filter), we only allow
+        # high-volume / structurally stable categories (DRY, FRESH) to reach
+        # the LSTM. Low-volume / noisy categories (e.g., POSM, OTHER) are
+        # excluded here and should be handled by simple heuristics instead.
+        print("\n[4/8] Using major categories only for LSTM training...")
+        samples_before = len(filtered_data)
+
+        if cat_col not in filtered_data.columns:
+            raise ValueError(
+                f"Category column '{cat_col}' not found in data. "
+                f"Available columns: {list(filtered_data.columns)}"
+            )
+
+        filtered_data = filtered_data[filtered_data[cat_col].isin(major_categories)].copy()
+        samples_after = len(filtered_data)
+
+        print(f"  - Major categories: {major_categories}")
+        if minor_categories:
+            print(f"  - Minor categories (excluded from LSTM): {minor_categories}")
+        print(f"  - Samples before filtering: {samples_before}")
+        print(f"  - Samples after filtering (CATEGORY in major_categories): {samples_after}")
+
+        if samples_after == 0:
+            raise ValueError(
+                "No samples found for major_categories. "
+                f"Please check that {major_categories} exist in the data."
+            )
     
     # Update output directories with suffix
     base_output_dir = config.output.get('output_dir', 'outputs/mvp_test')
@@ -528,8 +724,20 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         lunar_month_col="lunar_month",
         lunar_day_col="lunar_day"
     )
-    
-    # Feature engineering: Add Vietnamese holiday features (with days_since_holiday)
+
+    # Feature engineering: Lunar cyclical encodings (sine/cosine)
+    print("  - Adding lunar cyclical features (sine/cosine)...")
+    filtered_data = add_lunar_cyclical_features(
+        filtered_data,
+        lunar_month_col="lunar_month",
+        lunar_day_col="lunar_day",
+        lunar_month_sin_col="lunar_month_sin",
+        lunar_month_cos_col="lunar_month_cos",
+        lunar_day_sin_col="lunar_day_sin",
+        lunar_day_cos_col="lunar_day_cos",
+    )
+
+    # Feature engineering: Vietnamese holiday features (with days_since_holiday)
     print("  - Adding Vietnamese holiday features...")
     filtered_data = add_holiday_features_vietnam(
         filtered_data,
@@ -537,6 +745,14 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         holiday_indicator_col="holiday_indicator",
         days_until_holiday_col="days_until_next_holiday",
         days_since_holiday_col="days_since_holiday"
+    )
+
+    # Feature engineering: continuous countdown to Tet (lunar event)
+    print("  - Adding Tet countdown feature (days_to_tet)...")
+    filtered_data = add_days_to_tet_feature(
+        filtered_data,
+        time_col=time_col,
+        days_to_tet_col="days_to_tet",
     )
     
     # Daily aggregation: Group by date and category, sum QTY
@@ -547,17 +763,29 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         filtered_data,
         time_col=time_col,
         cat_col=cat_col,
-        target_col=data_config['target_col']
+        target_col=target_col_name
     )
     samples_after_agg = len(filtered_data)
     print(f"  - Samples before aggregation: {samples_before_agg}")
     print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
     
+    # Feature engineering: Add CBM/QTY density features, including last-year prior
+    print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")
+    filtered_data = add_cbm_density_features(
+        filtered_data,
+        cbm_col=target_col_name,   # e.g., "Total CBM"
+        qty_col="Total QTY",
+        time_col=time_col,
+        cat_col=cat_col,
+        density_col="cbm_per_qty",
+        density_last_year_col="cbm_per_qty_last_year",
+    )
+
     # Feature engineering: Add rolling means and momentum features (after aggregation)
     print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
     filtered_data = add_rolling_and_momentum_features(
         filtered_data,
-        target_col=data_config['target_col'],
+        target_col=target_col_name,
         time_col=time_col,
         cat_col=cat_col,
         rolling_7_col="rolling_mean_7d",
@@ -565,6 +793,48 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         momentum_col="momentum_3d_vs_14d"
     )
     
+    # Residual learning: define causal baseline and residual target (optional)
+    use_residual = data_config.get("use_residual_target", False)
+    baseline_source_col = data_config.get("baseline_source_col", "rolling_mean_30d")
+    baseline_col_name = data_config.get("baseline_col", "baseline_for_target")
+    residual_col_name = data_config.get("residual_col", "target_residual")
+
+    if use_residual:
+        print("\n[5.8/8] Configuring residual target with causal baseline...")
+        if baseline_source_col not in filtered_data.columns:
+            raise ValueError(
+                f"Baseline source column '{baseline_source_col}' not found in data. "
+                f"Available columns: {list(filtered_data.columns)}"
+            )
+
+        # Build a *causal* baseline: for each category and date t, the baseline
+        # used for predicting y_t is the rolling statistic from t-1 and earlier.
+        # We start from the configured baseline_source_col (e.g., rolling_mean_30d)
+        # and shift it by 1 day within each category.
+        filtered_data[baseline_col_name] = (
+            filtered_data
+            .groupby(cat_col)[baseline_source_col]
+            .shift(1)
+        )
+
+        # For the very first observations where the shift produces NaNs,
+        # fall back to the unshifted baseline source to avoid dropping rows.
+        filtered_data[baseline_col_name] = filtered_data[baseline_col_name].fillna(
+            filtered_data[baseline_source_col]
+        )
+
+        # Residual target: y_resid_t = y_t - baseline_t
+        filtered_data[residual_col_name] = (
+            filtered_data[target_col_name] - filtered_data[baseline_col_name]
+        )
+        target_col_for_model = residual_col_name
+        print(f"  - Using residual target column: '{residual_col_name}'")
+        print(f"  - Baseline source column: '{baseline_source_col}' -> causal baseline column: '{baseline_col_name}'")
+    else:
+        target_col_for_model = target_col_name
+        baseline_col_name = None
+        print("\n[5.8/8] Residual target disabled. Model will predict absolute values.")
+
     # Encode categories
     print("  - Encoding categories...")
     filtered_data, cat2id, num_categories = encode_categories(filtered_data, cat_col)
@@ -588,36 +858,42 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"  - Validation samples: {len(val_data)}")
     print(f"  - Test samples: {len(test_data)}")
     
-    # DEBUG: Check test data QTY values BEFORE scaling
-    test_qty_before_scaling = test_data[data_config['target_col']].values
-    print(f"\n  - DEBUG: Test data QTY BEFORE scaling:")
-    print(f"    - Min: {test_qty_before_scaling.min():.4f}")
-    print(f"    - Max: {test_qty_before_scaling.max():.4f}")
-    print(f"    - Mean: {test_qty_before_scaling.mean():.4f}")
-    print(f"    - Non-zero count: {np.sum(test_qty_before_scaling != 0)} / {len(test_qty_before_scaling)}")
-    print(f"    - Zero count: {np.sum(test_qty_before_scaling == 0)} / {len(test_qty_before_scaling)}")
+    # DEBUG: Check test data target values BEFORE scaling
+    test_target_before_scaling = test_data[target_col_for_model].values
+    print(f"\n  - DEBUG: Test data target BEFORE scaling (column='{target_col_for_model}'):")
+    print(f"    - Min: {test_target_before_scaling.min():.4f}")
+    print(f"    - Max: {test_target_before_scaling.max():.4f}")
+    print(f"    - Mean: {test_target_before_scaling.mean():.4f}")
+    print(f"    - Non-zero count: {np.sum(test_target_before_scaling != 0)} / {len(test_target_before_scaling)}")
+    print(f"    - Zero count: {np.sum(test_target_before_scaling == 0)} / {len(test_target_before_scaling)}")
     
     # Fit scaler on training data and apply to all splits
-    print(f"\n[6.5/8] Scaling {data_config['target_col']} values...")
-    scaler = fit_scaler(train_data, target_col=data_config['target_col'])
+    print(f"\n[6.5/8] Scaling target values in column '{target_col_for_model}'...")
+    scaler = fit_scaler(train_data, target_col=target_col_for_model)
     print(f"  - Scaler fitted on training data:")
     print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
     
-    train_data = apply_scaling(train_data, scaler, target_col=data_config['target_col'])
-    val_data = apply_scaling(val_data, scaler, target_col=data_config['target_col'])
-    test_data = apply_scaling(test_data, scaler, target_col=data_config['target_col'])
+    train_data = apply_scaling(train_data, scaler, target_col=target_col_for_model)
+    val_data = apply_scaling(val_data, scaler, target_col=target_col_for_model)
+    test_data = apply_scaling(test_data, scaler, target_col=target_col_for_model)
     print("  - Scaling applied to train, validation, and test sets")
     
     # Create windows using slicing_window_category
     print("\n[7/8] Creating sliding windows...")
     window_config = config.window
     feature_cols = data_config['feature_cols']
-    target_col = [data_config['target_col']]
+    # The model's supervised target column (may be residual or absolute)
+    target_col = [target_col_for_model]
     cat_col_list = [cat_id_col]
     time_col_list = [time_col]
     input_size = window_config['input_size']
     horizon = window_config['horizon']
-    
+
+    # Ensure model input_dim matches the final feature count (including new lunar encodings)
+    num_features = len(feature_cols)
+    config.set("model.input_dim", num_features)
+    model_config = config.model
+
     print(f"  - Input size: {input_size}")
     print(f"  - Horizon: {horizon}")
     print(f"  - Feature columns: {feature_cols}")
@@ -658,6 +934,22 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"  - X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
     print(f"  - X_val shape: {X_val.shape}, y_val shape: {y_val.shape}")
     print(f"  - X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
+
+    # If using residual targets, also create aligned baseline windows for test set
+    # so that we can reconstruct absolute Total CBM after inverse-scaling.
+    y_test_baseline = None
+    if use_residual and baseline_col_name is not None:
+        print("  - Creating baseline windows for test set (for residual reconstruction)...")
+        _, y_test_baseline, _ = slicing_window_category(
+            test_data,
+            input_size,
+            horizon,
+            feature_cols=feature_cols,
+            target_col=[baseline_col_name],
+            cat_col=cat_col_list,
+            time_col=time_col_list
+        )
+        print(f"  - y_test_baseline shape: {y_test_baseline.shape}")
     
     # Create datasets
     train_dataset = ForecastDataset(X_train, y_train, cat_train)
@@ -684,14 +976,14 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     
     # Build model
     print("\n[8/8] Building model and trainer...")
-    model_config = config.model
     model = RNNWithCategory(
         num_categories=num_categories,
         cat_emb_dim=model_config['cat_emb_dim'],
         input_dim=model_config['input_dim'],
         hidden_size=model_config['hidden_size'],
         n_layers=model_config['n_layers'],
-        output_dim=model_config['output_dim']
+        output_dim=model_config['output_dim'],
+        use_layer_norm=model_config.get('use_layer_norm', True),
     )
     print(f"  - Model: {model_config['name']}")
     print(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -778,7 +1070,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test samples: {len(y_true)}")
     
-    # DEBUG: Check y_true values (should be in scaled space)
+    # DEBUG: Check y_true values (should be in scaled space of target_col_for_model)
     print("  - DEBUG: Checking y_true values (scaled):")
     print(f"    - Min: {y_true.min():.4f}")
     print(f"    - Max: {y_true.max():.4f}")
@@ -787,9 +1079,25 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"    - Zero count: {np.sum(y_true == 0)} / {len(y_true)}")
     
     # CRITICAL: Inverse transform predictions and true values back to original scale
-    print("  - Inverse transforming predictions to original scale...")
-    y_true_original = inverse_transform_scaling(y_true, scaler, target_col=data_config['target_col'])
-    y_pred_original = inverse_transform_scaling(y_pred, scaler, target_col=data_config['target_col'])
+    # First, undo StandardScaler on the supervised target (residual or absolute).
+    print("  - Inverse transforming predictions to supervised target scale...")
+    y_true_supervised = inverse_transform_scaling(y_true, scaler, target_col=target_col_for_model)
+    y_pred_supervised = inverse_transform_scaling(y_pred, scaler, target_col=target_col_for_model)
+
+    # If residual learning is enabled, reconstruct absolute Total CBM by
+    # adding back the baseline that was subtracted during target creation.
+    if use_residual and y_test_baseline is not None:
+        print("  - Reconstructing absolute Total CBM from residuals + baseline...")
+        baseline_flat = y_test_baseline.reshape(-1)
+        y_true_resid_flat = y_true_supervised.reshape(-1)
+        y_pred_resid_flat = y_pred_supervised.reshape(-1)
+
+        y_true_original = y_true_resid_flat + baseline_flat
+        y_pred_original = y_pred_resid_flat + baseline_flat
+    else:
+        # No residuals: supervised target is already the absolute series
+        y_true_original = y_true_supervised.reshape(-1)
+        y_pred_original = y_pred_supervised.reshape(-1)
     
     # DEBUG: Check y_true_original values (should be in original scale)
     print("  - DEBUG: Checking y_true_original values (after inverse transform):")
@@ -903,7 +1211,9 @@ def main():
     # Override configuration for MVP test
     print("\n[2/8] Applying MVP test overrides...")
     config.set('data.years', [2023, 2024])
-    config.set('training.epochs', 20)  # Increased to 20 epochs for better learning
+    # Longer warm-up and lower LR for complex feature set
+    config.set('training.epochs', 50)
+    config.set('training.learning_rate', 0.001)
     config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
     
     # Set base output directory

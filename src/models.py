@@ -33,6 +33,7 @@ class RNNWithCategory(nn.Module):
         hidden_size: int,
         n_layers: int,
         output_dim: int,
+        use_layer_norm: bool = True,
     ) -> None:
         super().__init__()
 
@@ -41,6 +42,7 @@ class RNNWithCategory(nn.Module):
         self.input_dim = input_dim
         self.hidden_size = hidden_size
         self.n_layers = n_layers
+        self.use_layer_norm = use_layer_norm
 
         # Category embedding
         self.cat_embedding = nn.Embedding(num_categories, cat_emb_dim)
@@ -58,6 +60,10 @@ class RNNWithCategory(nn.Module):
 
         # Final prediction layer (sequence-to-one)
         self.fc = nn.Linear(hidden_size, output_dim)
+
+        # Optional Layer Normalization on the final hidden state to
+        # reduce sensitivity to absolute scale and improve stability.
+        self.layer_norm = nn.LayerNorm(hidden_size) if use_layer_norm else None
 
     def forward(self, x_seq: Tensor, x_cat: Tensor) -> Tensor:
         """Forward pass.
@@ -104,6 +110,10 @@ class RNNWithCategory(nn.Module):
         out, _ = self.lstm(x, (h0.to(x_seq.device), c0))
         # Take last timestep output: (B, hidden_size)
         last_out = out[:, -1, :]
+
+        # Apply LayerNorm if enabled
+        if self.layer_norm is not None:
+            last_out = self.layer_norm(last_out)
 
         # Final prediction
         pred = self.fc(last_out)

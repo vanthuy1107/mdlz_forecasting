@@ -1,7 +1,7 @@
-"""Prediction script for full year 2025 using MVP test model.
+"""Prediction script for January 2025 using MVP test model.
 
 This script loads the trained model from mvp_test.py and makes predictions
-for full year 2025 data, filtering to DRY category only.
+for January 2025 data, filtering to DRY category only.
 
 Two modes are supported:
 1. Teacher Forcing (Test Evaluation): Uses actual ground truth QTY values from 2025 as features
@@ -16,6 +16,7 @@ import numpy as np
 import json
 import pickle
 import shutil
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import List
@@ -29,6 +30,7 @@ from src.data import (
     add_holiday_features,
     add_temporal_features,
     aggregate_daily,
+    add_cbm_density_features,
     apply_scaling,
     inverse_transform_scaling
 )
@@ -36,6 +38,61 @@ from src.data.preprocessing import get_us_holidays, get_vietnam_holidays
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference
+from combine_data import upload_to_google_sheets, GSPREAD_AVAILABLE
+
+
+###############################################################################
+# Holiday and Lunar Calendar Utilities
+###############################################################################
+
+# NOTE:
+# We keep a single source of truth for Vietnamese holidays (including Tet)
+# so that both the discrete holiday indicators and the continuous
+# "days-to-lunar-event" features stay perfectly aligned.
+VIETNAM_HOLIDAYS_BY_YEAR = {
+    2023: {
+        "tet": [
+            date(2023, 1, 20),
+            date(2023, 1, 21),
+            date(2023, 1, 22),
+            date(2023, 1, 23),
+            date(2023, 1, 24),
+            date(2023, 1, 25),
+            date(2023, 1, 26),
+        ],
+        "mid_autumn": [date(2023, 9, 29)],
+        "independence": [date(2023, 9, 2)],
+        "labor": [date(2023, 4, 30), date(2023, 5, 1)],
+    },
+    2024: {
+        "tet": [
+            date(2024, 2, 8),
+            date(2024, 2, 9),
+            date(2024, 2, 10),
+            date(2024, 2, 11),
+            date(2024, 2, 12),
+            date(2024, 2, 13),
+            date(2024, 2, 14),
+        ],
+        "mid_autumn": [date(2024, 9, 17)],
+        "independence": [date(2024, 9, 2)],
+        "labor": [date(2024, 4, 30), date(2024, 5, 1)],
+    },
+    2025: {
+        "tet": [
+            date(2025, 1, 27),
+            date(2025, 1, 28),
+            date(2025, 1, 29),
+            date(2025, 1, 30),
+            date(2025, 1, 31),
+            date(2025, 2, 1),
+            date(2025, 2, 2),
+        ],
+        "mid_autumn": [date(2025, 10, 6)],
+        "independence": [date(2025, 9, 2)],
+        "labor": [date(2025, 4, 30), date(2025, 5, 1)],
+    },
+}
 
 
 def solar_to_lunar_date(solar_date: date) -> tuple:
@@ -109,6 +166,42 @@ def add_lunar_calendar_features(
     return df
 
 
+def add_lunar_cyclical_features(
+    df: pd.DataFrame,
+    lunar_month_col: str = "lunar_month",
+    lunar_day_col: str = "lunar_day",
+    lunar_month_sin_col: str = "lunar_month_sin",
+    lunar_month_cos_col: str = "lunar_month_cos",
+    lunar_day_sin_col: str = "lunar_day_sin",
+    lunar_day_cos_col: str = "lunar_day_cos",
+) -> pd.DataFrame:
+    """
+    Add sine/cosine cyclical encodings for the lunar calendar.
+
+    Mirrors the training-time implementation so that the feature
+    representation seen during prediction matches what the model
+    was trained on.
+    """
+    df = df.copy()
+
+    # Ensure base lunar features exist
+    if lunar_month_col not in df.columns or lunar_day_col not in df.columns:
+        raise ValueError(
+            "Lunar calendar columns not found. "
+            "Call add_lunar_calendar_features before add_lunar_cyclical_features."
+        )
+
+    # Month: 1-12 -> [0, 2π)
+    df[lunar_month_sin_col] = np.sin(2 * np.pi * (df[lunar_month_col] - 1) / 12.0)
+    df[lunar_month_cos_col] = np.cos(2 * np.pi * (df[lunar_month_col] - 1) / 12.0)
+
+    # Day: 1-30 -> [0, 2π). We use 30 as an upper bound for simplicity.
+    df[lunar_day_sin_col] = np.sin(2 * np.pi * (df[lunar_day_col] - 1) / 30.0)
+    df[lunar_day_cos_col] = np.cos(2 * np.pi * (df[lunar_day_col] - 1) / 30.0)
+
+    return df
+
+
 def add_holiday_features_vietnam(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
@@ -153,6 +246,83 @@ def add_holiday_features_vietnam(
     return df
 
 
+def get_tet_start_dates(start_year: int, end_year: int) -> List[date]:
+    """
+    Get Tet (Lunar New Year) *start dates* for a year range.
+
+    These are the anchor points for the "days_to_tet" continuous feature,
+    representing the surge window that the model struggles with.
+    """
+    tet_dates: List[date] = []
+    for year in range(start_year, end_year + 1):
+        if year in VIETNAM_HOLIDAYS_BY_YEAR:
+            tet_window = VIETNAM_HOLIDAYS_BY_YEAR[year]["tet"]
+            if tet_window:
+                # Use the first day of Tet as the event start
+                tet_dates.append(tet_window[0])
+
+    # Remove duplicates and sort
+    tet_dates = sorted(list(set(tet_dates)))
+    return tet_dates
+
+
+def add_days_to_tet_feature(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    days_to_tet_col: str = "days_to_tet",
+) -> pd.DataFrame:
+    """
+    Add a continuous "days_to_tet" feature based on the lunar Tet window.
+
+    For each date, this feature is the number of days until the *start* of
+    the next Tet holiday period (Lunar New Year). When the date falls inside
+    the Tet window itself, the value is 0.
+
+    This smooth countdown signal helps the model anticipate Tet-driven
+    demand surges well before they appear in the immediate look-back window.
+    """
+    df = df.copy()
+
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+
+    min_date = df[time_col].min().date()
+    max_date = df[time_col].max().date()
+
+    # Extend a bit so all dates have a "next Tet"
+    extended_max = max_date + timedelta(days=365)
+    tet_start_dates = get_tet_start_dates(min_date.year, extended_max.year)
+
+    if not tet_start_dates:
+        # Fallback: no Tet dates configured, set large constant
+        df[days_to_tet_col] = 365
+        return df
+
+    tet_start_dates = sorted(tet_start_dates)
+
+    df[days_to_tet_col] = np.nan
+
+    for idx, row in df.iterrows():
+        current_date = row[time_col].date()
+
+        # Find the next Tet start on or after current_date
+        next_tet = None
+        for tet_date in tet_start_dates:
+            if tet_date >= current_date:
+                next_tet = tet_date
+                break
+
+        if next_tet is None:
+            # If we're beyond the last configured Tet, use a large value
+            df.at[idx, days_to_tet_col] = 365
+        else:
+            df.at[idx, days_to_tet_col] = (next_tet - current_date).days
+
+    df[days_to_tet_col] = df[days_to_tet_col].fillna(365)
+    return df
+
+
 def add_rolling_and_momentum_features(
     df: pd.DataFrame,
     target_col: str = "QTY",
@@ -190,17 +360,21 @@ def add_rolling_and_momentum_features(
 
 def calculate_accuracy(y_true, y_pred):
     """
-    Calculate %accuracy based on the formula:
+    Calculate %accuracy based on the formula using
+    SUM OF ABSOLUTE ERRORS over the whole period:
     
-    Total_Error = Σ |y_pred - y_true|
-    Total_Actual = Σ y_true
+        Total_Error = Σ |y_pred - y_true|
+        Total_Actual = Σ |y_true|
     
-    If |Total_Error| > Total_Actual:
+    If Total_Error > Total_Actual:
         ⟹ Accuracy = 0%
     
-    If |Total_Error| ≤ Total_Actual:
-        ⟹ %Bias = (|Total_Error| / Total_Actual) × 100%
+    If Total_Error ≤ Total_Actual:
+        ⟹ %Bias = (Total_Error / Total_Actual) × 100%
         ⟹ Accuracy = 100% - %Bias
+    
+    This corresponds to "accuracy by each day then abs", i.e. we take the
+    absolute error for every daily data point before summing.
     
     Args:
         y_true: Array of true values
@@ -231,7 +405,7 @@ def calculate_accuracy(y_true, y_pred):
         # If there are no actual values, return NaN
         return np.nan
     
-    # Check if |Total_Error| > Total_Actual
+    # Check if Total_Error > Total_Actual
     if total_error > total_actual:
         return 0.0
     
@@ -239,6 +413,52 @@ def calculate_accuracy(y_true, y_pred):
     percent_bias = (total_error / total_actual) * 100.0
     accuracy = 100.0 - percent_bias
     
+    return accuracy
+
+
+def calculate_accuracy_sum_before_abs(y_true, y_pred):
+    """
+    Calculate %accuracy using SUM BEFORE ABS, i.e.:
+    
+        Total_Error_signed = | Σ (y_pred - y_true) |
+        Total_Actual       = Σ |y_true|
+    
+    If Total_Error_signed > Total_Actual:
+        ⟹ Accuracy = 0%
+    
+    If Total_Error_signed ≤ Total_Actual:
+        ⟹ %Bias = (Total_Error_signed / Total_Actual) × 100%
+        ⟹ Accuracy = 100% - %Bias
+    
+    This lets us see the net bias where over- and under-forecasting
+    can cancel each other before taking the absolute value.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    # Filter out NaN values
+    valid_mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+    if valid_mask.sum() == 0:
+        return np.nan
+
+    y_true_valid = y_true[valid_mask]
+    y_pred_valid = y_pred[valid_mask]
+
+    # Sum BEFORE absolute: net signed error, then take abs once
+    total_error_signed = np.abs(np.sum(y_pred_valid - y_true_valid))
+
+    # Total_Actual is still the sum of absolute actual values
+    total_actual = np.sum(np.abs(y_true_valid))
+
+    if total_actual == 0:
+        return np.nan
+
+    if total_error_signed > total_actual:
+        return 0.0
+
+    percent_bias = (total_error_signed / total_actual) * 100.0
+    accuracy = 100.0 - percent_bias
+
     return accuracy
 
 
@@ -447,18 +667,27 @@ def analyze_improvement(current_metrics: dict, previous_runs: list) -> str:
 
 def load_model_for_prediction(model_path: str, config):
     """Load trained model from checkpoint and scaler."""
-    # Load metadata first to get the num_categories used during training
+    # Load metadata first to get the training-time model/data config
     model_dir = Path(model_path).parent
     metadata_path = model_dir / "metadata.json"
     
-    # Get num_categories from metadata if available, otherwise from config
+    # ------------------------------------------------------------------
+    # 1) Recover num_categories and full model architecture from metadata
+    # ------------------------------------------------------------------
     num_categories = None
+    trained_model_config = None
+    trained_feature_cols = None
     if metadata_path.exists():
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
-        # Get num_categories from model_config in metadata
-        if 'model_config' in metadata and 'num_categories' in metadata['model_config']:
-            num_categories = metadata['model_config']['num_categories']
+        # Get full model_config (includes num_categories, input_dim, etc.)
+        trained_model_config = metadata.get('model_config', {})
+        if 'num_categories' in trained_model_config:
+            num_categories = trained_model_config['num_categories']
+
+        # Also recover the exact feature column list used during training
+        trained_data_config = metadata.get("data_config", {})
+        trained_feature_cols = trained_data_config.get("feature_cols")
     
     # Fallback to config if metadata doesn't have it
     if num_categories is None:
@@ -470,27 +699,60 @@ def load_model_for_prediction(model_path: str, config):
     
     # Get category_filter from training metadata to know which category(ies) model was trained on
     trained_category_filter = None
+    trained_cat2id = None  # Training-time category mapping
     if metadata_path.exists():
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         if 'data_config' in metadata and 'category_filter' in metadata['data_config']:
             trained_category_filter = metadata['data_config']['category_filter']
+        
+        # Try to extract category mapping from log_summary
+        log_summary = metadata.get('log_summary', '')
+        # Look for "Category mapping: {...}" in log_summary
+        match = re.search(r"Category mapping: ({[^}]+})", log_summary)
+        if match:
+            try:
+                # Parse the dictionary string from log_summary
+                trained_cat2id_str = match.group(1)
+                # Convert single quotes to double quotes for JSON parsing
+                trained_cat2id_str = trained_cat2id_str.replace("'", '"')
+                trained_cat2id = json.loads(trained_cat2id_str)
+            except:
+                pass
+
+    # If we have the training-time feature list, push it into the live config
+    # so that window creation uses the exact same ordering and dimensionality.
+    if trained_feature_cols is not None:
+        config.set("data.feature_cols", list(trained_feature_cols))
     
     print(f"  - Loading model with num_categories={num_categories} (from trained model)")
     if trained_category_filter:
         print(f"  - Model was trained on category: {trained_category_filter}")
     else:
         print(f"  - Model was trained on: all categories (num_categories={num_categories})")
+    if trained_cat2id:
+        print(f"  - Training-time category mapping: {trained_cat2id}")
     
-    # Build model with same architecture (use num_categories from trained model)
-    model_config = config.model
+    # ------------------------------------------------------------------
+    # 2) Build model with the *exact* architecture used during training
+    #    (input_dim, hidden_size, n_layers, etc. come from metadata)
+    # ------------------------------------------------------------------
+    if trained_model_config is not None:
+        # Override config.model with training-time values for safety
+        model_config = config.model
+        for k, v in trained_model_config.items():
+            model_config[k] = v
+    else:
+        model_config = config.model
+
     model = RNNWithCategory(
         num_categories=num_categories,
         cat_emb_dim=model_config['cat_emb_dim'],
         input_dim=model_config['input_dim'],
         hidden_size=model_config['hidden_size'],
         n_layers=model_config['n_layers'],
-        output_dim=model_config['output_dim']
+        output_dim=model_config['output_dim'],
+        use_layer_norm=model_config.get('use_layer_norm', True),
     )
     
     # Load checkpoint
@@ -514,18 +776,19 @@ def load_model_for_prediction(model_path: str, config):
     else:
         print(f"  [WARNING] Scaler not found at {scaler_path}, predictions will be in scaled space")
     
-    return model, device, scaler, trained_category_filter
+    return model, device, scaler, trained_category_filter, trained_cat2id
 
 
-def prepare_prediction_data(data, config, cat2id, scaler=None):
+def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=None):
     """
     Prepare data for prediction using the same preprocessing as training.
     
     Args:
         data: DataFrame with raw data
         config: Configuration object
-        cat2id: Category to ID mapping from training
+        cat2id: Category to ID mapping from prediction data (may include all categories)
         scaler: Optional StandardScaler for QTY values (if None, no scaling applied)
+        trained_cat2id: Training-time category mapping (used for remapping to match model)
     
     Returns:
         Prepared DataFrame ready for window creation
@@ -568,6 +831,18 @@ def prepare_prediction_data(data, config, cat2id, scaler=None):
         lunar_month_col="lunar_month",
         lunar_day_col="lunar_day"
     )
+
+    # Lunar cyclical encodings (sine/cosine) to mirror training-time features
+    print("  - Adding lunar cyclical features (sine/cosine)...")
+    data = add_lunar_cyclical_features(
+        data,
+        lunar_month_col="lunar_month",
+        lunar_day_col="lunar_day",
+        lunar_month_sin_col="lunar_month_sin",
+        lunar_month_cos_col="lunar_month_cos",
+        lunar_day_sin_col="lunar_day_sin",
+        lunar_day_cos_col="lunar_day_cos",
+    )
     
     # Add Vietnamese holiday features (before aggregation)
     print("  - Adding Vietnamese holiday features...")
@@ -579,7 +854,15 @@ def prepare_prediction_data(data, config, cat2id, scaler=None):
         days_since_holiday_col="days_since_holiday"
     )
     
-    # Daily aggregation: Group by date and category, sum QTY
+    # Feature engineering: continuous countdown to Tet (lunar event)
+    print("  - Adding Tet countdown feature (days_to_tet)...")
+    data = add_days_to_tet_feature(
+        data,
+        time_col=time_col,
+        days_to_tet_col="days_to_tet",
+    )
+    
+    # Daily aggregation: Group by date and category, sum target
     # This matches the training pipeline
     print("  - Aggregating to daily totals by category...")
     samples_before = len(data)
@@ -591,6 +874,18 @@ def prepare_prediction_data(data, config, cat2id, scaler=None):
     )
     samples_after = len(data)
     print(f"    Samples: {samples_before} -> {samples_after} (one row per date per category)")
+
+    # CBM/QTY density features (including last-year prior), same as training
+    print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")
+    data = add_cbm_density_features(
+        data,
+        cbm_col=data_config['target_col'],  # e.g., "Total CBM"
+        qty_col="Total QTY",
+        time_col=time_col,
+        cat_col=cat_col,
+        density_col="cbm_per_qty",
+        density_last_year_col="cbm_per_qty_last_year",
+    )
     
     # Add rolling mean and momentum features (after aggregation)
     print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
@@ -607,7 +902,23 @@ def prepare_prediction_data(data, config, cat2id, scaler=None):
     # Encode categories using the same mapping from training
     print("  - Encoding categories...")
     data = data.copy()
-    data[cat_id_col] = data[cat_col].map(cat2id)
+    
+    # If we have training-time category mapping, remap to match model's expected IDs
+    if trained_cat2id is not None:
+        print(f"  - Remapping categories to match training-time mapping: {trained_cat2id}")
+        # Only keep categories that the model was trained on
+        trained_categories = set(trained_cat2id.keys())
+        data_before = len(data)
+        data = data[data[cat_col].isin(trained_categories)].copy()
+        data_after = len(data)
+        if data_before > data_after:
+            print(f"  - Filtered out {data_before - data_after} samples with categories not in training data")
+        
+        # Remap to training-time IDs
+        data[cat_id_col] = data[cat_col].map(trained_cat2id)
+    else:
+        # Use prediction-time mapping (fallback)
+        data[cat_id_col] = data[cat_col].map(cat2id)
     
     # Check for unknown categories
     unknown_cats = data[data[cat_id_col].isna()][cat_col].unique()
@@ -815,18 +1126,34 @@ def predict_recursive(
         # Make prediction (in scaled space if scaler was used)
         with torch.no_grad():
             pred_scaled = model(X_window, cat_tensor).cpu().item()
-        
-        # Store prediction (will be inverse transformed later if scaler is available)
+
+        # ------------------------------------------------------------------
+        # Holiday Volume Zero‑Constraint (mask output, keep rolling window)
+        # ------------------------------------------------------------------
+        # For warehouse day‑off dates (Vietnam holidays), we **force** the
+        # published prediction to 0, but we keep the *unmasked* prediction
+        # inside the recursive window so that rolling_mean_7d/30d and
+        # momentum features don't collapse around temporary zeros.
+        is_holiday = bool(holiday_indicator == 1)
+
+        # Value used for model‑internal rolling statistics
+        pred_for_rolling = pred_scaled
+        # Value exposed to users / saved to CSV (zero on holidays)
+        pred_for_output = 0.0 if is_holiday else pred_scaled
+
+        # Store prediction for current_date (scaled space; will be inverse‑transformed later)
         predictions.append({
             'date': current_date,
-            'predicted': pred_scaled
+            'predicted': pred_for_output
         })
         
         # Update window: remove oldest row, add new row with prediction
         # Create new row with predicted QTY and calendar features for current_date
         new_row = window.iloc[-1:].copy()  # Copy last row as template
         new_row[time_col] = current_datetime
-        new_row[target_col] = pred_scaled  # Use predicted QTY (in scaled space if scaler used)
+        # Use unmasked prediction for the recursive state so rolling features
+        # see the "true" model belief even when output is later masked to 0.
+        new_row[target_col] = pred_for_rolling
         new_row['month_sin'] = month_sin
         new_row['month_cos'] = month_cos
         new_row['dayofmonth_sin'] = dayofmonth_sin
@@ -906,9 +1233,6 @@ def get_historical_window_data(
 def main():
     """Main prediction function with both Teacher Forcing and Recursive modes."""
     print("=" * 80)
-    print("FULL YEAR 2025 PREDICTION - TEACHER FORCING vs RECURSIVE MODES")
-    print("=" * 80)
-    
     # Load configuration
     print("\n[1/7] Loading configuration...")
     config = load_config()
@@ -916,6 +1240,37 @@ def main():
     # Override to match MVP test settings
     config.set('data.years', [2024])  # For loading category mapping reference
     data_config = config.data
+
+    # -----------------------------------------------------------------------
+    # 0. Resolve prediction horizon from config.inference so the time range
+    #    can be adjusted easily without touching code.
+    # -----------------------------------------------------------------------
+    inference_config = config.inference or {}
+    prediction_data_path_cfg = inference_config.get(
+        "prediction_data_path",
+        "dataset/test/data_2025.csv",
+    )
+    prediction_start_str = inference_config.get("prediction_start", "2025-01-01")
+    prediction_end_str = inference_config.get("prediction_end", "2025-01-31")
+
+    # Convert to date objects
+    prediction_start_date = pd.to_datetime(prediction_start_str).date()
+    prediction_end_date = pd.to_datetime(prediction_end_str).date()
+    if prediction_end_date < prediction_start_date:
+        raise ValueError(
+            f"inference.prediction_end ({prediction_end_str}) "
+            f"must be on or after inference.prediction_start ({prediction_start_str})"
+        )
+
+    # For pandas filtering we use an exclusive upper bound (end + 1 day)
+    prediction_filter_start = prediction_start_date.isoformat()
+    prediction_filter_end = (prediction_end_date + timedelta(days=1)).isoformat()
+
+    print(
+        f"PREDICTION WINDOW: {prediction_start_date} to {prediction_end_date} "
+        f"(loaded from config.inference)"
+    )
+    print("=" * 80)
     
     # Load 2024 data to get category mapping and historical window
     print("\n[2/7] Loading historical 2024 data...")
@@ -969,13 +1324,13 @@ def main():
     
     print(f"  - Categories to predict: {categories_to_predict}")
     
-    # Load 2025 data
-    print("\n[4/7] Loading 2025 data...")
-    data_2025_path = Path("dataset/test/data_2025.csv")
+    # Load prediction data (e.g., 2025 file)
+    print("\n[4/7] Loading prediction data...")
+    data_2025_path = Path(prediction_data_path_cfg)
     
     if not data_2025_path.exists():
         raise FileNotFoundError(
-            f"2025 data file not found at: {data_2025_path.absolute()}"
+            f"Prediction data file not found at: {data_2025_path.absolute()}"
         )
     
     print(f"  - Loading from: {data_2025_path}")
@@ -988,20 +1343,23 @@ def main():
             data_2025 = pd.read_csv(data_2025_path, encoding='cp1252', low_memory=False)
     print(f"  - Loaded {len(data_2025)} samples")
     
-    # Filter to full year 2025 (keep all categories for now - will filter per category later)
+    # Filter to desired prediction window (keep all categories for now - will filter per category later)
     print("\n[5/7] Filtering data...")
     cat_col = data_config['cat_col']
     time_col = data_config['time_col']
     
-    # Filter to full year 2025 first
+    # Filter to configured prediction window first
     if not pd.api.types.is_datetime64_any_dtype(data_2025[time_col]):
         data_2025[time_col] = pd.to_datetime(data_2025[time_col])
     
     data_2025 = data_2025[
-        (data_2025[time_col] >= '2025-01-01') & 
-        (data_2025[time_col] < '2026-01-01')
+        (data_2025[time_col] >= prediction_filter_start)
+        & (data_2025[time_col] < prediction_filter_end)
     ].copy()
-    print(f"  - After full year 2025 filter: {len(data_2025)} samples")
+    print(
+        f"  - After date filter [{prediction_filter_start} .. {prediction_filter_end}): "
+        f"{len(data_2025)} samples"
+    )
     
     # Check which categories are available in 2025 data
     # Filter out NaN values and convert to string to handle mixed types
@@ -1057,7 +1415,7 @@ def main():
     else:
         print(f"  - Using model from: {model_path}")
     
-    model, device, scaler, trained_category_filter = load_model_for_prediction(str(model_path), config)
+    model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
     
     # IMPORTANT: Filter predictions to only categories the model was trained on
     # If model was trained on a single category, we can only predict that category
@@ -1075,8 +1433,8 @@ def main():
     
     # Prepare data with scaler if available (matching training pipeline)
     print("\n[6.5/7] Preparing data with scaling...")
-    historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler)
-    data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler)
+    historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler, trained_cat2id)
+    data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler, trained_cat2id)
     
     # Get last 30 days of December 2024 for initial window (after aggregation/scaling)
     historical_window = get_historical_window_data(
@@ -1095,7 +1453,9 @@ def main():
     # Filter if: single category mode OR model was trained on single category
     if category_mode == 'single' or (trained_category_filter is not None and len(categories_to_predict) == 1):
         # Filter windows to selected category only
-        cat_id = cat2id.get(categories_to_predict[0])
+        # Use trained_cat2id if available, otherwise fall back to cat2id
+        mapping_to_use = trained_cat2id if trained_cat2id is not None else cat2id
+        cat_id = mapping_to_use.get(categories_to_predict[0])
         if cat_id is None:
             raise ValueError(f"Category '{categories_to_predict[0]}' not found in category mapping")
         mask = cat_pred == cat_id
@@ -1122,50 +1482,77 @@ def main():
         batch_size=config.training['test_batch_size'],
         shuffle=False
     )
-    
-    # Create trainer for prediction
-    trainer = Trainer(
-        model=model,
-        criterion=nn.MSELoss(),
-        optimizer=torch.optim.Adam(model.parameters()),
-        device=device
-    )
-    
-    y_true_tf, y_pred_tf = trainer.predict(pred_loader)
-    
-    print(f"  - Predictions made: {len(y_pred_tf)} samples")
-    print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
-    
-    # Inverse transform predictions and actuals if scaler is available
-    if scaler is not None:
-        print("  - Inverse transforming scaled predictions to original scale...")
-        y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
-        y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
-        # Clip negative predictions to 0 (QTY cannot be negative)
-        negative_count = np.sum(y_pred_tf_unscaled < 0)
-        if negative_count > 0:
-            print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-            y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+
+    # If there are no prediction windows (e.g., January 2025 with large input_size/horizon),
+    # skip teacher-forcing evaluation to avoid division-by-zero in the trainer.
+    if len(pred_dataset) == 0:
+        print("  [WARNING] No prediction windows available for Teacher Forcing. Skipping Mode 1 evaluation.")
+        y_true_tf = np.array([])
+        y_pred_tf = np.array([])
+        y_true_tf_unscaled = np.array([])
+        y_pred_tf_unscaled = np.array([])
+        mse_tf = np.nan
+        mae_tf = np.nan
+        rmse_tf = np.nan
+        accuracy_tf = np.nan
+        # Also initialize detailed accuracy variants to avoid UnboundLocalError
+        accuracy_tf_abs = np.nan
+        accuracy_tf_sum = np.nan
     else:
-        y_true_tf_unscaled = y_true_tf.flatten()
-        y_pred_tf_unscaled = y_pred_tf.flatten()
-        # Clip negative predictions to 0 even if no scaler
-        negative_count = np.sum(y_pred_tf_unscaled < 0)
-        if negative_count > 0:
-            print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-            y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
-    
-    # Calculate metrics on unscaled values
-    mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
-    mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
-    rmse_tf = np.sqrt(mse_tf)
-    accuracy_tf = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
+        # Create trainer for prediction
+        trainer = Trainer(
+            model=model,
+            criterion=nn.MSELoss(),
+            optimizer=torch.optim.Adam(model.parameters()),
+            device=device
+        )
+
+        y_true_tf, y_pred_tf = trainer.predict(pred_loader)
+
+        print(f"  - Predictions made: {len(y_pred_tf)} samples")
+        if len(pred_dates) > 0:
+            print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
+        else:
+            print("  - Prediction date range: N/A (no prediction windows)")
+
+        # Inverse transform predictions and actuals if scaler is available
+        if scaler is not None:
+            print("  - Inverse transforming scaled predictions to original scale...")
+            y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
+            y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+            # Clip negative predictions to 0 (QTY cannot be negative)
+            negative_count = np.sum(y_pred_tf_unscaled < 0)
+            if negative_count > 0:
+                print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+        else:
+            y_true_tf_unscaled = y_true_tf.flatten()
+            y_pred_tf_unscaled = y_pred_tf.flatten()
+            # Clip negative predictions to 0 even if no scaler
+            negative_count = np.sum(y_pred_tf_unscaled < 0)
+            if negative_count > 0:
+                print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+
+        # Calculate metrics on unscaled values
+        mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
+        mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
+        rmse_tf = np.sqrt(mse_tf)
+        # Two accuracy views:
+        #  - accuracy_tf_abs: Σ|error| / Σ|actual|  (daily abs before sum)
+        #  - accuracy_tf_sum: |Σ error| / Σ|actual| (sum before abs)
+        accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
+        accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
+        # Preserve existing variable name for downstream compatibility
+        accuracy_tf = accuracy_tf_abs
     
     print(f"\n  - MSE:  {mse_tf:.4f}")
     print(f"  - MAE:  {mae_tf:.4f}")
     print(f"  - RMSE: {rmse_tf:.4f}")
-    if not np.isnan(accuracy_tf):
-        print(f"  - Accuracy: {accuracy_tf:.2f}%")
+    if not np.isnan(accuracy_tf_abs):
+        print(f"  - Accuracy (Σ|err|):       {accuracy_tf_abs:.2f}%")
+    if not np.isnan(accuracy_tf_sum):
+        print(f"  - Accuracy (|Σ err|):      {accuracy_tf_sum:.2f}%")
     
     # ========================================================================
     # MODE 2: RECURSIVE (Production Forecast) - Uses model's own predictions
@@ -1178,112 +1565,281 @@ def main():
     
     # For recursive mode, process each category separately
     # Get category ID for the category being processed
+    # Use trained_cat2id if available, otherwise fall back to cat2id
+    mapping_to_use = trained_cat2id if trained_cat2id is not None else cat2id
     if category_mode == 'single':
-        cat_id = cat2id.get(categories_to_predict[0])
+        cat_id = mapping_to_use.get(categories_to_predict[0])
         if cat_id is None:
             raise ValueError(f"Category '{categories_to_predict[0]}' not found in category mapping")
         process_categories = [categories_to_predict[0]]
     else:
-        # For "all" mode, process each category separately in recursive mode
-        process_categories = categories_to_predict
-    
-    # Filter historical window to same category(s) - process first category for now
-    # (For "all" mode with multiple categories, we'd need to loop here, but let's keep it simple for now)
-    current_category = process_categories[0] if len(process_categories) > 0 else categories_to_predict[0]
-    cat_id = cat2id.get(current_category)
-    if cat_id is None:
-        raise ValueError(f"Category '{current_category}' not found in category mapping")
-    
-    historical_window_filtered = historical_window[
-        historical_window[data_config['cat_id_col']] == cat_id
-    ].copy()
-    
-    if len(historical_window_filtered) < config.window['input_size']:
-        # If not enough data for this category, use all data and duplicate
-        print(f"  [WARNING] Only {len(historical_window_filtered)} samples for category, need {config.window['input_size']}")
+        # For "all" mode, start from categories_to_predict but restrict
+        # to only those the trained model actually knows about.
+        known_categories = set(mapping_to_use.keys())
+        process_categories = [c for c in categories_to_predict if c in known_categories]
+        skipped_categories = [c for c in categories_to_predict if c not in known_categories]
+        if skipped_categories:
+            print(
+                f"  [INFO] Skipping categories not present in trained model mapping: "
+                f"{skipped_categories}. Model mapping keys: {sorted(known_categories)}"
+            )
+        if not process_categories:
+            raise ValueError(
+                "No overlapping categories between categories_to_predict and trained model mapping. "
+                f"categories_to_predict={categories_to_predict}, trained_mapping_keys={sorted(known_categories)}"
+            )
+
+    # --------------------------------------------------------------------
+    # Build per-(date, category) actuals on ORIGINAL scale once, then reuse
+    # for each category's recursive forecast.
+    # --------------------------------------------------------------------
+    data_2025_unscaled = prepare_prediction_data(
+        data_2025.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id
+    )
+    data_2025_unscaled['date'] = pd.to_datetime(data_2025_unscaled[time_col]).dt.date
+    actuals_by_date_cat = data_2025_unscaled.groupby(
+        ['date', data_config['cat_col']]
+    )[data_config['target_col']].sum().reset_index()
+    actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
+
+    recursive_results_list = []
+
+    for current_category in process_categories:
+        cat_id = mapping_to_use.get(current_category)
+        if cat_id is None:
+            raise ValueError(f"Category '{current_category}' not found in category mapping")
+
+        # Filter historical window to this category
         historical_window_filtered = historical_window[
             historical_window[data_config['cat_id_col']] == cat_id
         ].copy()
-        # Take last available samples and repeat if needed
-        if len(historical_window_filtered) > 0:
-            last_row = historical_window_filtered.iloc[-1:].copy()
-            while len(historical_window_filtered) < config.window['input_size']:
-                historical_window_filtered = pd.concat([historical_window_filtered, last_row], ignore_index=True)
-        else:
-            raise ValueError(f"No historical data found for category ID {cat_id}")
-    
-    # Get last input_size samples
-    historical_window_filtered = historical_window_filtered.tail(config.window['input_size']).copy()
-    historical_window_filtered = historical_window_filtered.sort_values(time_col).reset_index(drop=True)
-    
-    # Run recursive prediction
-    recursive_preds = predict_recursive(
-        model=model,
-        device=device,
-        initial_window_data=historical_window_filtered,
-        start_date=date(2025, 1, 1),
-        end_date=date(2025, 12, 31),
-        config=config,
-        cat_id=cat_id
-    )
-    
-    # Get actual values from original data (before scaling, already aggregated)
-    # Re-prepare without scaler to get original scale actuals
-    data_2025_unscaled = prepare_prediction_data(data_2025.copy(), config, cat2id, scaler=None)
-    actuals_by_date = data_2025_unscaled.groupby(
-        pd.to_datetime(data_2025_unscaled[time_col]).dt.date
-    )[data_config['target_col']].sum().reset_index()
-    actuals_by_date.columns = ['date', 'actual']
-    actuals_by_date['date'] = pd.to_datetime(actuals_by_date['date']).dt.date
-    
-    recursive_results = recursive_preds.merge(
-        actuals_by_date,
-        on='date',
-        how='left'
-    )
-    
+
+        if len(historical_window_filtered) < config.window['input_size']:
+            # If not enough data for this category, use available data and duplicate
+            print(
+                f"  [WARNING] Only {len(historical_window_filtered)} samples for category "
+                f"{current_category} (ID={cat_id}), need {config.window['input_size']}"
+            )
+            if len(historical_window_filtered) > 0:
+                last_row = historical_window_filtered.iloc[-1:].copy()
+                while len(historical_window_filtered) < config.window['input_size']:
+                    historical_window_filtered = pd.concat(
+                        [historical_window_filtered, last_row], ignore_index=True
+                    )
+            else:
+                raise ValueError(f"No historical data found for category ID {cat_id}")
+
+        # Get last input_size samples
+        historical_window_filtered = historical_window_filtered.tail(
+            config.window['input_size']
+        ).copy()
+        historical_window_filtered = historical_window_filtered.sort_values(
+            time_col
+        ).reset_index(drop=True)
+
+        # Run recursive prediction over configured prediction window
+        recursive_preds = predict_recursive(
+            model=model,
+            device=device,
+            initial_window_data=historical_window_filtered,
+            start_date=prediction_start_date,
+            end_date=prediction_end_date,
+            config=config,
+            cat_id=cat_id
+        )
+        # Attach category label so downstream metrics/CSVs can group by category
+        recursive_preds[data_config['cat_col']] = current_category
+
+        # Merge with actuals for this (date, category) pair
+        recursive_results_cat = recursive_preds.merge(
+            actuals_by_date_cat,
+            left_on=['date', data_config['cat_col']],
+            right_on=['date', data_config['cat_col']],
+            how='left'
+        )
+        # For dates with no actuals, treat actual as 0 so that
+        # error and abs_error are still computed instead of NaN.
+        recursive_results_cat['actual'] = recursive_results_cat['actual'].fillna(0.0)
+
+        recursive_results_list.append(recursive_results_cat)
+
+    # Concatenate all categories
+    if len(recursive_results_list) > 0:
+        recursive_results = pd.concat(recursive_results_list, ignore_index=True)
+    else:
+        recursive_results = pd.DataFrame(columns=['date', 'predicted', 'actual', data_config['cat_col']])
+
     # Inverse transform predictions if scaler is available
-    if scaler is not None:
+    if scaler is not None and len(recursive_results) > 0:
         print("  - Inverse transforming recursive predictions to original scale...")
         recursive_results['predicted_unscaled'] = inverse_transform_scaling(
             recursive_results['predicted'].values, scaler
         )
-        # Clip negative predictions to 0 (QTY cannot be negative)
-        negative_count = np.sum(recursive_results['predicted_unscaled'] < 0)
-        if negative_count > 0:
-            print(f"  [WARNING] Clipping {negative_count} negative recursive predictions to 0 (QTY must be >= 0)")
-            recursive_results['predicted_unscaled'] = np.maximum(recursive_results['predicted_unscaled'], 0.0)
     else:
-        recursive_results['predicted_unscaled'] = recursive_results['predicted']
-        # Clip negative predictions to 0 even if no scaler
+        recursive_results['predicted_unscaled'] = recursive_results['predicted'] if len(recursive_results) > 0 else []
+
+    # Clip negative predictions to 0 (QTY/CBM cannot be negative)
+    if len(recursive_results) > 0:
         negative_count = np.sum(recursive_results['predicted_unscaled'] < 0)
         if negative_count > 0:
             print(f"  [WARNING] Clipping {negative_count} negative recursive predictions to 0 (QTY must be >= 0)")
             recursive_results['predicted_unscaled'] = np.maximum(recursive_results['predicted_unscaled'], 0.0)
-    
-    # Calculate metrics (only for dates with actuals, using unscaled values)
-    recursive_results_with_actuals = recursive_results[recursive_results['actual'].notna()].copy()
-    
+
+    # Holiday Zero‑Constraint in ORIGINAL scale:
+    # Force predicted_unscaled to 0 on Vietnam warehouse day‑off dates,
+    # while preserving the internal (scaled) series used for recursion.
+    if len(recursive_results) > 0:
+        rec_min_date = recursive_results['date'].min()
+        rec_max_date = recursive_results['date'].max()
+        rec_holidays = set(get_vietnam_holidays(rec_min_date, rec_max_date))
+        holiday_mask_rec = recursive_results['date'].isin(rec_holidays)
+        holiday_count = holiday_mask_rec.sum()
+        if holiday_count > 0:
+            print(f"  - Applying zero‑volume holiday mask to {holiday_count} recursive prediction day(s).")
+            recursive_results.loc[holiday_mask_rec, 'predicted_unscaled'] = 0.0
+
+    # Calculate metrics using unscaled values (include all dates;
+    # actuals that were originally missing are treated as 0).
+    recursive_results_with_actuals = recursive_results.copy()
+    monthly_results_by_cat = None
+
     if len(recursive_results_with_actuals) > 0:
-        mse_rec = np.mean((recursive_results_with_actuals['actual'] - recursive_results_with_actuals['predicted_unscaled']) ** 2)
-        mae_rec = np.mean(np.abs(recursive_results_with_actuals['actual'] - recursive_results_with_actuals['predicted_unscaled']))
-        rmse_rec = np.sqrt(mse_rec)
-        accuracy_rec = calculate_accuracy(
-            recursive_results_with_actuals['actual'].values,
-            recursive_results_with_actuals['predicted_unscaled'].values
+        # --------------------------------------------------------------------
+        # TOTAL metrics across all categories (for backward compatibility)
+        # We aggregate per day by summing across categories.
+        # --------------------------------------------------------------------
+        totals_by_day = recursive_results_with_actuals.groupby('date').agg(
+            actual=('actual', 'sum'),
+            predicted_unscaled=('predicted_unscaled', 'sum')
+        ).reset_index()
+
+        mse_rec = np.mean(
+            (totals_by_day['actual'] - totals_by_day['predicted_unscaled']) ** 2
         )
-        
-        print(f"\n  - Predictions made: {len(recursive_preds)} samples")
-        print(f"  - Samples with actuals: {len(recursive_results_with_actuals)}")
-        print(f"  - MSE:  {mse_rec:.4f}")
-        print(f"  - MAE:  {mae_rec:.4f}")
-        print(f"  - RMSE: {rmse_rec:.4f}")
-        if not np.isnan(accuracy_rec):
-            print(f"  - Accuracy: {accuracy_rec:.2f}%")
+        mae_rec = np.mean(
+            np.abs(totals_by_day['actual'] - totals_by_day['predicted_unscaled'])
+        )
+        rmse_rec = np.sqrt(mse_rec)
+
+        accuracy_rec_total_abs = calculate_accuracy(
+            totals_by_day['actual'].values,
+            totals_by_day['predicted_unscaled'].values,
+        )
+        accuracy_rec_total_sum = calculate_accuracy_sum_before_abs(
+            totals_by_day['actual'].values,
+            totals_by_day['predicted_unscaled'].values,
+        )
+        # Preserve legacy variable name (backwards compatibility)
+        accuracy_rec = accuracy_rec_total_abs
+
+        print(f"\n  - Predictions made: {len(recursive_results_with_actuals)} samples (all categories)")
+        print(f"  - Unique dates with predictions: {totals_by_day['date'].nunique()}")
+        print(f"  - MSE (total):  {mse_rec:.4f}")
+        print(f"  - MAE (total): {mae_rec:.4f}")
+        print(f"  - RMSE (total): {rmse_rec:.4f}")
+        if not np.isnan(accuracy_rec_total_abs):
+            print(f"  - Accuracy (total, Σ|err|):  {accuracy_rec_total_abs:.2f}%")
+        if not np.isnan(accuracy_rec_total_sum):
+            print(f"  - Accuracy (total, |Σ err|): {accuracy_rec_total_sum:.2f}%")
+
+        # --------------------------------------------------------------------
+        # Accuracy BY MONTH (TOTAL across all categories)
+        # --------------------------------------------------------------------
+        totals_by_day['date'] = pd.to_datetime(totals_by_day['date'])
+        totals_by_day['month'] = totals_by_day['date'].dt.to_period('M')
+
+        print("\n  - Monthly accuracy (recursive, unscaled):")
+        for month, group in totals_by_day.groupby('month'):
+            month_accuracy_abs = calculate_accuracy(
+                group['actual'].values,
+                group['predicted_unscaled'].values,
+            )
+            month_accuracy_sum = calculate_accuracy_sum_before_abs(
+                group['actual'].values,
+                group['predicted_unscaled'].values,
+            )
+
+            # Skip months where both cannot be computed
+            if np.isnan(month_accuracy_abs) and np.isnan(month_accuracy_sum):
+                continue
+
+            month_total_actual = np.sum(np.abs(group['actual'].values))
+            month_total_pred = np.sum(np.abs(group['predicted_unscaled'].values))
+
+            line = (
+                f"    {month}: "
+                f"Acc(Σ|err|)={month_accuracy_abs:.2f}% | "
+                f"Acc(|Σ err|)={month_accuracy_sum:.2f}% | "
+                f"Total_Actual={month_total_actual:.2f} | "
+                f"Total_Pred={month_total_pred:.2f}"
+            )
+            print(line)
+
+        # --------------------------------------------------------------------
+        # Accuracy BY MONTH AND CATEGORY + monthly totals for export
+        # --------------------------------------------------------------------
+        # Ensure `date` is a proper datetime for grouping
+        recursive_results_with_actuals['date'] = pd.to_datetime(
+            recursive_results_with_actuals['date']
+        )
+        recursive_results_with_actuals['month'] = recursive_results_with_actuals['date'].dt.to_period('M')
+
+        print("\n  - Monthly accuracy by category (recursive, unscaled):")
+        for (cat_value, month), group in recursive_results_with_actuals.groupby(
+            [data_config['cat_col'], 'month']
+        ):
+            month_accuracy_abs = calculate_accuracy(
+                group['actual'].values,
+                group['predicted_unscaled'].values,
+            )
+            month_accuracy_sum = calculate_accuracy_sum_before_abs(
+                group['actual'].values,
+                group['predicted_unscaled'].values,
+            )
+
+            # Skip months where both cannot be computed
+            if np.isnan(month_accuracy_abs) and np.isnan(month_accuracy_sum):
+                continue
+
+            month_total_actual = np.sum(np.abs(group['actual'].values))
+            month_total_pred = np.sum(np.abs(group['predicted_unscaled'].values))
+
+            line = (
+                f"    Category={cat_value} | {month}: "
+                f"Acc(Σ|err|)={month_accuracy_abs:.2f}% | "
+                f"Acc(|Σ err|)={month_accuracy_sum:.2f}% | "
+                f"Total_Actual={month_total_actual:.2f} | "
+                f"Total_Pred={month_total_pred:.2f}"
+            )
+            print(line)
+
+        # Build monthly totals by Year / CATEGORY for Google Sheets "ResultByMonth"
+        recursive_results_with_actuals['Year'] = recursive_results_with_actuals['date'].dt.year
+        recursive_results_with_actuals['Month'] = recursive_results_with_actuals['date'].dt.month
+        monthly_group = recursive_results_with_actuals.groupby(
+            ['Year', data_config['cat_col'], 'Month'],
+            as_index=False,
+        ).agg(
+            predicted=('predicted_unscaled', 'sum'),
+            actual=('actual', 'sum'),
+        )
+        monthly_group['error'] = monthly_group['actual'] - monthly_group['predicted']
+        monthly_group['abs_error'] = np.abs(monthly_group['error'])
+        # Reorder columns: Year, CATEGORY, Month, predicted, actual, error, abs_error
+        ordered_cols = [
+            'Year',
+            data_config['cat_col'],
+            'Month',
+            'predicted',
+            'actual',
+            'error',
+            'abs_error',
+        ]
+        monthly_results_by_cat = monthly_group[ordered_cols]
     else:
-        print(f"\n  - Predictions made: {len(recursive_preds)} samples")
+        print(f"\n  - Predictions made: 0 samples")
         print(f"  - No actual values available for comparison")
-        mse_rec = mae_rec = rmse_rec = accuracy_rec = np.nan
+        mse_rec = mae_rec = rmse_rec = accuracy_rec_total_abs = accuracy_rec_total_sum = accuracy_rec = np.nan
     
     # ========================================================================
     # COMPARISON AND SAVING
@@ -1303,6 +1859,16 @@ def main():
         'actual': y_true_tf_unscaled,
         'predicted': y_pred_tf_unscaled
     })
+    # Holiday Zero‑Constraint for Teacher Forcing as well:
+    # mask predicted volume to 0 on Vietnam warehouse day‑off dates so that
+    # evaluation and exported CSVs reflect the operational constraint.
+    if len(tf_results) > 0:
+        tf_min_date = tf_results['date'].min()
+        tf_max_date = tf_results['date'].max()
+        tf_holidays = set(get_vietnam_holidays(tf_min_date, tf_max_date))
+        holiday_mask_tf = tf_results['date'].isin(tf_holidays)
+        tf_results.loc[holiday_mask_tf, 'predicted'] = 0.0
+
     tf_results = tf_results.groupby('date').agg({
         'actual': 'sum',
         'predicted': 'sum'
@@ -1375,6 +1941,8 @@ def main():
     # Save Teacher Forcing results
     tf_output_path = output_dir / "predictions_teacher_forcing.csv"
     tf_results['date'] = pd.to_datetime(tf_results['date']).dt.strftime('%m/%d/%Y')
+    # If any actuals are missing for TF, treat them as 0 so error still computed
+    tf_results['actual'] = tf_results['actual'].fillna(0.0)
     tf_results['error'] = tf_results['actual'] - tf_results['predicted']
     tf_results['abs_error'] = np.abs(tf_results['error'])
     tf_results = tf_results.sort_values('date')
@@ -1387,14 +1955,48 @@ def main():
     # Use unscaled predictions for error calculation if available
     pred_col_for_error = 'predicted_unscaled' if 'predicted_unscaled' in recursive_results.columns else 'predicted'
     recursive_results['predicted'] = recursive_results[pred_col_for_error]
+    # Ensure actual has no NaNs so error and abs_error are always computed
+    recursive_results['actual'] = recursive_results['actual'].fillna(0.0)
     recursive_results['error'] = recursive_results['actual'] - recursive_results['predicted']
     recursive_results['abs_error'] = np.abs(recursive_results['error'])
     recursive_results = recursive_results.sort_values('date')
-    # Drop intermediate columns for cleaner output
-    output_cols = ['date', 'predicted', 'actual', 'error', 'abs_error']
+    # Drop intermediate columns for cleaner output (but keep category column)
+    output_cols = ['date', data_config['cat_col'], 'predicted', 'actual', 'error', 'abs_error']
     recursive_results = recursive_results[[c for c in output_cols if c in recursive_results.columns]]
     recursive_results.to_csv(rec_output_path, index=False)
     print(f"  - Recursive results: {rec_output_path}")
+
+    # Optionally upload recursive results to Google Sheets "Result" and "ResultByMonth" sheets
+    # Reuses the shared upload_to_google_sheets helper from combine_data.py
+    if GSPREAD_AVAILABLE:
+        spreadsheet_id = os.getenv(
+            "GOOGLE_SHEET_ID",
+            "1I8JEqZbWGZNOsebzOBfeHKJ7Z7jA1zcfX8JhjqGSowE",  # same default as combine_data.py
+        )
+        credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "key.json")
+
+        print(f"  - Uploading recursive results to Google Sheets sheet 'Result' (spreadsheet_id={spreadsheet_id})")
+        upload_to_google_sheets(
+            saved_files={},  # not used when data_df is provided
+            spreadsheet_id=spreadsheet_id,
+            sheet_name="Result",
+            credentials_path=credentials_path,
+            data_df=recursive_results,
+        )
+
+        if monthly_results_by_cat is not None and not monthly_results_by_cat.empty:
+            print(f"  - Uploading monthly recursive results to Google Sheets sheet 'ResultByMonth'")
+            upload_to_google_sheets(
+                saved_files={},
+                spreadsheet_id=spreadsheet_id,
+                sheet_name="ResultByMonth",
+                credentials_path=credentials_path,
+                data_df=monthly_results_by_cat,
+            )
+        else:
+            print("  - No monthly results to upload to 'ResultByMonth'.")
+    else:
+        print("  - gspread not available; skipping Google Sheets upload.")
     
     # Copy metadata.json from model directory if it exists
     if metadata_source.exists():
@@ -1421,12 +2023,16 @@ def main():
     # Save comparison summary (renamed to summary.txt)
     summary_path = output_dir / "summary.txt"
     with open(summary_path, 'w', encoding='utf-8') as f:
-        f.write("Full Year 2025 Prediction Comparison: Teacher Forcing vs Recursive\n")
+        # Use a generic title so it works for any configured window
+        f.write("Prediction Comparison: Teacher Forcing vs Recursive\n")
         f.write("=" * 70 + "\n\n")
         f.write(f"Run ID: run_{run_timestamp}\n")
         f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Model: {model_path}\n")
-        category_info = f"Full year 2025, {'ALL categories' if category_mode == 'all' else f'{categories_to_predict[0]} category only'}\n"
+        category_label = 'ALL categories' if category_mode == 'all' else f'{categories_to_predict[0]} category only'
+        category_info = (
+            f"{prediction_start_date} to {prediction_end_date}, {category_label}\n"
+        )
         f.write(f"Data: {category_info}")
         f.write(f"Data source: dataset/test/data_2025.csv\n\n")
         
@@ -1435,7 +2041,10 @@ def main():
         f.write(f"  Description: Uses actual ground truth {data_config['target_col']} values from 2025 as features\n")
         f.write(f"  Suitable for: Model evaluation on test set\n")
         f.write(f"  Number of predictions: {len(y_pred_tf)}\n")
-        f.write(f"  Date range: {pred_dates.min()} to {pred_dates.max()}\n")
+        if len(pred_dates) > 0:
+            f.write(f"  Date range: {pred_dates.min()} to {pred_dates.max()}\n")
+        else:
+            f.write("  Date range: N/A (no prediction windows available)\n")
         f.write(f"  MSE:  {mse_tf:.4f}\n")
         f.write(f"  MAE:  {mae_tf:.4f}\n")
         f.write(f"  RMSE: {rmse_tf:.4f}\n")
@@ -1448,7 +2057,11 @@ def main():
         f.write(f"  Description: Uses model's own predictions as inputs\n")
         f.write(f"  Suitable for: Production forecasting of unknown future dates\n")
         f.write(f"  Number of predictions: {len(recursive_preds)}\n")
-        f.write(f"  Date range: 2025-01-01 to 2025-12-31\n")
+        # Use actual recursive prediction date range (January 2025)
+        if len(recursive_preds) > 0:
+            rec_start_date = min(recursive_preds['date'])
+            rec_end_date = max(recursive_preds['date'])
+            f.write(f"  Date range: {rec_start_date} to {rec_end_date}\n")
         if not np.isnan(mae_rec):
             f.write(f"  MSE:  {mse_rec:.4f}\n")
             f.write(f"  MAE:  {mae_rec:.4f}\n")
