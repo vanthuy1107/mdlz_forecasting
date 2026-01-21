@@ -1212,7 +1212,7 @@ def main():
     print("\n[2/8] Applying MVP test overrides...")
     config.set('data.years', [2023, 2024])
     # Longer warm-up and lower LR for complex feature set
-    config.set('training.epochs', 50)
+    # training.epochs and training.learning_rate now come from config.yaml
     config.set('training.learning_rate', 0.001)
     config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
     
