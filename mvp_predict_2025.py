@@ -933,10 +933,12 @@ def main():
             file_prefix=data_config.get('file_prefix', 'Outboundreports')
         )
     
-    # Get category mode from config
-    inference_config = config.inference
-    category_mode = inference_config.get('category_mode', 'single')  # Default to 'single' for backward compatibility
-    category_filter = inference_config.get('category_filter', 'DRY')  # Default to 'DRY' for backward compatibility
+    # Get category mode from TRAINING config (use the same setting for train & prediction)
+    # This ensures we don't have two separate places to configure category_mode/category_filter.
+    # mvp_test.py also reads these from config.data.
+    data_config = config.data
+    category_mode = data_config.get('category_mode', 'single')  # Default to 'single' for backward compatibility
+    category_filter = data_config.get('category_filter', 'DRY')  # Default to 'DRY' for backward compatibility
     
     print(f"  - Category mode: {category_mode}")
     if category_mode == 'single':

@@ -11,7 +11,7 @@ data:
   #   "all" - Train on all categories combined
   #   "single" - Train on one specific category (specify in category_filter)
   #   "both" - Train on all categories AND each category separately
-  category_mode: "single"  # "all", "single", or "both"
+  category_mode: "all"  # "all", "single", or "both"
   category_filter: "DRY"  # Only used when category_mode is "single". Specify category name or null for all
   feature_cols:
     - "month_sin"
@@ -101,10 +101,6 @@ inference:
   n_samples_for_plot: 100
   save_predictions: true
   
-  # Category selection for prediction
-  # Options:
-  #   "all" - Predict for all categories
-  #   "single" - Predict for one specific category (specify in category_filter)
-  category_mode: "single"  # "all" or "single"
-  category_filter: "DRY"  # Only used when category_mode is "single". Specify category name
+  # Category selection for prediction now reuses data.category_mode and
+  # data.category_filter so train & prediction share one setting.
 

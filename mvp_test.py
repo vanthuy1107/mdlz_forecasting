@@ -766,45 +766,6 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         pickle.dump(scaler, f)
     print(f"  - Scaler saved to: {scaler_path}")
     
-    # Save training metadata
-    print("\n[9/9] Saving training metadata...")
-    metadata = {
-        'training_config': {
-            'epochs': training_config['epochs'],
-            'batch_size': training_config['batch_size'],
-            'learning_rate': training_config['learning_rate'],
-            'loss_function': training_config['loss'],
-            'device': training_config['device']
-        },
-        'model_config': dict(model_config),
-        'data_config': {
-            'years': data_config['years'],
-            'cat_col': data_config['cat_col'],
-            'category_filter': category_filter,  # Record which category was used (None means all)
-            'feature_cols': data_config['feature_cols'],
-            'target_col': data_config['target_col'],
-            'daily_aggregation': True,  # Flag indicating daily aggregation was used
-            'scaling': {
-                'method': 'StandardScaler',
-                'scaler_mean': float(scaler.mean_[0]),
-                'scaler_scale': float(scaler.scale_[0])
-            }
-        },
-        'window_config': dict(window_config),
-        'training_results': {
-            'final_train_loss': train_losses[-1] if train_losses else None,
-            'final_val_loss': val_losses[-1] if val_losses else None,
-            'best_val_loss': trainer.best_val_loss,
-            'training_time_seconds': training_time
-        },
-        'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
-    metadata_path = os.path.join(save_dir, 'metadata.json')
-    with open(metadata_path, 'w', encoding='utf-8') as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
-    print(f"  - Metadata saved to: {metadata_path}")
-    
     # Evaluate on test set
     print("\n" + "=" * 80)
     print("EVALUATION")
@@ -838,6 +799,57 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"    - Non-zero count: {np.sum(y_true_original != 0)} / {len(y_true_original)}")
     print(f"    - Zero count: {np.sum(y_true_original == 0)} / {len(y_true_original)}")
     print(f"    - First 10 values: {y_true_original[:10]}")
+    
+    # Save training metadata (including a compact text summary of this log)
+    print("\n[9/9] Saving training metadata...")
+    log_summary_lines = [
+        f"Category mode: {data_config.get('category_mode', 'single')}",
+        f"Category filter: {category_filter if category_filter else 'ALL CATEGORIES'}",
+        f"Number of categories: {num_categories}",
+        f"Category mapping: {cat2id}",
+        f"Best validation loss: {trainer.best_val_loss:.4f}",
+        f"Test loss: {test_loss:.4f}",
+        f"Training time (seconds): {training_time:.2f}",
+        f"Test samples: {len(y_true)}",
+    ]
+    metadata = {
+        'training_config': {
+            'epochs': training_config['epochs'],
+            'batch_size': training_config['batch_size'],
+            'learning_rate': training_config['learning_rate'],
+            'loss_function': training_config['loss'],
+            'device': training_config['device']
+        },
+        'model_config': dict(model_config),
+        'data_config': {
+            'years': data_config['years'],
+            'cat_col': data_config['cat_col'],
+            'category_filter': category_filter,  # Record which category was used (None means all)
+            'feature_cols': data_config['feature_cols'],
+            'target_col': data_config['target_col'],
+            'daily_aggregation': True,  # Flag indicating daily aggregation was used
+            'scaling': {
+                'method': 'StandardScaler',
+                'scaler_mean': float(scaler.mean_[0]),
+                'scaler_scale': float(scaler.scale_[0])
+            }
+        },
+        'window_config': dict(window_config),
+        'training_results': {
+            'final_train_loss': train_losses[-1] if train_losses else None,
+            'final_val_loss': val_losses[-1] if val_losses else None,
+            'best_val_loss': trainer.best_val_loss,
+            'test_loss': float(test_loss),
+            'training_time_seconds': training_time
+        },
+        'log_summary': "\n".join(log_summary_lines),
+        'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    metadata_path = os.path.join(save_dir, 'metadata.json')
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
+    print(f"  - Metadata saved to: {metadata_path}")
     
     # Generate prediction plot
     print("\n" + "=" * 80)
