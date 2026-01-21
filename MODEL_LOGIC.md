@@ -1,12 +1,16 @@
 ## Model Logic Documentation
 
 This document describes the **current end‑to‑end logic** of the MDLZ warehouse
-forecasting MVP as implemented in `mvp_test.py`, `src/data/preprocessing.py`,
-`src/models.py` and `src/training/trainer.py`.
+forecasting MVP as implemented in:
+
+- **Training**: `mvp_test.py` — trains models on historical data
+- **Prediction**: `mvp_predict_2025.py` — generates forecasts using trained models
+- **Core modules**: `src/data/preprocessing.py`, `src/models.py`, and
+  `src/training/trainer.py`
 
 The previous version of this document referred to an older US‑holiday,
 `QTY`–only pipeline driven by `main.py`. That entrypoint has been removed and
-replaced by the MVP test script described here.
+replaced by the MVP scripts described here.
 
 ---
 
@@ -44,7 +48,11 @@ experiment with fixed, reproducible overrides:
      - `output.output_dir = "outputs/mvp_test"`
      - `output.model_dir = "outputs/mvp_test/models"`
    - Reads **category behavior switches** from `data` config:
-     - `category_mode`: `"all"`, `"single"`, or `"both"`
+     - `category_mode`: `"all"`, `"single"`, `"both"`, or `"each"`
+       - `"all"`: Train one global model on all major categories
+       - `"single"`: Train one model on a single category (`category_filter`)
+       - `"both"`: Train one global model plus one model per category
+       - `"each"`: Train one model per category (uses `major_categories` if specified)
      - `category_filter`: used when `category_mode == "single"` (default `"DRY"`)
      - `major_categories`: categories allowed into the LSTM when training
        a global head (default: `["DRY", "FRESH"]`)
@@ -62,15 +70,17 @@ experiment with fixed, reproducible overrides:
 
 3. **Category Discovery and Training Tasks**
    - Uses `data.cat_col` (typically `CATEGORY`) to list available categories.
-   - Builds a list of **training tasks**:
-     - `category_mode == "all"` → single model on **all major categories**.
+   - Builds a list of **training tasks** based on `category_mode`:
+     - `category_mode == "all"` → single model on **all major categories**
+       (suffix: `"_all"`).
      - `category_mode == "single"` → single model on `category_filter`
-       (e.g. `"DRY"`).
-     - `category_mode == "both"` → one global model (`ALL CATEGORIES`) plus
-       one model per individual category.
+       (e.g. `"DRY"`, suffix: `"_{category_filter}"`).
+     - `category_mode == "both"` → one global model (`ALL CATEGORIES`, suffix:
+       `"_all"`) plus one model per individual category (suffix: `"_{category}"`).
+     - `category_mode == "each"` → one model per category, using `major_categories`
+       if specified, otherwise all available categories (suffix: `"_{category}"`).
    - Each task calls `train_single_model(...)` with a `category_filter` and an
-     `output_suffix` (e.g. `"_all"`, `"_DRY"`), resulting in separate
-     `outputs/mvp_test_*/` directories.
+     `output_suffix`, resulting in separate `outputs/mvp_test*/` directories.
 
 ---
 
@@ -472,8 +482,9 @@ This will:
 Typical changes are made in `config/config.yaml`, for example:
 
 - Switch between **global** and **per‑category** training:
-  - `data.category_mode: "all" | "single" | "both"`.
+  - `data.category_mode: "all" | "single" | "both" | "each"`.
   - `data.category_filter: "DRY"` when using `"single"`.
+  - `data.major_categories: ["DRY", "FRESH"]` when using `"each"` or `"all"`.
 - Enable/disable residual learning:
   - `data.use_residual_target: true | false`.
 - Adjust window and horizon:
@@ -484,6 +495,115 @@ Typical changes are made in `config/config.yaml`, for example:
 Note: `mvp_test.py` may still override some defaults (e.g. years, epochs,
 loss) to keep the MVP experiment reproducible; check the top of `main()` if you
 need to change those behaviors.
+
+### 9.3 Prediction Workflow (`mvp_predict_2025.py`)
+
+After training models with `mvp_test.py`, use `mvp_predict_2025.py` to generate
+forecasts for future dates. This script supports two prediction modes:
+
+**1. Teacher Forcing (Test Evaluation)**
+- Uses actual ground truth target values from the prediction period as input
+  features.
+- Suitable for model evaluation when historical data is available.
+- Not suitable for true production forecasting (requires future values).
+
+**2. Recursive (Production Forecast)**
+- Uses the model's own predictions as inputs for subsequent time steps.
+- Simulates true production forecasting where future values are unknown.
+- Starts from a historical window (e.g., last 30 days of 2024) and recursively
+  generates predictions day-by-day.
+
+#### 9.3.1 Prediction Configuration
+
+The prediction window and data path are configured in `config/config.yaml`
+under the `inference` section:
+
+- `inference.prediction_data_path`: Path to CSV file containing prediction
+  period data (e.g., `"dataset/test/data_2025.csv"`).
+- `inference.prediction_start`: Start date for predictions (e.g., `"2025-01-01"`).
+- `inference.prediction_end`: End date for predictions (e.g., `"2025-01-31"`).
+
+The script respects the same `data.category_mode` setting as training:
+- `"single"`: Predicts one category (uses model from `outputs/mvp_test_{category}/`).
+- `"all"`: Predicts all categories using a global model (uses model from
+  `outputs/mvp_test_all/`).
+- `"each"`: Predicts each category separately using per-category models (uses
+  models from `outputs/mvp_test_{category}/` for each category).
+
+#### 9.3.2 Prediction Pipeline
+
+The prediction workflow mirrors the training pipeline:
+
+1. **Load Historical Data**: Loads reference data (e.g., 2024) to establish
+   category mappings and extract the historical window for recursive prediction.
+
+2. **Load Prediction Data**: Loads the target period data (e.g., January 2025)
+   from the configured path.
+
+3. **Load Trained Model**: Loads the trained model checkpoint, scaler, and
+   metadata from the appropriate `outputs/mvp_test*/models/` directory based on
+   `category_mode`.
+
+4. **Feature Engineering**: Applies the same feature engineering pipeline as
+   training:
+   - Temporal features (month/day cyclical encodings)
+   - Weekend and day-of-week features
+   - Lunar calendar features (lunar_month, lunar_day)
+   - Lunar cyclical encodings (sine/cosine)
+   - Vietnamese holiday features
+   - Tet countdown feature (`days_to_tet`)
+   - Daily aggregation by category
+   - CBM density features (including last-year prior)
+   - Rolling means and momentum features
+
+5. **Category Mapping**: Remaps prediction data categories to match the
+   training-time category IDs using the `trained_cat2id` mapping from model
+   metadata.
+
+6. **Scaling**: Applies the same `StandardScaler` used during training to
+   normalize target values.
+
+7. **Teacher Forcing Mode** (if enabled):
+   - Creates prediction windows using actual target values from the prediction
+     period.
+   - Runs model inference on these windows.
+   - Computes evaluation metrics (MSE, MAE, RMSE, accuracy).
+
+8. **Recursive Mode**:
+   - Extracts the last `input_size` days from historical data as the initial
+     window.
+   - For each prediction date:
+     - Creates an input window from the most recent `input_size` days.
+     - Runs model inference to predict the next day.
+     - Updates rolling features (rolling_mean_7d, rolling_mean_30d, momentum)
+       using the predicted value.
+     - Appends the prediction to the window for the next iteration.
+   - Handles residual targets by reconstructing absolute values from residuals
+     + baseline.
+
+9. **Inverse Scaling**: Converts predictions back to original scale using the
+   saved scaler.
+
+10. **Residual Reconstruction**: If residual learning was used during training,
+    reconstructs absolute target values by adding back the baseline.
+
+11. **Output**: Saves predictions to CSV files and generates comparison plots.
+    Optionally uploads results to Google Sheets if configured.
+
+#### 9.3.3 Running Predictions
+
+From the project root:
+
+```bash
+python mvp_predict_2025.py
+```
+
+The script will:
+- Load the prediction window from `config.inference`.
+- Load the appropriate trained model(s) based on `data.category_mode`.
+- Generate predictions in both Teacher Forcing and Recursive modes.
+- Save results to `outputs/predictions/` with timestamps.
+- Generate comparison tables and accuracy metrics.
 
 ---
 
