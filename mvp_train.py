@@ -34,6 +34,7 @@ from src.data import (
     apply_scaling,
     inverse_transform_scaling
 )
+from src.data.preprocessing import add_day_of_week_cyclical_features, add_eom_features
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, spike_aware_mse
@@ -733,6 +734,25 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         day_of_week_col="day_of_week"
     )
     
+    # Feature engineering: Add cyclical day-of-week encoding (sin/cos)
+    print("  - Adding cyclical day-of-week features (day_of_week_sin, day_of_week_cos)...")
+    filtered_data = add_day_of_week_cyclical_features(
+        filtered_data,
+        time_col=time_col,
+        day_of_week_sin_col="day_of_week_sin",
+        day_of_week_cos_col="day_of_week_cos"
+    )
+    
+    # Feature engineering: Add End-of-Month (EOM) surge features
+    print("  - Adding EOM features (is_EOM, days_until_month_end)...")
+    filtered_data = add_eom_features(
+        filtered_data,
+        time_col=time_col,
+        is_eom_col="is_EOM",
+        days_until_month_end_col="days_until_month_end",
+        eom_window_days=3
+    )
+    
     # Feature engineering: Add lunar calendar features
     print("  - Adding lunar calendar features (lunar_month, lunar_day)...")
     filtered_data = add_lunar_calendar_features(
@@ -1096,10 +1116,25 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"    - Zero count: {np.sum(y_true == 0)} / {len(y_true)}")
     
     # CRITICAL: Inverse transform predictions and true values back to original scale
-    # First, undo StandardScaler on the supervised target (residual or absolute).
+    # For direct multi-step forecasting, y_true and y_pred have shape (N_samples, horizon)
+    # We need to flatten them for inverse transform, then reshape back if needed
     print("  - Inverse transforming predictions to supervised target scale...")
-    y_true_supervised = inverse_transform_scaling(y_true, scaler, target_col=target_col_for_model)
-    y_pred_supervised = inverse_transform_scaling(y_pred, scaler, target_col=target_col_for_model)
+    print(f"  - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+    
+    # Flatten for inverse transform (StandardScaler expects 1D or 2D with single feature)
+    y_true_flat = y_true.reshape(-1, 1) if y_true.ndim > 1 else y_true.reshape(-1, 1)
+    y_pred_flat = y_pred.reshape(-1, 1) if y_pred.ndim > 1 else y_pred.reshape(-1, 1)
+    
+    y_true_supervised_flat = inverse_transform_scaling(y_true_flat, scaler, target_col=target_col_for_model)
+    y_pred_supervised_flat = inverse_transform_scaling(y_pred_flat, scaler, target_col=target_col_for_model)
+    
+    # Reshape back to (N_samples, horizon) if multi-step
+    if y_true.ndim > 1:
+        y_true_supervised = y_true_supervised_flat.reshape(y_true.shape)
+        y_pred_supervised = y_pred_supervised_flat.reshape(y_pred.shape)
+    else:
+        y_true_supervised = y_true_supervised_flat
+        y_pred_supervised = y_pred_supervised_flat
 
     # If residual learning is enabled, reconstruct absolute Total CBM by
     # adding back the baseline that was subtracted during target creation.
@@ -1113,6 +1148,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         y_pred_original = y_pred_resid_flat + baseline_flat
     else:
         # No residuals: supervised target is already the absolute series
+        # Flatten for plotting/evaluation
         y_true_original = y_true_supervised.reshape(-1)
         y_pred_original = y_pred_supervised.reshape(-1)
     

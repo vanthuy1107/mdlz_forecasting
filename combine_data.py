@@ -172,6 +172,10 @@ def combine_yearly_data(
                 print(f"  Converting {time_col} to datetime...")
                 year_combined[time_col] = pd.to_datetime(year_combined[time_col])
             
+            # Convert UTC to Vietnam time (UTC+7): add 7 hours
+            print(f"  Converting {time_col} from UTC to Vietnam time (UTC+7): adding 7 hours...")
+            year_combined[time_col] = year_combined[time_col] + pd.Timedelta(hours=7)
+            
             # Apply time-based date adjustment: if time >= 17:00 (5 PM), add 1 day
             print(f"  Processing {time_col}: if time >= 17:00, date will be adjusted to next day...")
             hour_mask = year_combined[time_col].dt.hour >= 17

@@ -34,7 +34,7 @@ from src.data import (
     apply_scaling,
     inverse_transform_scaling
 )
-from src.data.preprocessing import get_us_holidays, get_vietnam_holidays
+from src.data.preprocessing import get_us_holidays, get_vietnam_holidays, add_day_of_week_cyclical_features, add_eom_features
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE
@@ -144,7 +144,7 @@ def add_weekend_features(
     """Add weekend and day-of-week features."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
     df[day_of_week_col] = df[time_col].dt.dayofweek
     df[is_weekend_col] = (df[day_of_week_col] >= 5).astype(int)
     return df
@@ -159,7 +159,7 @@ def add_lunar_calendar_features(
     """Add lunar calendar features for Vietnamese holiday prediction."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
     lunar_dates = df[time_col].dt.date.apply(solar_to_lunar_date)
     df[lunar_month_col] = [ld[0] for ld in lunar_dates]
     df[lunar_day_col] = [ld[1] for ld in lunar_dates]
@@ -212,9 +212,22 @@ def add_holiday_features_vietnam(
     """Add Vietnamese holiday-related features to DataFrame."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
+    
+    # Filter out rows with NaT dates before processing
+    valid_mask = df[time_col].notna()
+    df_valid = df[valid_mask].copy()
+    df_invalid = df[~valid_mask].copy()
+    
+    if len(df_valid) == 0:
+        # If no valid dates, set all features to default values and return
+        df[holiday_indicator_col] = 0
+        df[days_until_holiday_col] = 365
+        df[days_since_holiday_col] = 365
+        return df
+    
+    min_date = df_valid[time_col].min().date()
+    max_date = df_valid[time_col].max().date()
     extended_max = max_date + timedelta(days=365)
     holidays = get_vietnam_holidays(min_date, extended_max)
     holiday_set = set(holidays)
@@ -222,23 +235,36 @@ def add_holiday_features_vietnam(
     df[days_until_holiday_col] = np.nan
     df[days_since_holiday_col] = np.nan
     
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
+    for idx, row in df_valid.iterrows():
+        try:
+            current_date = row[time_col].date()
+        except (AttributeError, ValueError):
+            # Skip if date conversion fails
+            continue
+        
         if current_date in holiday_set:
             df.at[idx, holiday_indicator_col] = 1
         
         next_holiday = None
         for holiday in holidays:
-            if holiday > current_date:
-                next_holiday = holiday
-                break
+            try:
+                if holiday > current_date:
+                    next_holiday = holiday
+                    break
+            except (TypeError, ValueError):
+                # Skip if comparison fails (e.g., NaT)
+                continue
         df.at[idx, days_until_holiday_col] = (next_holiday - current_date).days if next_holiday else 365
         
         last_holiday = None
         for holiday in sorted(holidays, reverse=True):
-            if holiday <= current_date:
-                last_holiday = holiday
-                break
+            try:
+                if holiday <= current_date:
+                    last_holiday = holiday
+                    break
+            except (TypeError, ValueError):
+                # Skip if comparison fails (e.g., NaT)
+                continue
         df.at[idx, days_since_holiday_col] = (current_date - last_holiday).days if last_holiday else 365
     
     df[days_until_holiday_col] = df[days_until_holiday_col].fillna(365)
@@ -285,10 +311,22 @@ def add_days_to_tet_feature(
 
     # Ensure time column is datetime
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
 
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
+    # Filter out rows with NaT dates before processing
+    valid_mask = df[time_col].notna()
+    df_valid = df[valid_mask].copy()
+    df_invalid = df[~valid_mask].copy()
+    
+    # Initialize the column with default value
+    df[days_to_tet_col] = 365
+    
+    if len(df_valid) == 0:
+        # If no valid dates, set all to default and return
+        return df
+
+    min_date = df_valid[time_col].min().date()
+    max_date = df_valid[time_col].max().date()
 
     # Extend a bit so all dates have a "next Tet"
     extended_max = max_date + timedelta(days=365)
@@ -296,28 +334,37 @@ def add_days_to_tet_feature(
 
     if not tet_start_dates:
         # Fallback: no Tet dates configured, set large constant
-        df[days_to_tet_col] = 365
         return df
 
     tet_start_dates = sorted(tet_start_dates)
 
-    df[days_to_tet_col] = np.nan
-
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
+    for idx, row in df_valid.iterrows():
+        try:
+            current_date = row[time_col].date()
+        except (AttributeError, ValueError):
+            # Skip if date conversion fails
+            continue
 
         # Find the next Tet start on or after current_date
         next_tet = None
         for tet_date in tet_start_dates:
-            if tet_date >= current_date:
-                next_tet = tet_date
-                break
+            try:
+                if tet_date >= current_date:
+                    next_tet = tet_date
+                    break
+            except (TypeError, ValueError):
+                # Skip if comparison fails (e.g., NaT)
+                continue
 
         if next_tet is None:
             # If we're beyond the last configured Tet, use a large value
             df.at[idx, days_to_tet_col] = 365
         else:
-            df.at[idx, days_to_tet_col] = (next_tet - current_date).days
+            try:
+                df.at[idx, days_to_tet_col] = (next_tet - current_date).days
+            except (TypeError, ValueError):
+                # Fallback to default if calculation fails
+                df.at[idx, days_to_tet_col] = 365
 
     df[days_to_tet_col] = df[days_to_tet_col].fillna(365)
     return df
@@ -335,7 +382,7 @@ def add_rolling_and_momentum_features(
     """Add rolling mean and momentum features to reduce model inertia."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
     df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
     df[rolling_7_col] = np.nan
     df[rolling_30_col] = np.nan
@@ -800,7 +847,7 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     
     # Ensure time column is datetime and sort
     if not pd.api.types.is_datetime64_any_dtype(data[time_col]):
-        data[time_col] = pd.to_datetime(data[time_col])
+        data[time_col] = pd.to_datetime(data[time_col], dayfirst=True, errors='coerce')
     data = data.sort_values(time_col).reset_index(drop=True)
     
     # Add temporal features (before aggregation)
@@ -821,6 +868,25 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
         time_col=time_col,
         is_weekend_col="is_weekend",
         day_of_week_col="day_of_week"
+    )
+    
+    # Add cyclical day-of-week encoding (sin/cos)
+    print("  - Adding cyclical day-of-week features (day_of_week_sin, day_of_week_cos)...")
+    data = add_day_of_week_cyclical_features(
+        data,
+        time_col=time_col,
+        day_of_week_sin_col="day_of_week_sin",
+        day_of_week_cos_col="day_of_week_cos"
+    )
+    
+    # Add End-of-Month (EOM) surge features
+    print("  - Adding EOM features (is_EOM, days_until_month_end)...")
+    data = add_eom_features(
+        data,
+        time_col=time_col,
+        is_eom_col="is_EOM",
+        days_until_month_end_col="days_until_month_end",
+        eom_window_days=3
     )
     
     # Add lunar calendar features (before aggregation)
@@ -991,6 +1057,137 @@ def create_prediction_windows(data, config):
     return X_pred, y_pred, cat_pred, dates
 
 
+def predict_direct_multistep(
+    model,
+    device,
+    initial_window_data: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    config,
+    cat_id: int
+):
+    """
+    Direct multi-step prediction mode: predicts entire forecast horizon at once.
+    
+    This function addresses "Exposure Bias" by outputting the entire forecast
+    window (e.g., 30 days) in a single forward pass, preventing error accumulation
+    from recursive forecasting where errors compound step-by-step.
+    
+    Args:
+        model: Trained PyTorch model (already on device and in eval mode)
+        device: PyTorch device
+        initial_window_data: DataFrame with last input_size days of historical data
+                            Must have all feature columns and be sorted by time
+        start_date: First date to predict (e.g., date(2025, 1, 1))
+        end_date: Last date to predict (e.g., date(2025, 1, 30))
+        config: Configuration object
+        cat_id: Category ID (integer)
+    
+    Returns:
+        DataFrame with columns: date, predicted, actual (if available)
+    """
+    window_config = config.window
+    data_config = config.data
+    
+    input_size = window_config['input_size']
+    horizon = window_config['horizon']
+    feature_cols = data_config['feature_cols']
+    target_col = data_config['target_col']
+    time_col = data_config['time_col']
+    
+    # Validate initial window has enough data
+    if len(initial_window_data) < input_size:
+        raise ValueError(
+            f"Initial window must have at least {input_size} samples, "
+            f"got {len(initial_window_data)}"
+        )
+    
+    # Validate prediction range matches horizon
+    num_days_to_predict = (end_date - start_date).days + 1
+    if num_days_to_predict != horizon:
+        print(f"  [WARNING] Prediction range ({num_days_to_predict} days) doesn't match horizon ({horizon}). "
+              f"Will predict {horizon} days starting from {start_date}")
+    
+    # Get last input_size rows as the initial window
+    window = initial_window_data.tail(input_size).copy()
+    window = window.sort_values(time_col).reset_index(drop=True)
+    
+    print(f"  - Starting direct multi-step prediction from {start_date} to {end_date}")
+    print(f"  - Initial window: {window[time_col].min()} to {window[time_col].max()}")
+    print(f"  - Model will output {horizon} predictions at once (direct multi-step)")
+    
+    # Create input tensor from current window
+    window_features = window[feature_cols].values  # Shape: (input_size, n_features)
+    X_window = torch.tensor(
+        window_features,
+        dtype=torch.float32
+    ).unsqueeze(0).to(device)  # Shape: (1, input_size, n_features)
+    
+    cat_tensor = torch.tensor([cat_id], dtype=torch.long).to(device)
+    
+    # Make prediction: model outputs entire horizon at once
+    with torch.no_grad():
+        pred_scaled = model(X_window, cat_tensor).cpu().numpy()  # Shape: (1, output_dim)
+    
+    # Check if model supports direct multi-step (output_dim == horizon)
+    # or if we need to handle single-step model (output_dim == 1)
+    pred_scaled = pred_scaled.squeeze(0) if pred_scaled.ndim > 1 else pred_scaled
+    model_output_dim = pred_scaled.shape[0] if pred_scaled.ndim > 0 else 1
+    
+    if model_output_dim == 1 and horizon > 1:
+        # Model was trained for single-step prediction, but we need multi-step
+        # Repeat the single prediction for all days in horizon
+        print(f"  [INFO] Model outputs single value (output_dim=1), but horizon={horizon}.")
+        print(f"         Repeating prediction for all {horizon} days.")
+        single_pred = float(pred_scaled[0] if pred_scaled.ndim > 0 else pred_scaled)
+        pred_scaled = np.repeat(single_pred, horizon)
+    elif model_output_dim < horizon:
+        # Model outputs fewer values than needed
+        print(f"  [WARNING] Model output_dim ({model_output_dim}) < horizon ({horizon}).")
+        print(f"           Repeating last prediction for remaining days.")
+        # Repeat the last prediction for remaining days
+        if pred_scaled.ndim == 0:
+            pred_scaled = np.array([pred_scaled])
+        pred_scaled = np.concatenate([
+            pred_scaled,
+            np.repeat(pred_scaled[-1], horizon - model_output_dim)
+        ])
+    elif model_output_dim > horizon:
+        # Take only the first horizon predictions
+        pred_scaled = pred_scaled[:horizon]
+    
+    # Ensure pred_scaled is 1D array with horizon elements
+    if pred_scaled.ndim == 0:
+        pred_scaled = np.repeat(pred_scaled, horizon)
+    elif len(pred_scaled) != horizon:
+        # Safety check: if still not matching, repeat or truncate
+        if len(pred_scaled) < horizon:
+            pred_scaled = np.concatenate([pred_scaled, np.repeat(pred_scaled[-1], horizon - len(pred_scaled))])
+        else:
+            pred_scaled = pred_scaled[:horizon]
+    
+    # Generate dates for the forecast horizon
+    prediction_dates = [start_date + timedelta(days=i) for i in range(horizon)]
+    
+    # Apply holiday masking: force predictions to 0 on Vietnamese holidays
+    extended_end = end_date + timedelta(days=365)
+    holidays = get_vietnam_holidays(start_date, extended_end)
+    holiday_set = set(holidays)
+    
+    predictions = []
+    for i, pred_date in enumerate(prediction_dates):
+        is_holiday = pred_date in holiday_set
+        pred_value = 0.0 if is_holiday else float(pred_scaled[i])
+        
+        predictions.append({
+            'date': pred_date,
+            'predicted': pred_value
+        })
+    
+    predictions_df = pd.DataFrame(predictions)
+    return predictions_df
+
+
 def predict_recursive(
     model,
     device,
@@ -1001,6 +1198,11 @@ def predict_recursive(
     cat_id: int
 ):
     """
+    DEPRECATED: Recursive prediction mode (replaced by direct multi-step).
+    
+    This function is kept for backward compatibility but should not be used.
+    Use predict_direct_multistep() instead to avoid exposure bias.
+    
     Recursive prediction mode: uses model's own predictions as inputs.
     
     This function simulates a true production forecast where future QTY values
@@ -1020,6 +1222,8 @@ def predict_recursive(
     Returns:
         DataFrame with columns: date, predicted, actual (if available)
     """
+    print("  [WARNING] Using deprecated recursive prediction. Consider using direct multi-step instead.")
+    
     window_config = config.window
     data_config = config.data
     
@@ -1072,6 +1276,10 @@ def predict_recursive(
         # Compute weekend features for current_date
         day_of_week = current_datetime.dayofweek  # 0=Monday, 6=Sunday
         is_weekend = 1 if day_of_week >= 5 else 0
+        
+        # Compute cyclical day-of-week encoding (sin/cos)
+        day_of_week_sin = np.sin(2 * np.pi * day_of_week / 7)
+        day_of_week_cos = np.cos(2 * np.pi * day_of_week / 7)
         
         # Compute lunar calendar features for current_date
         lunar_month, lunar_day = solar_to_lunar_date(current_date)
@@ -1160,6 +1368,8 @@ def predict_recursive(
         new_row['dayofmonth_cos'] = dayofmonth_cos
         new_row['is_weekend'] = is_weekend
         new_row['day_of_week'] = day_of_week
+        new_row['day_of_week_sin'] = day_of_week_sin
+        new_row['day_of_week_cos'] = day_of_week_cos
         new_row['lunar_month'] = lunar_month
         new_row['lunar_day'] = lunar_day
         new_row['holiday_indicator'] = holiday_indicator
@@ -1274,6 +1484,14 @@ def main():
         f"PREDICTION WINDOW: {prediction_start_date} to {prediction_end_date} "
         f"(loaded from config.inference)"
     )
+    horizon_days = (config.window or {}).get("horizon", 30)
+    requested_days = (prediction_end_date - prediction_start_date).days + 1
+    if requested_days > horizon_days:
+        print(
+            f"[WARNING] Requested {requested_days} days but recursive mode predicts only "
+            f"the first {horizon_days} days (window.horizon). Result will cover "
+            f"{prediction_start_date} to {prediction_start_date + timedelta(days=horizon_days - 1)} only."
+        )
     print("=" * 80)
     print(f"\n[2/7] Loading historical {historical_year} data...")
     data_reader = DataReader(
@@ -1370,6 +1588,9 @@ def main():
             dayfirst=True,
         )
     
+    # Store original data to check date range if filtering returns empty
+    data_2025_original = data_2025.copy()
+    
     data_2025 = data_2025[
         (data_2025[time_col] >= prediction_filter_start)
         & (data_2025[time_col] < prediction_filter_end)
@@ -1378,6 +1599,23 @@ def main():
         f"  - After date filter [{prediction_filter_start} .. {prediction_filter_end}): "
         f"{len(data_2025)} samples"
     )
+    
+    # If no data after filtering, provide helpful error message with available date range
+    if len(data_2025) == 0:
+        if len(data_2025_original) > 0:
+            min_date = data_2025_original[time_col].min()
+            max_date = data_2025_original[time_col].max()
+            raise ValueError(
+                f"No data found in prediction file for the specified date range "
+                f"[{prediction_filter_start} .. {prediction_filter_end}).\n"
+                f"Available date range in file: {min_date.date()} to {max_date.date()}\n"
+                f"Please update config.inference.prediction_start and prediction_end to "
+                f"match the available date range, or use a different prediction data file."
+            )
+        else:
+            raise ValueError(
+                f"Prediction data file is empty or contains no valid data."
+            )
     
     # Check which categories are available in 2025 data
     # Filter out NaN values and convert to string to handle mixed types
@@ -1818,8 +2056,9 @@ def main():
             time_col
         ).reset_index(drop=True)
 
-        # Run recursive prediction over configured prediction window
-        recursive_preds = predict_recursive(
+        # Run direct multi-step prediction over configured prediction window
+        # This addresses exposure bias by predicting entire horizon at once
+        recursive_preds = predict_direct_multistep(
             model=model,
             device=device,
             initial_window_data=historical_window_filtered,
@@ -2053,14 +2292,60 @@ def main():
     print("=" * 80)
     
     # Prepare teacher forcing results for comparison
-    # Normalize pred_dates to plain Python date objects
-    tf_dates = pd.to_datetime(pred_dates).date
+    # Ensure all arrays have the same length
+    len_pred = len(y_pred_tf_unscaled) if hasattr(y_pred_tf_unscaled, '__len__') and len(y_pred_tf_unscaled) > 0 else 0
+    len_actual = len(y_true_tf_unscaled) if hasattr(y_true_tf_unscaled, '__len__') and len(y_true_tf_unscaled) > 0 else 0
+    len_dates = len(pred_dates) if hasattr(pred_dates, '__len__') and len(pred_dates) > 0 else 0
     
-    tf_results = pd.DataFrame({
-        'date': tf_dates,
-        'actual': y_true_tf_unscaled,
-        'predicted': y_pred_tf_unscaled
-    })
+    # Find the minimum length to ensure all arrays match
+    if len_pred > 0 and len_actual > 0 and len_dates > 0:
+        min_len = min(len_pred, len_actual, len_dates)
+        if len_pred != len_actual or len_pred != len_dates or len_actual != len_dates:
+            print(f"  [WARNING] Array length mismatch detected: predictions={len_pred}, actuals={len_actual}, dates={len_dates}")
+            print(f"  [WARNING] Trimming all arrays to minimum length: {min_len}")
+    else:
+        min_len = 0
+    
+    if min_len == 0:
+        # If any array is empty, create empty DataFrame
+        print("  [WARNING] One or more arrays are empty. Creating empty DataFrame for teacher forcing results.")
+        tf_results = pd.DataFrame(columns=['date', 'actual', 'predicted'])
+    else:
+        # Trim all arrays to the same length
+        y_pred_tf_trimmed = y_pred_tf_unscaled[:min_len] if hasattr(y_pred_tf_unscaled, '__getitem__') else y_pred_tf_unscaled
+        y_true_tf_trimmed = y_true_tf_unscaled[:min_len] if hasattr(y_true_tf_unscaled, '__getitem__') else y_true_tf_unscaled
+        
+        # Handle pred_dates - could be list, array, Series, or Index
+        if hasattr(pred_dates, '__getitem__'):
+            pred_dates_trimmed = pred_dates[:min_len]
+        else:
+            pred_dates_trimmed = pred_dates
+        
+        # Normalize pred_dates to plain Python date objects
+        if len(pred_dates_trimmed) > 0:
+            # Convert to pandas Series first, then extract date
+            try:
+                tf_dates_series = pd.to_datetime(pred_dates_trimmed)
+                tf_dates = [d.date() for d in tf_dates_series]
+            except Exception as e:
+                print(f"  [WARNING] Error converting dates: {e}. Using original dates.")
+                tf_dates = pred_dates_trimmed if isinstance(pred_dates_trimmed, list) else list(pred_dates_trimmed)
+        else:
+            tf_dates = []
+        
+        # Ensure all arrays have exactly the same length
+        if len(tf_dates) != min_len:
+            tf_dates = tf_dates[:min_len] if len(tf_dates) > min_len else tf_dates
+        if len(y_pred_tf_trimmed) != min_len:
+            y_pred_tf_trimmed = y_pred_tf_trimmed[:min_len] if hasattr(y_pred_tf_trimmed, '__getitem__') else y_pred_tf_trimmed
+        if len(y_true_tf_trimmed) != min_len:
+            y_true_tf_trimmed = y_true_tf_trimmed[:min_len] if hasattr(y_true_tf_trimmed, '__getitem__') else y_true_tf_trimmed
+        
+        tf_results = pd.DataFrame({
+            'date': tf_dates,
+            'actual': y_true_tf_trimmed,
+            'predicted': y_pred_tf_trimmed
+        })
     # Holiday Zero‑Constraint for Teacher Forcing as well:
     # mask predicted volume to 0 on Vietnam warehouse day‑off dates so that
     # evaluation and exported CSVs reflect the operational constraint.

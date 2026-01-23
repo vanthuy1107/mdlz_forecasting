@@ -84,6 +84,8 @@ class Trainer:
             
             batch_losses.append(loss.item())
         
+        if len(batch_losses) == 0:
+            raise ValueError("Training dataloader is empty. Cannot compute average loss.")
         avg_loss = sum(batch_losses) / len(batch_losses)
         return avg_loss
     
@@ -130,6 +132,8 @@ class Trainer:
                     all_preds.append(outputs.cpu())
                     all_labels.append(labels.cpu())
         
+        if len(losses) == 0:
+            raise ValueError("Evaluation dataloader is empty. Cannot compute average loss.")
         avg_loss = sum(losses) / len(losses)
         
         if return_predictions:

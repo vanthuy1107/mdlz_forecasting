@@ -492,6 +492,108 @@ def add_temporal_features(
     return df
 
 
+def add_day_of_week_cyclical_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    day_of_week_sin_col: str = "day_of_week_sin",
+    day_of_week_cos_col: str = "day_of_week_cos"
+) -> pd.DataFrame:
+    """
+    Add cyclical day-of-week features using sine/cosine transformations.
+    
+    This encoding ensures the model understands that Sunday (6) is adjacent to Monday (0),
+    capturing the 7-day cyclicality of weekly demand patterns.
+    
+    Creates:
+    - day_of_week_sin: sin(2π × day_of_week / 7)
+    - day_of_week_cos: cos(2π × day_of_week / 7)
+    
+    Where day_of_week is 0=Monday, 1=Tuesday, ..., 6=Sunday.
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        day_of_week_sin_col: Name for day_of_week_sin column.
+        day_of_week_cos_col: Name for day_of_week_cos column.
+    
+    Returns:
+        DataFrame with added cyclical day-of-week features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    day_of_week = df[time_col].dt.dayofweek
+    
+    # Create cyclical encoding for day of week (0-6)
+    # Normalize to [0, 1] range, then apply sin/cos
+    # This ensures Sunday (6) and Monday (0) are close in the encoding space
+    df[day_of_week_sin_col] = np.sin(2 * np.pi * day_of_week / 7)
+    df[day_of_week_cos_col] = np.cos(2 * np.pi * day_of_week / 7)
+    
+    return df
+
+
+def add_eom_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    is_eom_col: str = "is_EOM",
+    days_until_month_end_col: str = "days_until_month_end",
+    eom_window_days: int = 3
+) -> pd.DataFrame:
+    """
+    Add End-of-Month (EOM) surge features to DataFrame.
+    
+    This captures the KPI-driven pattern where volume spikes in the last few days
+    of the month as distributors or sales teams try to hit monthly targets.
+    
+    Pattern: Average CBM in the last 3 days of the month is approximately 42% higher
+    than the rest of the month.
+    
+    Creates:
+    - is_EOM: Binary flag (1 if date is in last N days of month, 0 otherwise)
+    - days_until_month_end: Countdown feature (days until the end of the month)
+    
+    The countdown feature provides a smooth gradient that neural networks can learn
+    more easily than a sudden binary switch, helping the model anticipate EOM surges.
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        is_eom_col: Name for is_EOM binary flag column.
+        days_until_month_end_col: Name for days_until_month_end countdown column.
+        eom_window_days: Number of days at end of month to flag as EOM (default: 3).
+    
+    Returns:
+        DataFrame with added EOM features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Get the day of month and calculate days in the current month
+    day_of_month = df[time_col].dt.day
+    
+    # Calculate the last day of each month
+    # Using pandas offset to get the last day of the month
+    last_day_of_month = df[time_col] + pd.offsets.MonthEnd(0)
+    days_in_month = last_day_of_month.dt.day
+    
+    # Calculate days until month end (countdown)
+    # This gives a smooth gradient: 0 on the last day, 1 on second-to-last, etc.
+    df[days_until_month_end_col] = days_in_month - day_of_month
+    
+    # Binary flag: 1 if date is in last N days of month, 0 otherwise
+    df[is_eom_col] = (df[days_until_month_end_col] < eom_window_days).astype(int)
+    
+    return df
+
+
 def encode_categories(df: pd.DataFrame, cat_col: str = "CATEGORY") -> Tuple[pd.DataFrame, dict, int]:
     """
     Encode categorical column to integer IDs.
@@ -607,12 +709,14 @@ def aggregate_daily(
     feature_cols_to_keep = [
         'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
         'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
-        'is_weekend', 'day_of_week',
+        'is_weekend', 'day_of_week', 'day_of_week_sin', 'day_of_week_cos',
         'lunar_month', 'lunar_day',
         # Lunar cyclical encodings and Tet countdown should also persist after aggregation
         'lunar_month_sin', 'lunar_month_cos',
         'lunar_day_sin', 'lunar_day_cos',
         'days_to_tet',
+        # EOM (End-of-Month) surge features
+        'is_EOM', 'days_until_month_end',
     ]
     
     for col in feature_cols_to_keep:

@@ -4,7 +4,7 @@
 data:
   data_dir: "./dataset/data_cat"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
-  years: [2023, 2024,2025]
+  years: [2023, 2024, 2025]
   
   # Category selection for MVP test
   # Options:
@@ -45,7 +45,10 @@ data:
     - "days_until_next_holiday"
     - "days_since_holiday"
     - "is_weekend"
-    - "day_of_week"
+    - "day_of_week_sin"
+    - "day_of_week_cos"
+    - "is_EOM"
+    - "days_until_month_end"
     - "lunar_month"
     - "lunar_day"
     - "rolling_mean_7d"
@@ -67,9 +70,11 @@ data:
   test_size: 0.2
 
 # Window configuration
+# Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
+# This prevents exposure bias from recursive forecasting where errors compound
 window:
-  input_size: 30
-  horizon: 1
+  input_size: 60  # Increased from 30 to provide more context
+  horizon: 30     # Changed from 1 to 30 for direct multi-step prediction
 
 # Model Configuration
 model:
@@ -79,7 +84,7 @@ model:
   input_dim: 15  # Updated dynamically in code to match feature_cols length
   hidden_size: 128
   n_layers: 2
-  output_dim: 1
+  output_dim: 30  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
   dropout_prob: 0.2  # Only for RNNForecastor
   use_layer_norm: true  # Apply LayerNorm on final hidden state before output
 
@@ -88,7 +93,7 @@ training:
   batch_size: 64
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 30
+  epochs: 20
   learning_rate: 0.001
   optimizer: "Adam"
   
@@ -129,9 +134,15 @@ inference:
   # data.category_filter so train & prediction share one setting.
 
   # Prediction horizon (time range and data file for inference script)
-  # These values are used by mvp_predict_2025.py so you can easily change
+  # These values are used by mvp_predict.py so you can easily change
   # which period to forecast without editing code.
+  #
+  # IMPORTANT: Recursive (direct multi-step) mode predicts exactly window.horizon days
+  # (e.g. 30) per run, starting at prediction_start. If you set prediction_end to
+  # cover a full year, only the first horizon days are produced (~1 month). Use
+  # prediction_end = prediction_start + (horizon - 1) days to avoid confusion, or
+  # implement rolling chunks to cover longer ranges.
   prediction_data_path: "dataset/test/data_2026.csv"  # CSV with future period to predict
   prediction_start: "2026-01-01"  # Inclusive start date (YYYY-MM-DD)
-  prediction_end: "2026-01-21"    # Inclusive end date (YYYY-MM-DD)
+  prediction_end: "2026-01-31"    # Inclusive end date (YYYY-MM-DD); recursive mode uses first horizon days only
 
