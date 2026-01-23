@@ -103,6 +103,7 @@ is:
 - `days_since_holiday`
 - `is_weekend`
 - `day_of_week_sin`, `day_of_week_cos` (cyclical encoding)
+- `weekday_volume_tier`, `is_high_volume_weekday` (weekday volume tier features)
 - `is_EOM`, `days_until_month_end` (End-of-Month surge features)
 - `lunar_month`, `lunar_day`
 - `rolling_mean_7d`, `rolling_mean_30d`
@@ -147,6 +148,21 @@ Additionally, `add_day_of_week_cyclical_features` (from `src/data/preprocessing.
 - `day_of_week_cos = cos(2π × day_of_week / 7)`
 
 The cyclical encoding ensures the model understands that Sunday (6) is adjacent to Monday (0), capturing weekly periodicity more effectively than a linear encoding.
+
+### 3.3.1 Weekday Volume Tier Features
+
+Function: `add_weekday_volume_tier_features` in `src/data/preprocessing.py`.
+
+Captures observed weekly demand patterns where certain weekdays consistently show higher or lower volumes:
+
+- `weekday_volume_tier`: Numeric tier indicating volume level:
+  - `2` = Wednesday (highest volume)
+  - `1` = Friday (high volume, but lower than Wednesday)
+  - `0` = Tuesday, Thursday (low volume)
+  - `-1` = Saturday (lower than Tuesday/Thursday), Monday, Sunday (neutral/other)
+- `is_high_volume_weekday`: Binary indicator (1 for Wednesday or Friday, 0 otherwise)
+
+This feature helps the model learn that Wednesday and Friday tend to have higher demand than Tuesday and Thursday, with Wednesday being the peak weekday.
 
 ### 3.4 End-of-Month (EOM) Surge Features
 

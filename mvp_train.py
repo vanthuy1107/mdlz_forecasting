@@ -37,6 +37,7 @@ from src.data import (
 from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
+    add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover
 )
 from src.models import RNNWithCategory
@@ -688,6 +689,15 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         time_col=time_col,
         day_of_week_sin_col="day_of_week_sin",
         day_of_week_cos_col="day_of_week_cos"
+    )
+    
+    # Feature engineering: Add weekday volume tier features
+    print("  - Adding weekday volume tier features (weekday_volume_tier, is_high_volume_weekday)...")
+    filtered_data = add_weekday_volume_tier_features(
+        filtered_data,
+        time_col=time_col,
+        weekday_volume_tier_col="weekday_volume_tier",
+        is_high_volume_weekday_col="is_high_volume_weekday"
     )
     
     # Feature engineering: Add End-of-Month (EOM) surge features

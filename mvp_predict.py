@@ -39,6 +39,7 @@ from src.data.preprocessing import (
     get_vietnam_holidays,
     add_day_of_week_cyclical_features,
     add_eom_features,
+    add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover
 )
 from src.models import RNNWithCategory
@@ -843,6 +844,15 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
         day_of_week_cos_col="day_of_week_cos"
     )
     
+    # Add weekday volume tier features
+    print("  - Adding weekday volume tier features (weekday_volume_tier, is_high_volume_weekday)...")
+    data = add_weekday_volume_tier_features(
+        data,
+        time_col=time_col,
+        weekday_volume_tier_col="weekday_volume_tier",
+        is_high_volume_weekday_col="is_high_volume_weekday"
+    )
+    
     # Add End-of-Month (EOM) surge features
     print("  - Adding EOM features (is_EOM, days_until_month_end)...")
     data = add_eom_features(
@@ -1336,6 +1346,19 @@ def predict_recursive(
         day_of_week_sin = np.sin(2 * np.pi * day_of_week / 7)
         day_of_week_cos = np.cos(2 * np.pi * day_of_week / 7)
         
+        # Compute weekday volume tier features
+        # 2 = Wednesday (highest), 1 = Friday (high), 0 = Tuesday/Thursday (low), -1 = Monday/Saturday/Sunday (neutral)
+        if day_of_week == 2:  # Wednesday
+            weekday_volume_tier = 2
+        elif day_of_week == 4:  # Friday
+            weekday_volume_tier = 1
+        elif day_of_week in [1, 3]:  # Tuesday, Thursday
+            weekday_volume_tier = 0
+        else:  # Monday, Saturday, Sunday
+            weekday_volume_tier = -1
+        
+        is_high_volume_weekday = 1 if day_of_week in [2, 4] else 0  # Wednesday or Friday
+        
         # Compute lunar calendar features for current_date
         lunar_month, lunar_day = solar_to_lunar_date(current_date)
         
@@ -1425,6 +1448,8 @@ def predict_recursive(
         new_row['day_of_week'] = day_of_week
         new_row['day_of_week_sin'] = day_of_week_sin
         new_row['day_of_week_cos'] = day_of_week_cos
+        new_row['weekday_volume_tier'] = weekday_volume_tier
+        new_row['is_high_volume_weekday'] = is_high_volume_weekday
         new_row['lunar_month'] = lunar_month
         new_row['lunar_day'] = lunar_day
         new_row['holiday_indicator'] = holiday_indicator

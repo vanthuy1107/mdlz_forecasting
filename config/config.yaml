@@ -47,6 +47,8 @@ data:
     - "is_weekend"
     - "day_of_week_sin"
     - "day_of_week_cos"
+    - "weekday_volume_tier"
+    - "is_high_volume_weekday"
     - "is_EOM"
     - "days_until_month_end"
     - "lunar_month"

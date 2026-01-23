@@ -433,6 +433,60 @@ def add_day_of_week_cyclical_features(
     return df
 
 
+def add_weekday_volume_tier_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    weekday_volume_tier_col: str = "weekday_volume_tier",
+    is_high_volume_weekday_col: str = "is_high_volume_weekday"
+) -> pd.DataFrame:
+    """
+    Add weekday volume tier features to capture weekly demand patterns.
+    
+    Based on observed patterns:
+    - Wednesday (day_of_week=2) and Friday (day_of_week=4) have higher volume
+    - Tuesday (day_of_week=1) and Thursday (day_of_week=3) have lower volume
+    - Among high-volume days, Friday is lower than Wednesday
+    
+    Creates:
+    - weekday_volume_tier: Numeric tier (2=Wednesday highest, 1=Friday high, 
+      0=Tuesday/Thursday low, -1=Monday/Saturday/Sunday neutral)
+    - is_high_volume_weekday: Binary (1 for Wednesday/Friday, 0 otherwise)
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        weekday_volume_tier_col: Name for weekday_volume_tier column.
+        is_high_volume_weekday_col: Name for is_high_volume_weekday column.
+    
+    Returns:
+        DataFrame with added weekday volume tier features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    day_of_week = df[time_col].dt.dayofweek
+    
+    # Create weekday_volume_tier feature
+    # 2 = Wednesday (highest volume)
+    # 1 = Friday (high volume, but lower than Wednesday)
+    # 0 = Tuesday, Thursday (low volume)
+    # -1 = Saturday (lower than Tuesday/Thursday), Monday, Sunday (neutral/other)
+    df[weekday_volume_tier_col] = -1  # Default for Monday, Saturday, Sunday
+    df.loc[day_of_week == 2, weekday_volume_tier_col] = 2  # Wednesday (highest)
+    df.loc[day_of_week == 4, weekday_volume_tier_col] = 1  # Friday (high)
+    df.loc[day_of_week == 1, weekday_volume_tier_col] = 0  # Tuesday (low)
+    df.loc[day_of_week == 3, weekday_volume_tier_col] = 0  # Thursday (low)
+    
+    # Create binary indicator for high volume weekdays (Wednesday and Friday)
+    df[is_high_volume_weekday_col] = ((day_of_week == 2) | (day_of_week == 4)).astype(int)
+    
+    return df
+
+
 def add_eom_features(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
@@ -606,6 +660,7 @@ def aggregate_daily(
         'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
         'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
         'is_weekend', 'day_of_week', 'day_of_week_sin', 'day_of_week_cos',
+        'weekday_volume_tier', 'is_high_volume_weekday',
         'lunar_month', 'lunar_day',
         # Lunar cyclical encodings and Tet countdown should also persist after aggregation
         'lunar_month_sin', 'lunar_month_cos',
