@@ -172,9 +172,26 @@ def combine_yearly_data(
                 print(f"  Converting {time_col} to datetime...")
                 year_combined[time_col] = pd.to_datetime(year_combined[time_col])
             
+            # Apply time-based date adjustment: if time >= 17:00 (5 PM), add 1 day
+            print(f"  Processing {time_col}: if time >= 17:00, date will be adjusted to next day...")
+            hour_mask = year_combined[time_col].dt.hour >= 17
+            if hour_mask.any():
+                count = hour_mask.sum()
+                print(f"  Adjusting {count} row(s) with time >= 17:00 to next day")
+                year_combined.loc[hour_mask, time_col] = year_combined.loc[hour_mask, time_col] + pd.Timedelta(days=1)
+            
             # Convert datetime to date only (remove time component)
             print(f"  Converting {time_col} to date (removing time component)...")
             year_combined[time_col] = year_combined[time_col].dt.date
+            
+            # Add Week column with day names (1.Monday, 2.Tuesday, etc.)
+            print(f"  Adding Week column with day names (1.Monday, 2.Tuesday, etc.)...")
+            date_dt = pd.to_datetime(year_combined[time_col])
+            year_combined['Week'] = (date_dt.dt.dayofweek + 1).astype(str) + '.' + date_dt.dt.day_name()
+            
+            # Add day of month column (1, 2, 3, ..., 31)
+            print(f"  Adding day of month column...")
+            year_combined['Day'] = date_dt.dt.day
             
             date_range = f"{year_combined[time_col].min()} to {year_combined[time_col].max()}"
             print(f"  Date range: {date_range}")
@@ -248,6 +265,12 @@ def combine_yearly_data(
                 # Rename aggregated columns to output names
                 rename_dict = {old_name: new_name for new_name, old_name in agg_dict.items()}
                 grouped = grouped.rename(columns=rename_dict)
+                
+                # Add Week column back after grouping (derived from date)
+                if time_col in grouped.columns:
+                    date_dt = pd.to_datetime(grouped[time_col])
+                    grouped['Week'] = (date_dt.dt.dayofweek + 1).astype(str) + '.' + date_dt.dt.day_name()
+                    grouped['Day'] = date_dt.dt.day
                 
                 year_combined = grouped
                 
@@ -484,8 +507,8 @@ def main():
         '--years',
         type=int,
         nargs='+',
-        default=[2023, 2024, 2025],
-        help='Years to combine (default: 2022 2023 2024 2025)'
+        default=[2023, 2024, 2025,2026],
+        help='Years to combine (default: 2022 2023 2024 2025 2026)'
     )
     parser.add_argument(
         '--file-prefix',

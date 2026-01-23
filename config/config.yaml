@@ -4,7 +4,7 @@
 data:
   data_dir: "./dataset/data_cat"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
-  years: [2023, 2024]
+  years: [2023, 2024,2025]
   
   # Category selection for MVP test
   # Options:
@@ -88,7 +88,7 @@ training:
   batch_size: 64
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 100
+  epochs: 30
   learning_rate: 0.001
   optimizer: "Adam"
   
@@ -131,7 +131,7 @@ inference:
   # Prediction horizon (time range and data file for inference script)
   # These values are used by mvp_predict_2025.py so you can easily change
   # which period to forecast without editing code.
-  prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
-  prediction_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
-  prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD)
+  prediction_data_path: "dataset/test/data_2026.csv"  # CSV with future period to predict
+  prediction_start: "2026-01-01"  # Inclusive start date (YYYY-MM-DD)
+  prediction_end: "2026-01-21"    # Inclusive end date (YYYY-MM-DD)
 

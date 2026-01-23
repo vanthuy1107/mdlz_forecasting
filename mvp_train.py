@@ -90,6 +90,23 @@ VIETNAM_HOLIDAYS_BY_YEAR = {
         "independence": [date(2025, 9, 2)],
         "labor": [date(2025, 4, 30), date(2025, 5, 1)],
     },
+    2026: {
+        "tet": [
+            date(2026, 2, 14),  # Saturday - Pre-Tet
+            date(2026, 2, 15),  # Sunday - Pre-Tet
+            date(2026, 2, 16),  # Monday - 29th of Lunar December
+            date(2026, 2, 17),  # Tuesday - 1st Day of Lunar New Year
+            date(2026, 2, 18),  # Wednesday - 2nd Day
+            date(2026, 2, 19),  # Thursday - 3rd Day
+            date(2026, 2, 20),  # Friday - 4th Day
+            date(2026, 2, 21),  # Saturday - 5th Day
+            date(2026, 2, 22),  # Sunday - Weekend wrap-up
+        ],
+        "mid_autumn": [date(2026, 9, 25)],  # Full Moon (15/08 Lunar)
+        "independence": [date(2026, 9, 1), date(2026, 9, 2)],
+        "labor": [date(2026, 4, 30), date(2026, 5, 1)],
+        "hung_kings": [date(2026, 4, 26), date(2026, 4, 27)],  # Observed
+    },
 }
 
 
@@ -1210,7 +1227,8 @@ def main():
     
     # Override configuration for MVP test
     print("\n[2/8] Applying MVP test overrides...")
-    config.set('data.years', [2023, 2024])
+    # Use years from config.yaml instead of hardcoding
+    config.set('data.years', config.data.get('years'))
     # Longer warm-up and lower LR for complex feature set
     # training.epochs and training.learning_rate now come from config.yaml
     config.set('training.learning_rate', 0.001)

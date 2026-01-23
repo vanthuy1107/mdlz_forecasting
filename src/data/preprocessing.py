@@ -323,6 +323,34 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
                 date(2025, 9, 2),
             ],
         },
+        2026: {
+            "new_year": [
+                date(2026, 1, 1),
+            ],
+            "tet": [
+                date(2026, 2, 14),
+                date(2026, 2, 15),
+                date(2026, 2, 16),
+                date(2026, 2, 17),
+                date(2026, 2, 18),
+                date(2026, 2, 19),
+                date(2026, 2, 20),
+                date(2026, 2, 21),
+                date(2026, 2, 22),
+            ],
+            "hung_kings": [
+                date(2026, 4, 26),
+                date(2026, 4, 27),
+            ],
+            "reunification_labor": [
+                date(2026, 4, 30),
+                date(2026, 5, 1),
+            ],
+            "independence_day": [
+                date(2026, 9, 1),
+                date(2026, 9, 2),
+            ],
+        },
     }
     
     # Collect all holidays in the date range

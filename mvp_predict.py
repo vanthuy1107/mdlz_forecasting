@@ -38,6 +38,7 @@ from src.data.preprocessing import get_us_holidays, get_vietnam_holidays
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE
+from src.utils.google_sheets import upload_history_prediction
 
 
 ###############################################################################
@@ -1236,8 +1237,8 @@ def main():
     print("\n[1/7] Loading configuration...")
     config = load_config()
     
-    # Override to match MVP test settings
-    config.set('data.years', [2024])  # For loading category mapping reference
+    # Note: We'll determine historical_year after parsing prediction dates
+    # This config setting is not critical as we load historical data directly
     data_config = config.data
 
     # -----------------------------------------------------------------------
@@ -1261,6 +1262,10 @@ def main():
             f"must be on or after inference.prediction_start ({prediction_start_str})"
         )
 
+    # Determine historical year: use the year before prediction start year
+    # (e.g., if predicting 2026, use 2025 as historical reference)
+    historical_year = prediction_start_date.year - 1
+
     # For pandas filtering we use an exclusive upper bound (end + 1 day)
     prediction_filter_start = prediction_start_date.isoformat()
     prediction_filter_end = (prediction_end_date + timedelta(days=1)).isoformat()
@@ -1270,20 +1275,18 @@ def main():
         f"(loaded from config.inference)"
     )
     print("=" * 80)
-    
-    # Load 2024 data to get category mapping and historical window
-    print("\n[2/7] Loading historical 2024 data...")
+    print(f"\n[2/7] Loading historical {historical_year} data...")
     data_reader = DataReader(
         data_dir=data_config['data_dir'],
         file_pattern=data_config['file_pattern']
     )
     
     try:
-        ref_data = data_reader.load(years=[2024])
+        ref_data = data_reader.load(years=[historical_year])
     except FileNotFoundError:
         print("[WARNING] Trying pattern-based loading...")
         ref_data = data_reader.load_by_file_pattern(
-            years=[2024],
+            years=[historical_year],
             file_prefix=data_config.get('file_prefix', 'Outboundreports')
         )
     
@@ -1527,10 +1530,10 @@ def main():
         historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler, trained_cat2id)
         data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler, trained_cat2id)
         
-        # Get last 30 days of December 2024 for initial window (after aggregation/scaling)
+        # Get last N days of historical year for initial window (after aggregation/scaling)
         historical_window = get_historical_window_data(
             historical_data_prepared,
-            end_date=date(2024, 12, 31),
+            end_date=date(historical_year, 12, 31),
             config=config,
             num_days=config.window['input_size']
         )
@@ -1634,33 +1637,36 @@ def main():
                 print("  - Prediction date range: N/A (no prediction windows)")
 
         # Inverse transform predictions and actuals if scaler is available
-        if scaler is not None:
-            print("  - Inverse transforming scaled predictions to original scale...")
-            y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
-            y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
-            # Clip negative predictions to 0 (QTY cannot be negative)
-            negative_count = np.sum(y_pred_tf_unscaled < 0)
-            if negative_count > 0:
-                print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-                y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
-        else:
-            y_true_tf_unscaled = y_true_tf.flatten()
-            y_pred_tf_unscaled = y_pred_tf.flatten()
-            # Clip negative predictions to 0 even if no scaler
-            negative_count = np.sum(y_pred_tf_unscaled < 0)
-            if negative_count > 0:
-                print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-                y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+        # Only do this if we have actual predictions (arrays are not empty)
+        if len(y_true_tf) > 0 and len(y_pred_tf) > 0:
+            if scaler is not None:
+                print("  - Inverse transforming scaled predictions to original scale...")
+                y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
+                y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+                # Clip negative predictions to 0 (QTY cannot be negative)
+                negative_count = np.sum(y_pred_tf_unscaled < 0)
+                if negative_count > 0:
+                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+            else:
+                y_true_tf_unscaled = y_true_tf.flatten()
+                y_pred_tf_unscaled = y_pred_tf.flatten()
+                # Clip negative predictions to 0 even if no scaler
+                negative_count = np.sum(y_pred_tf_unscaled < 0)
+                if negative_count > 0:
+                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
 
-        # Calculate metrics on unscaled values
-        mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
-        mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
-        rmse_tf = np.sqrt(mse_tf)
-        # Two accuracy views:
-        #  - accuracy_tf_abs: Σ|error| / Σ|actual|  (daily abs before sum)
-        #  - accuracy_tf_sum: |Σ error| / Σ|actual| (sum before abs)
-        accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
-        accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
+            # Calculate metrics on unscaled values
+            mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
+            mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
+            rmse_tf = np.sqrt(mse_tf)
+            # Two accuracy views:
+            #  - accuracy_tf_abs: Σ|error| / Σ|actual|  (daily abs before sum)
+            #  - accuracy_tf_sum: |Σ error| / Σ|actual| (sum before abs)
+            accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
+            accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
+        # If arrays are empty, metrics are already set to np.nan above
         # Preserve existing variable name for downstream compatibility
         accuracy_tf = accuracy_tf_abs
         
@@ -1744,7 +1750,7 @@ def main():
             # Get historical window for this category
             historical_window_cat = get_historical_window_data(
                 historical_data_prepared_cat,
-                end_date=date(2024, 12, 31),
+                end_date=date(historical_year, 12, 31),
                 config=config,
                 num_days=config.window['input_size']
             )
@@ -2083,11 +2089,66 @@ def main():
             print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {accuracy_rec:<19.2f}% {accuracy_diff:<19.2f}%")
         print(f"\nError increase: {(mae_rec / mae_tf - 1) * 100:.2f}% (MAE)")
         print(f"Error increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}% (RMSE)")
+        
+        # Calculate error increase percentages for upload
+        mae_error_increase_pct = (mae_rec / mae_tf - 1) * 100 if not np.isnan(mae_tf) and mae_tf != 0 else None
+        rmse_error_increase_pct = (rmse_rec / rmse_tf - 1) * 100 if not np.isnan(rmse_tf) and rmse_tf != 0 else None
     else:
         print(f"{'MAE':<15} {mae_tf:<20.4f} {'N/A':<20}")
         print(f"{'RMSE':<15} {rmse_tf:<20.4f} {'N/A':<20}")
         if not np.isnan(accuracy_tf):
             print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {'N/A':<20}")
+        
+        # Set error increase to None if recursive metrics are not available
+        mae_error_increase_pct = None
+        rmse_error_increase_pct = None
+    
+    # Upload history prediction results to Google Sheets
+    if GSPREAD_AVAILABLE:
+        # Calculate number of months for prediction
+        # Calculate the difference in months between start and end dates
+        months_diff = (prediction_end_date.year - prediction_start_date.year) * 12 + \
+                      (prediction_end_date.month - prediction_start_date.month) + 1
+        # Add 1 to include both start and end months
+        
+        # Determine category label
+        if len(categories_to_predict) == 1:
+            category_label = categories_to_predict[0]
+        elif len(categories_to_predict) == len(available_categories):
+            category_label = "ALL"
+        else:
+            # Multiple but not all categories - join them
+            category_label = ", ".join(sorted(categories_to_predict))
+        
+        spreadsheet_id = os.getenv(
+            "GOOGLE_SHEET_ID",
+            "1I8JEqZbWGZNOsebzOBfeHKJ7Z7jA1zcfX8JhjqGSowE",  # same default as combine_data.py
+        )
+        credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "key.json")
+        
+        print(f"\n[Google Sheets] Uploading history prediction results...")
+        upload_history_prediction(
+            spreadsheet_id=spreadsheet_id,
+            category=category_label,
+            prediction_year=prediction_start_date.year,
+            num_months=months_diff,
+            tf_mse=mse_tf if not np.isnan(mse_tf) else None,
+            tf_mae=mae_tf if not np.isnan(mae_tf) else None,
+            tf_rmse=rmse_tf if not np.isnan(rmse_tf) else None,
+            tf_accuracy_abs=accuracy_tf_abs if not np.isnan(accuracy_tf_abs) else None,
+            tf_accuracy_sum=accuracy_tf_sum if not np.isnan(accuracy_tf_sum) else None,
+            rec_mse=mse_rec if not np.isnan(mse_rec) else None,
+            rec_mae=mae_rec if not np.isnan(mae_rec) else None,
+            rec_rmse=rmse_rec if not np.isnan(rmse_rec) else None,
+            rec_accuracy_abs=accuracy_rec_total_abs if not np.isnan(accuracy_rec_total_abs) else None,
+            rec_accuracy_sum=accuracy_rec_total_sum if not np.isnan(accuracy_rec_total_sum) else None,
+            mae_error_increase_pct=mae_error_increase_pct,
+            rmse_error_increase_pct=rmse_error_increase_pct,
+            credentials_path=credentials_path,
+            sheet_name="History_prediction"
+        )
+    else:
+        print("\n[Google Sheets] gspread not available; skipping history prediction upload.")
     
     # Save results
     print("\n" + "=" * 80)
