@@ -178,7 +178,20 @@ class Trainer:
             self.train_losses.append(train_loss)
             
             # Validate
-            val_loss, _, _ = self.evaluate(val_loader, return_predictions=False)
+            # NOTE: In some small-data or edge-case configurations, the validation
+            # dataloader can legitimately be empty (e.g. not enough timesteps to
+            # create even a single sliding window). In that case, we fall back
+            # to using the training loss as a proxy for validation loss rather
+            # than raising an error and aborting training.
+            if val_loader is None or len(val_loader) == 0:
+                val_loss = train_loss
+                if verbose:
+                    print(
+                        "WARNING: Validation dataloader is empty. "
+                        "Using training loss as a proxy for validation loss."
+                    )
+            else:
+                val_loss, _, _ = self.evaluate(val_loader, return_predictions=False)
             self.val_losses.append(val_loss)
             
             # Update learning rate scheduler

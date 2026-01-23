@@ -4,7 +4,7 @@
 data:
   data_dir: "./dataset/data_cat"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
-  years: [2023, 2024, 2025]
+  years: [2023, 2024]
   
   # Category selection for MVP test
   # Options:
@@ -75,7 +75,7 @@ data:
 # Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
 # This prevents exposure bias from recursive forecasting where errors compound
 window:
-  input_size: 60  # Increased from 30 to provide more context
+  input_size: 30  # Increased from 30 to provide more context
   horizon: 30     # Changed from 1 to 30 for direct multi-step prediction
 
 # Model Configuration
@@ -144,7 +144,7 @@ inference:
   # cover a full year, only the first horizon days are produced (~1 month). Use
   # prediction_end = prediction_start + (horizon - 1) days to avoid confusion, or
   # implement rolling chunks to cover longer ranges.
-  prediction_data_path: "dataset/test/data_2026.csv"  # CSV with future period to predict
-  prediction_start: "2026-01-01"  # Inclusive start date (YYYY-MM-DD)
-  prediction_end: "2026-01-31"    # Inclusive end date (YYYY-MM-DD); recursive mode uses first horizon days only
+  prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
+  prediction_start: "2025-12-01"  # Inclusive start date (YYYY-MM-DD)
+  prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); recursive mode uses first horizon days only
 

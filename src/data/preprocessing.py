@@ -692,6 +692,121 @@ def aggregate_daily(
     return grouped
 
 
+def add_operational_status_flags(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    target_col: str = "QTY",
+    status_col: str = "operational_status",
+    expected_zero_flag_col: str = "is_expected_zero",
+    anomaly_flag_col: str = "is_operational_anomaly",
+    holiday_label: str = "Holiday_OFF",
+    weekend_label: str = "Weekend_Downtime",
+    anomaly_label: str = "Operational_Anomaly",
+    normal_label: str = "Business_Day_Normal",
+) -> pd.DataFrame:
+    """
+    Context-aware data imputation and anomaly tracking for daily time-series.
+
+    This function processes each calendar date as follows:
+
+    1) Holiday-driven downtime (expected zero):
+       - Cross-references each date against the canonical Vietnam business
+         holiday calendar (from config/holidays.yaml via get_vietnam_holidays).
+       - If a date is a recognized public holiday or scheduled facility closure,
+         it is labeled as `holiday_label` (default: "Holiday_OFF").
+       - Volume on these days is treated as an *expected external constraint*.
+
+    2) Standard weekend downtime (Sunday low-volume):
+       - All Sundays (day_of_week == 6) are labeled as `weekend_label`
+         (default: "Weekend_Downtime").
+       - Given the historical pattern of zero/negligible volume on Sundays,
+         these are treated as *expected zeros* and decoupled from
+         business-day demand signals.
+
+    3) Unexpected operational gaps (critical tracking):
+       - For any date that is neither a holiday nor a Sunday but contains
+         missing or zero volume, the system:
+           * Imputes the volume to 0 to maintain time-series continuity
+             for downstream LSTM layers.
+           * Flags the date as `anomaly_label`
+             (default: "Operational_Anomaly").
+           * Marks it with a binary `anomaly_flag_col` so that baseline /
+             trend components can explicitly *exclude* it from their
+             reference windows.
+
+    In addition, a binary `expected_zero_flag_col` is provided to indicate
+    Holiday_OFF and Weekend_Downtime cases, which are structurally expected
+    zeros and should not be treated as demand collapse.
+
+    This logic improves:
+    - Model interpretability (clear separation of calendar-driven zeros vs
+      unexplained operational gaps).
+    - Statistical baselines (by excluding Operational_Anomalies from
+      standard trend estimation).
+    """
+    df = df.copy()
+
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+
+    # Ensure target column exists; if not, nothing to do
+    if target_col not in df.columns:
+        return df
+
+    # Normalize to date (drop time component)
+    dates = df[time_col].dt.date
+
+    # Build Vietnam business holiday calendar over the data range
+    if len(df) > 0:
+        min_date = dates.min()
+        max_date = dates.max()
+        holiday_list = get_vietnam_holidays(min_date, max_date)
+        holiday_set = set(holiday_list)
+    else:
+        holiday_set = set()
+
+    # Day-of-week (0=Mon, 6=Sun)
+    day_of_week = df[time_col].dt.dayofweek
+
+    # Treat missing values in the target as zero for classification/imputation
+    vol = pd.to_numeric(df[target_col], errors="coerce")
+    is_missing_or_zero = vol.isna() | (vol == 0)
+
+    # Initialize status labels
+    status = np.full(len(df), normal_label, dtype=object)
+
+    is_holiday = dates.isin(holiday_set)
+    is_weekend_sun = day_of_week == 6
+
+    # 1) Holidays
+    status[is_holiday] = holiday_label
+
+    # 2) Sunday downtime
+    # Do not override holidays that also fall on Sunday
+    weekend_only = (~is_holiday) & is_weekend_sun
+    status[weekend_only] = weekend_label
+
+    # 3) Operational anomalies:
+    #    Non-holiday, non-Sunday business days with missing/zero volume.
+    anomaly_mask = (~is_holiday) & (~is_weekend_sun) & is_missing_or_zero
+
+    # Impute to 0 to maintain continuity
+    vol_imputed = vol.copy()
+    vol_imputed[anomaly_mask] = 0.0
+    df[target_col] = vol_imputed.fillna(0.0)
+
+    # Label anomalies
+    status[anomaly_mask] = anomaly_label
+
+    # Write status + flags back to dataframe
+    df[status_col] = status
+    df[expected_zero_flag_col] = ((status == holiday_label) | (status == weekend_label)).astype(int)
+    df[anomaly_flag_col] = (status == anomaly_label).astype(int)
+
+    return df
+
+
 def add_cbm_density_features(
     df: pd.DataFrame,
     cbm_col: str = "Total CBM",
@@ -786,7 +901,12 @@ def fit_scaler(
         Fitted StandardScaler.
     """
     scaler = StandardScaler()
-    scaler.fit(train_data[[target_col]])
+    # Fit on a NumPy array rather than a pandas DataFrame so that the
+    # scaler does not store feature_names_in_. This avoids sklearn
+    # warnings when we later call transform/inverse_transform with
+    # plain NumPy arrays (which is what we do throughout the pipeline).
+    values = train_data[[target_col]].to_numpy()
+    scaler.fit(values)
     return scaler
 
 
@@ -1014,10 +1134,33 @@ def moving_average_forecast_by_category(
     df = df.sort_values([cat_col, time_col])
     ma_col = f"{target_col}_MA{window}"
 
-    df[ma_col] = (
-        df.groupby(cat_col)[target_col]
-        .transform(lambda s: s.rolling(window=window, min_periods=1).mean())
-    )
+    # If operational anomaly flags are available, exclude those days from the
+    # baseline trend calculation. This prevents unexplained zero-volume gaps
+    # from biasing the moving-average forecast for minor categories.
+    anomaly_flag_col = "is_operational_anomaly"
+
+    if anomaly_flag_col in df.columns:
+        def masked_ma(group: pd.Series, mask: pd.Series) -> pd.Series:
+            # Compute rolling mean over non-anomalous days only.
+            # We use a masked series where anomalies are dropped from the
+            # rolling window rather than set to zero.
+            values = group.copy()
+            values_masked = values.where(~mask, np.nan)
+            return values_masked.rolling(window=window, min_periods=1).mean()
+
+        df[ma_col] = (
+            df.groupby(cat_col, group_keys=False).apply(
+                lambda g: masked_ma(
+                    g[target_col],
+                    g[anomaly_flag_col].astype(bool)
+                )
+            )
+        )
+    else:
+        df[ma_col] = (
+            df.groupby(cat_col)[target_col]
+            .transform(lambda s: s.rolling(window=window, min_periods=1).mean())
+        )
 
     return df
 

@@ -38,7 +38,8 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_weekday_volume_tier_features,
-    apply_sunday_to_monday_carryover
+    apply_sunday_to_monday_carryover,
+    add_operational_status_flags
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
@@ -762,6 +763,20 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     samples_after_agg = len(filtered_data)
     print(f"  - Samples before aggregation: {samples_before_agg}")
     print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
+    
+    # Context-aware operational status flags (holiday/off, Sunday downtime, anomalies)
+    # NOTE: This runs on the daily aggregated series. If you need strict calendar
+    # reindexing (to include dates with no records at all), call a reindexing
+    # helper before this step and then invoke add_operational_status_flags.
+    print("  - Tagging Holiday_OFF, Weekend_Downtime, and Operational_Anomalies...")
+    filtered_data = add_operational_status_flags(
+        filtered_data,
+        time_col=time_col,
+        target_col=target_col_name,
+        status_col="operational_status",
+        expected_zero_flag_col="is_expected_zero",
+        anomaly_flag_col="is_operational_anomaly",
+    )
     
     # Apply Sunday-to-Monday demand carryover to capture backlog accumulation
     print("  - Applying Sunday-to-Monday demand carryover...")

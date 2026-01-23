@@ -40,7 +40,8 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_weekday_volume_tier_features,
-    apply_sunday_to_monday_carryover
+    apply_sunday_to_monday_carryover,
+    add_operational_status_flags,
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
@@ -914,6 +915,20 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     )
     samples_after = len(data)
     print(f"    Samples: {samples_before} -> {samples_after} (one row per date per category)")
+
+    # Context-aware operational status flags on the daily series.
+    # As in training, if full calendar reindexing is desired, perform the
+    # reindex step before this call and then rely on these flags +
+    # anomaly-aware baselines to preserve interpretability.
+    print("  - Tagging Holiday_OFF, Weekend_Downtime, and Operational_Anomalies...")
+    data = add_operational_status_flags(
+        data,
+        time_col=time_col,
+        target_col=data_config['target_col'],
+        status_col="operational_status",
+        expected_zero_flag_col="is_expected_zero",
+        anomaly_flag_col="is_operational_anomaly",
+    )
 
     # Apply Sunday-to-Monday demand carryover (same as training)
     print("  - Applying Sunday-to-Monday demand carryover...")
