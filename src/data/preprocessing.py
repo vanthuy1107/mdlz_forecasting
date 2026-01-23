@@ -5,6 +5,15 @@ from typing import List, Optional, Tuple, Union
 from datetime import datetime, date, timedelta
 from sklearn.preprocessing import StandardScaler
 import pickle
+import sys
+from pathlib import Path
+
+# Add project root to path to import config
+project_root = Path(__file__).parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from config import load_holidays
 
 
 def slicing_window(
@@ -237,121 +246,8 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     holidays: List[date] = []
     
     # Canonical Vietnam holiday calendar (days off) aligned with business rules.
-    # NOTE: These dates must stay in sync with the prediction/training scripts.
-    vietnam_holidays = {
-        2023: {
-            "new_year": [
-                date(2023, 1, 1),
-                date(2023, 1, 2),
-            ],
-            "tet": [
-                date(2023, 1, 20),
-                date(2023, 1, 21),
-                date(2023, 1, 22),
-                date(2023, 1, 23),
-                date(2023, 1, 24),
-                date(2023, 1, 25),
-                date(2023, 1, 26),
-            ],
-            "hung_kings_reunification_labor": [
-                date(2023, 4, 29),
-                date(2023, 4, 30),
-                date(2023, 5, 1),
-                date(2023, 5, 2),
-                date(2023, 5, 3),
-            ],
-            "independence_day": [
-                date(2023, 9, 1),
-                date(2023, 9, 2),
-                date(2023, 9, 3),
-                date(2023, 9, 4),
-            ],
-        },
-        2024: {
-            "new_year": [
-                date(2024, 1, 1),
-            ],
-            "tet": [
-                date(2024, 2, 8),
-                date(2024, 2, 9),
-                date(2024, 2, 10),
-                date(2024, 2, 11),
-                date(2024, 2, 12),
-                date(2024, 2, 13),
-                date(2024, 2, 14),
-            ],
-            "hung_kings": [
-                date(2024, 4, 18),
-            ],
-            "reunification_labor": [
-                date(2024, 4, 30),
-                date(2024, 5, 1),
-            ],
-            "independence_day": [
-                date(2024, 8, 31),
-                date(2024, 9, 1),
-                date(2024, 9, 2),
-                date(2024, 9, 3),
-            ],
-        },
-        2025: {
-            "new_year": [
-                date(2025, 1, 1),
-            ],
-            "tet": [
-                date(2025, 1, 25),
-                date(2025, 1, 26),
-                date(2025, 1, 27),
-                date(2025, 1, 28),
-                date(2025, 1, 29),
-                date(2025, 1, 30),
-                date(2025, 1, 31),
-                date(2025, 2, 1),
-                date(2025, 2, 2),
-            ],
-            "hung_kings": [
-                date(2025, 4, 7),
-            ],
-            "reunification_labor": [
-                date(2025, 4, 30),
-                date(2025, 5, 1),
-            ],
-            "independence_day": [
-                date(2025, 8, 30),
-                date(2025, 8, 31),
-                date(2025, 9, 1),
-                date(2025, 9, 2),
-            ],
-        },
-        2026: {
-            "new_year": [
-                date(2026, 1, 1),
-            ],
-            "tet": [
-                date(2026, 2, 14),
-                date(2026, 2, 15),
-                date(2026, 2, 16),
-                date(2026, 2, 17),
-                date(2026, 2, 18),
-                date(2026, 2, 19),
-                date(2026, 2, 20),
-                date(2026, 2, 21),
-                date(2026, 2, 22),
-            ],
-            "hung_kings": [
-                date(2026, 4, 26),
-                date(2026, 4, 27),
-            ],
-            "reunification_labor": [
-                date(2026, 4, 30),
-                date(2026, 5, 1),
-            ],
-            "independence_day": [
-                date(2026, 9, 1),
-                date(2026, 9, 2),
-            ],
-        },
-    }
+    # NOTE: These dates are now loaded from config/holidays.yaml for easier maintenance.
+    vietnam_holidays = load_holidays(holiday_type="business")
     
     # Collect all holidays in the date range
     current = start_date

@@ -20,7 +20,7 @@ import pickle
 from datetime import date, timedelta
 from typing import List, Tuple
 
-from config import load_config
+from config import load_config, load_holidays
 from src.data import (
     DataReader,
     ForecastDataset,
@@ -48,67 +48,8 @@ from src.utils import plot_difference, spike_aware_mse
 # We keep a single source of truth for Vietnamese holidays (including Tet)
 # so that both the discrete holiday indicators and the continuous
 # "days-to-lunar-event" features stay perfectly aligned.
-VIETNAM_HOLIDAYS_BY_YEAR = {
-    2023: {
-        "tet": [
-            date(2023, 1, 20),
-            date(2023, 1, 21),
-            date(2023, 1, 22),
-            date(2023, 1, 23),
-            date(2023, 1, 24),
-            date(2023, 1, 25),
-            date(2023, 1, 26),
-        ],
-        "mid_autumn": [date(2023, 9, 29)],
-        "independence": [date(2023, 9, 2)],
-        "labor": [date(2023, 4, 30), date(2023, 5, 1)],
-    },
-    2024: {
-        "tet": [
-            date(2024, 2, 8),
-            date(2024, 2, 9),
-            date(2024, 2, 10),
-            date(2024, 2, 11),
-            date(2024, 2, 12),
-            date(2024, 2, 13),
-            date(2024, 2, 14),
-        ],
-        "mid_autumn": [date(2024, 9, 17)],
-        "independence": [date(2024, 9, 2)],
-        "labor": [date(2024, 4, 30), date(2024, 5, 1)],
-    },
-    2025: {
-        "tet": [
-            date(2025, 1, 27),
-            date(2025, 1, 28),
-            date(2025, 1, 29),
-            date(2025, 1, 30),
-            date(2025, 1, 31),
-            date(2025, 2, 1),
-            date(2025, 2, 2),
-        ],
-        "mid_autumn": [date(2025, 10, 6)],
-        "independence": [date(2025, 9, 2)],
-        "labor": [date(2025, 4, 30), date(2025, 5, 1)],
-    },
-    2026: {
-        "tet": [
-            date(2026, 2, 14),  # Saturday - Pre-Tet
-            date(2026, 2, 15),  # Sunday - Pre-Tet
-            date(2026, 2, 16),  # Monday - 29th of Lunar December
-            date(2026, 2, 17),  # Tuesday - 1st Day of Lunar New Year
-            date(2026, 2, 18),  # Wednesday - 2nd Day
-            date(2026, 2, 19),  # Thursday - 3rd Day
-            date(2026, 2, 20),  # Friday - 4th Day
-            date(2026, 2, 21),  # Saturday - 5th Day
-            date(2026, 2, 22),  # Sunday - Weekend wrap-up
-        ],
-        "mid_autumn": [date(2026, 9, 25)],  # Full Moon (15/08 Lunar)
-        "independence": [date(2026, 9, 1), date(2026, 9, 2)],
-        "labor": [date(2026, 4, 30), date(2026, 5, 1)],
-        "hung_kings": [date(2026, 4, 26), date(2026, 4, 27)],  # Observed
-    },
-}
+# Holidays are now loaded from config/holidays.yaml for easier maintenance.
+VIETNAM_HOLIDAYS_BY_YEAR = load_holidays(holiday_type="model")
 
 
 def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
@@ -136,10 +77,12 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
         year = current.year
         if year in VIETNAM_HOLIDAYS_BY_YEAR:
             year_holidays = VIETNAM_HOLIDAYS_BY_YEAR[year]
-            holidays.extend(year_holidays["tet"])
-            holidays.extend(year_holidays["mid_autumn"])
-            holidays.extend(year_holidays["independence"])
-            holidays.extend(year_holidays["labor"])
+            # Use .get() to handle optional keys gracefully
+            holidays.extend(year_holidays.get("tet", []))
+            holidays.extend(year_holidays.get("mid_autumn", []))
+            holidays.extend(year_holidays.get("independence", []))
+            holidays.extend(year_holidays.get("labor", []))
+            holidays.extend(year_holidays.get("hung_kings", []))
         current = date(year + 1, 1, 1)
     
     # Filter to date range and remove duplicates
