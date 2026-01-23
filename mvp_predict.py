@@ -34,7 +34,13 @@ from src.data import (
     apply_scaling,
     inverse_transform_scaling
 )
-from src.data.preprocessing import get_us_holidays, get_vietnam_holidays, add_day_of_week_cyclical_features, add_eom_features
+from src.data.preprocessing import (
+    get_us_holidays,
+    get_vietnam_holidays,
+    add_day_of_week_cyclical_features,
+    add_eom_features,
+    apply_sunday_to_monday_carryover
+)
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE
@@ -899,6 +905,17 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     samples_after = len(data)
     print(f"    Samples: {samples_before} -> {samples_after} (one row per date per category)")
 
+    # Apply Sunday-to-Monday demand carryover (same as training)
+    print("  - Applying Sunday-to-Monday demand carryover...")
+    data = apply_sunday_to_monday_carryover(
+        data,
+        time_col=time_col,
+        cat_col=cat_col,
+        target_col=data_config['target_col'],
+        actual_col=data_config['target_col']
+    )
+    print("    - Monday's target now includes Sunday's demand (captures backlog accumulation)")
+
     # CBM/QTY density features (including last-year prior), same as training
     print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")
     data = add_cbm_density_features(
@@ -1013,6 +1030,75 @@ def create_prediction_windows(data, config):
     
     print(f"  - Created {len(X_pred)} prediction windows")
     return X_pred, y_pred, cat_pred, dates
+
+
+def apply_sunday_to_monday_carryover_predictions(
+    predictions_df: pd.DataFrame,
+    date_col: str = 'date',
+    pred_col: str = 'predicted'
+) -> pd.DataFrame:
+    """
+    Apply Sunday-to-Monday carryover rule to predictions.
+    
+    This post-processing step ensures predictions follow the same rule as training data:
+    - Sunday predictions are forced to 0 (non-operational day)
+    - Sunday's prediction value is added to the following Monday's prediction
+    
+    This maintains consistency between training target transformation and inference outputs.
+    
+    Args:
+        predictions_df: DataFrame with 'date' and prediction column (e.g., 'predicted' or 'predicted_unscaled')
+        date_col: Name of date column
+        pred_col: Name of prediction column to adjust
+    
+    Returns:
+        DataFrame with adjusted predictions where Sunday=0 and Monday includes Sunday's value
+        (date column type is preserved)
+    """
+    df = predictions_df.copy()
+    
+    # Helper function to extract date object from various types
+    def get_date_obj(d):
+        if isinstance(d, date):
+            return d
+        elif isinstance(d, pd.Timestamp):
+            return d.date()
+        elif pd.api.types.is_datetime64_any_dtype(pd.Series([d])):
+            return pd.to_datetime(d).date()
+        else:
+            return pd.to_datetime(d).date()
+    
+    # Extract date objects for processing (preserve original column)
+    df['_date_obj'] = df[date_col].apply(get_date_obj)
+    
+    # Sort by date to ensure proper ordering
+    df = df.sort_values('_date_obj').reset_index(drop=True)
+    
+    # Process each row to apply carryover
+    for i in range(len(df)):
+        current_date = df.loc[i, '_date_obj']
+        
+        # Check if current date is Sunday (weekday == 6)
+        if current_date.weekday() == 6:  # Sunday
+            sunday_value = df.loc[i, pred_col]
+            
+            # Find the next Monday (must be exactly 1 day later)
+            if i + 1 < len(df):
+                next_date = df.loc[i + 1, '_date_obj']
+                days_diff = (next_date - current_date).days
+                
+                # Only apply if next day is Monday and exactly 1 day later
+                if next_date.weekday() == 0 and days_diff == 1:  # Next day is Monday
+                    # Add Sunday's value to Monday
+                    df.loc[i + 1, pred_col] = df.loc[i + 1, pred_col] + sunday_value
+            
+            # Set Sunday to 0
+            df.loc[i, pred_col] = 0.0
+    
+    # Clean up temporary column (original date_col is preserved)
+    df = df.drop(columns=['_date_obj'])
+    
+    return df
 
 
 def predict_direct_multistep(
@@ -1135,7 +1221,10 @@ def predict_direct_multistep(
     predictions = []
     for i, pred_date in enumerate(prediction_dates):
         is_holiday = pred_date in holiday_set
-        pred_value = 0.0 if is_holiday else float(pred_scaled[i])
+        is_sunday = pred_date.weekday() == 6  # 0=Monday, 6=Sunday
+        
+        # Force to 0 on holidays or Sundays (Sunday will be handled by carryover post-processing)
+        pred_value = 0.0 if (is_holiday or is_sunday) else float(pred_scaled[i])
         
         predictions.append({
             'date': pred_date,
@@ -1143,6 +1232,14 @@ def predict_direct_multistep(
         })
     
     predictions_df = pd.DataFrame(predictions)
+    
+    # Apply Sunday-to-Monday carryover: Sunday's value moves to Monday, Sunday becomes 0
+    predictions_df = apply_sunday_to_monday_carryover_predictions(
+        predictions_df,
+        date_col='date',
+        pred_col='predicted'
+    )
+    
     return predictions_df
 
 
@@ -1852,6 +1949,35 @@ def main():
                 if negative_count > 0:
                     print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
                     y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+            
+            # Apply Sunday-to-Monday carryover rule to teacher-forcing predictions
+            if len(pred_dates) > 0 and len(y_pred_tf_unscaled) == len(pred_dates):
+                print("  - Applying Sunday-to-Monday demand carryover to teacher-forcing predictions...")
+                # Create temporary DataFrame for processing
+                tf_pred_df = pd.DataFrame({
+                    'date': pred_dates,
+                    'predicted': y_pred_tf_unscaled
+                })
+                # Apply carryover (grouped by category if cat_pred is available)
+                if len(cat_pred) == len(tf_pred_df):
+                    tf_pred_df['category_id'] = cat_pred
+                    def apply_carryover_per_cat_tf(group):
+                        return apply_sunday_to_monday_carryover_predictions(
+                            group,
+                            date_col='date',
+                            pred_col='predicted'
+                        )
+                    tf_pred_df = tf_pred_df.groupby('category_id', group_keys=False).apply(
+                        apply_carryover_per_cat_tf
+                    ).reset_index(drop=True)
+                else:
+                    tf_pred_df = apply_sunday_to_monday_carryover_predictions(
+                        tf_pred_df,
+                        date_col='date',
+                        pred_col='predicted'
+                    )
+                y_pred_tf_unscaled = tf_pred_df['predicted'].values
+                print("    - Sunday predictions set to 0, Sunday values added to following Monday")
 
             # Calculate metrics on unscaled values
             mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
@@ -2028,6 +2154,11 @@ def main():
         # Attach category label so downstream metrics/CSVs can group by category
         recursive_preds[data_config['cat_col']] = current_category
 
+        # Ensure date columns have compatible types for merging
+        # Convert both to date objects to avoid type mismatch
+        recursive_preds['date'] = pd.to_datetime(recursive_preds['date']).dt.date
+        actuals_by_date_cat['date'] = pd.to_datetime(actuals_by_date_cat['date']).dt.date
+
         # Merge with actuals for this (date, category) pair
         recursive_results_cat = recursive_preds.merge(
             actuals_by_date_cat,
@@ -2075,6 +2206,23 @@ def main():
         if holiday_count > 0:
             print(f"  - Applying zero‑volume holiday mask to {holiday_count} recursive prediction day(s).")
             recursive_results.loc[holiday_mask_rec, 'predicted_unscaled'] = 0.0
+    
+    # Apply Sunday-to-Monday carryover rule to predictions (same as training data processing)
+    # This ensures Sunday predictions = 0 and Sunday's value is added to following Monday
+    if len(recursive_results) > 0:
+        print("  - Applying Sunday-to-Monday demand carryover to predictions...")
+        # Group by category to apply carryover per category independently
+        def apply_carryover_per_cat(group):
+            return apply_sunday_to_monday_carryover_predictions(
+                group,
+                date_col='date',
+                pred_col='predicted_unscaled'
+            )
+        
+        recursive_results = recursive_results.groupby(
+            data_config['cat_col'], group_keys=False
+        ).apply(apply_carryover_per_cat).reset_index(drop=True)
+        print("    - Sunday predictions set to 0, Sunday values added to following Monday")
 
     # Calculate metrics using unscaled values (include all dates;
     # actuals that were originally missing are treated as 0).

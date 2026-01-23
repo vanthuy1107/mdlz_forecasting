@@ -34,7 +34,11 @@ from src.data import (
     apply_scaling,
     inverse_transform_scaling
 )
-from src.data.preprocessing import add_day_of_week_cyclical_features, add_eom_features
+from src.data.preprocessing import (
+    add_day_of_week_cyclical_features,
+    add_eom_features,
+    apply_sunday_to_monday_carryover
+)
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, spike_aware_mse
@@ -748,6 +752,17 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     samples_after_agg = len(filtered_data)
     print(f"  - Samples before aggregation: {samples_before_agg}")
     print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
+    
+    # Apply Sunday-to-Monday demand carryover to capture backlog accumulation
+    print("  - Applying Sunday-to-Monday demand carryover...")
+    filtered_data = apply_sunday_to_monday_carryover(
+        filtered_data,
+        time_col=time_col,
+        cat_col=cat_col,
+        target_col=target_col_name,
+        actual_col=target_col_name
+    )
+    print("    - Monday's target now includes Sunday's demand (captures backlog accumulation)")
     
     # Feature engineering: Add CBM/QTY density features, including last-year prior
     print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")

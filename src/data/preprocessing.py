@@ -839,6 +839,100 @@ def prepare_data(
     }
 
 
+def apply_sunday_to_monday_carryover(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    target_col: str = "Total CBM",
+    actual_col: Optional[str] = None
+) -> pd.DataFrame:
+    """
+    Apply Sunday-to-Monday demand carryover to capture backlog accumulation.
+    
+    Logic: Sundays are non-operational (Total CBM = 0). This function implements
+    Sunday-to-Monday demand carryover where Monday's Target = (Actual Monday + Actual Sunday).
+    
+    Purpose: Capture backlog accumulation and eliminate misleading zero-demand
+    patterns in the time-series that occur when Sunday demand is deferred to Monday.
+    
+    Args:
+        df: DataFrame with daily aggregated data (one row per date per category).
+        time_col: Name of time column (should be datetime or date).
+        cat_col: Name of category column.
+        target_col: Name of target column to adjust (e.g., "Total CBM").
+        actual_col: Optional name of actual column to use for carryover calculation.
+                   If None, uses target_col for both Sunday and Monday values.
+    
+    Returns:
+        DataFrame with adjusted target values where Monday's target includes Sunday's demand.
+    
+    Note:
+        - This function modifies the target_col in-place for Monday rows.
+        - Sunday rows remain unchanged (they keep their original values, typically 0).
+        - The adjustment is applied per category independently.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Use target_col for actual values if actual_col not specified
+    if actual_col is None:
+        actual_col = target_col
+    
+    # Ensure both columns exist
+    if target_col not in df.columns:
+        raise ValueError(f"Target column '{target_col}' not found in DataFrame.")
+    if actual_col not in df.columns:
+        raise ValueError(f"Actual column '{actual_col}' not found in DataFrame.")
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    df['_day_of_week'] = df[time_col].dt.dayofweek
+    
+    # Sort by category and date to ensure proper ordering
+    df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
+    
+    # For each category, apply carryover logic
+    def apply_carryover_per_category(group):
+        """Apply Sunday-to-Monday carryover for a single category."""
+        group = group.copy()
+        
+        # Identify Mondays (day_of_week == 0)
+        monday_mask = group['_day_of_week'] == 0
+        monday_indices = group.index[monday_mask]
+        
+        # For each Monday, find the previous Sunday and add its value
+        for monday_idx in monday_indices:
+            # Find position of Monday in the group
+            monday_pos = group.index.get_loc(monday_idx)
+            
+            # Look backwards for the previous Sunday (day_of_week == 6)
+            if monday_pos > 0:
+                prev_days = group.iloc[:monday_pos]
+                sunday_in_prev = prev_days[prev_days['_day_of_week'] == 6]
+                
+                if len(sunday_in_prev) > 0:
+                    # Get the most recent Sunday before this Monday
+                    sunday_idx = sunday_in_prev.index[-1]
+                    sunday_value = group.loc[sunday_idx, actual_col]
+                    
+                    # Apply carryover: Monday's target = Monday actual + Sunday actual
+                    if pd.notna(sunday_value):
+                        monday_actual = group.loc[monday_idx, actual_col]
+                        group.loc[monday_idx, target_col] = monday_actual + sunday_value
+        
+        return group
+    
+    # Apply carryover per category
+    df = df.groupby(cat_col, group_keys=False).apply(apply_carryover_per_category)
+    
+    # Clean up temporary columns
+    df = df.drop(columns=['_day_of_week'])
+    
+    return df
+
+
 def moving_average_forecast_by_category(
     df: pd.DataFrame,
     cat_col: str = "CATEGORY",
