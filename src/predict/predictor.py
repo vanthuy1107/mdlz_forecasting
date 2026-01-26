@@ -89,7 +89,8 @@ def predict_direct_multistep(
     start_date: date,
     end_date: date,
     config,
-    cat_id: int
+    cat_id: int,
+    category: str = None
 ):
     """
     Direct multi-step prediction mode: predicts entire forecast horizon at once.
@@ -105,6 +106,7 @@ def predict_direct_multistep(
         end_date: Last date to predict
         config: Configuration object
         cat_id: Category ID (integer) - should be 0 for category-specific models
+        category: Category name (e.g., "FRESH") - used for category-specific post-processing
     
     Returns:
         DataFrame with columns: date, predicted
@@ -185,18 +187,39 @@ def predict_direct_multistep(
     for i, pred_date in enumerate(prediction_dates):
         is_holiday = pred_date in holiday_set
         is_sunday = pred_date.weekday() == 6
-        pred_value = 0.0 if (is_holiday or is_sunday) else float(pred_scaled[i])
+        
+        # Hard logic for holiday suppression: force zero-volume on holidays
+        # This prevents "Holiday Blindness" where model predicts high volumes on non-operational days
+        if is_holiday:
+            pred_value = 0.0  # Strictly enforce zero on holidays
+        elif is_sunday:
+            pred_value = 0.0  # Sundays are also zero (especially for FRESH)
+        else:
+            pred_value = float(pred_scaled[i])
+        
         predictions.append({
             'date': pred_date,
             'predicted': pred_value
         })
     
     predictions_df = pd.DataFrame(predictions)
-    predictions_df = _apply_sunday_to_monday_carryover_predictions(
-        predictions_df,
-        date_col='date',
-        pred_col='predicted'
-    )
+    
+    # Apply Sunday-to-Monday carryover for all categories EXCEPT FRESH
+    # FRESH category requires Sunday-to-Zero hard mask (no carryover)
+    if category != "FRESH":
+        predictions_df = _apply_sunday_to_monday_carryover_predictions(
+            predictions_df,
+            date_col='date',
+            pred_col='predicted'
+        )
+    else:
+        # For FRESH category: enforce Sunday-to-Zero hard mask
+        # Ensure all Sundays remain at zero (no carryover to Monday)
+        predictions_df['_date_obj'] = predictions_df['date'].apply(
+            lambda d: d if isinstance(d, date) else pd.to_datetime(d).date()
+        )
+        predictions_df.loc[predictions_df['_date_obj'].apply(lambda d: d.weekday() == 6), 'predicted'] = 0.0
+        predictions_df = predictions_df.drop(columns=['_date_obj'])
     
     return predictions_df
 
@@ -208,7 +231,8 @@ def predict_direct_multistep_rolling(
     start_date: date,
     end_date: date,
     config,
-    cat_id: int
+    cat_id: int,
+    category: str = None
 ):
     """
     Predict for a long date range by looping through chunks of horizon days.
@@ -223,6 +247,7 @@ def predict_direct_multistep_rolling(
         end_date: Last date to predict
         config: Configuration object
         cat_id: Category ID (integer) - should be 0 for category-specific models
+        category: Category name (e.g., "FRESH") - used for category-specific post-processing
     
     Returns:
         DataFrame with columns: date, predicted
@@ -271,7 +296,8 @@ def predict_direct_multistep_rolling(
             start_date=current_start,
             end_date=chunk_end,
             config=config,
-            cat_id=cat_id
+            cat_id=cat_id,
+            category=category
         )
         
         all_predictions.append(chunk_predictions)

@@ -7,19 +7,25 @@ def spike_aware_mse(
     y_pred: torch.Tensor, 
     y_true: torch.Tensor,
     category_ids: Optional[torch.Tensor] = None,
-    category_loss_weights: Optional[Dict[int, float]] = None
+    category_loss_weights: Optional[Dict[int, float]] = None,
+    is_monday: Optional[torch.Tensor] = None,
+    monday_loss_weight: float = 3.0
 ) -> torch.Tensor:
     """
     Spike-aware MSE loss that assigns higher weight to high values (spikes).
     
     This loss function assigns 3x weight to top 20% values (spikes) to better
-    handle sudden demand surges. Optionally supports category-specific loss weights.
+    handle sudden demand surges. Optionally supports category-specific loss weights
+    and Monday-specific weighting for FRESH category.
     
     Args:
         y_pred: Predicted values tensor.
         y_true: True values tensor.
         category_ids: Optional tensor of category IDs (same batch size as y_pred/y_true).
         category_loss_weights: Optional dict mapping category_id -> loss_weight multiplier.
+        is_monday: Optional tensor indicating Monday samples (1 for Monday, 0 otherwise).
+                  Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+        monday_loss_weight: Weight multiplier for Monday samples (default: 3.0).
     
     Returns:
         Weighted MSE loss.
@@ -30,6 +36,24 @@ def spike_aware_mse(
         torch.tensor(3.0, device=y_true.device),
         torch.tensor(1.0, device=y_true.device)
     )
+    
+    # Apply Monday-specific weighting if provided
+    if is_monday is not None:
+        # Ensure is_monday matches y_true shape
+        if is_monday.ndim == 1 and y_true.ndim == 2:
+            # Expand 1D is_monday to 2D to match (batch, horizon) shape
+            is_monday = is_monday.unsqueeze(-1).expand_as(y_true)
+        elif is_monday.ndim == 2 and y_true.ndim == 1:
+            # If y_true is 1D but is_monday is 2D, take first column or mean
+            is_monday = is_monday[:, 0] if is_monday.shape[1] > 0 else is_monday.mean(dim=1)
+        
+        # Apply Monday weight: 3.0x for Monday samples (Is_Monday == 1)
+        monday_weight = torch.where(
+            is_monday > 0.5,  # Is_Monday == 1
+            torch.tensor(monday_loss_weight, device=y_true.device),
+            torch.tensor(1.0, device=y_true.device)
+        )
+        base_weight = base_weight * monday_weight
     
     # Apply category-specific loss weights if provided
     if category_ids is not None and category_loss_weights is not None:

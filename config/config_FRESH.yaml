@@ -3,7 +3,7 @@
 
 # Window configuration - FRESH driven by short-term lag
 window:
-  input_size: 14  # Short-term lookback (1-2 days dependency)
+  input_size: 7   # 7-day lookback to capture weekly cycle (Monday peaks, Sunday zeros)
   horizon: 30     # 30-day forecast horizon
 
 # Model Configuration
@@ -17,19 +17,21 @@ model:
 training:
   batch_size: 32
   epochs: 25
-  learning_rate: 0.001
+  learning_rate: 0.002  # Increased to escape local minima
   weight_decay: 1e-4
   scheduler:
-    factor: 0.1  # Reduce LR faster if encountering volatility
-    patience: 3
+    factor: 0.5  # Reduce LR by 50% when plateau detected
+    patience: 2  # Aggressive scheduler: reduce LR after 2 epochs without improvement
 
 # Category-specific loss weighting
 category_specific_params:
   FRESH:
-    learning_rate: 0.001
+    learning_rate: 0.002
     batch_size: 32
-    scheduler_factor: 0.1
+    scheduler_factor: 0.5
+    scheduler_patience: 2
     loss_weight: 1.0
+    monday_loss_weight: 3.0  # 3.0x weight for Monday samples to capture weekly peaks
 
 # Seasonal configuration - FRESH is not seasonal
 data:

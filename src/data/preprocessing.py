@@ -433,6 +433,45 @@ def add_day_of_week_cyclical_features(
     return df
 
 
+def add_is_monday_feature(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    is_monday_col: str = "Is_Monday"
+) -> pd.DataFrame:
+    """
+    Add binary Is_Monday feature to help model learn Monday peak patterns.
+    
+    For FRESH category, Monday is the consistent peak day (~208 CBM), so this
+    binary flag helps the model explicitly identify and learn this pattern.
+    
+    Creates:
+    - Is_Monday: Binary (1 for Monday, 0 otherwise)
+    
+    Where day_of_week is 0=Monday, 1=Tuesday, ..., 6=Sunday.
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        is_monday_col: Name for Is_Monday column.
+    
+    Returns:
+        DataFrame with added Is_Monday feature.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    day_of_week = df[time_col].dt.dayofweek
+    
+    # Create binary Is_Monday feature (1 for Monday, 0 otherwise)
+    df[is_monday_col] = (day_of_week == 0).astype(int)
+    
+    return df
+
+
 def add_weekday_volume_tier_features(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
@@ -661,6 +700,7 @@ def aggregate_daily(
         'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
         'is_weekend', 'day_of_week', 'day_of_week_sin', 'day_of_week_cos',
         'weekday_volume_tier', 'is_high_volume_weekday',
+        'Is_Monday',  # Binary flag for Monday peak patterns (FRESH category)
         'lunar_month', 'lunar_day',
         # Lunar cyclical encodings and Tet countdown should also persist after aggregation
         'lunar_month_sin', 'lunar_month_cos',

@@ -1371,6 +1371,7 @@ def predict_direct_multistep_rolling_old(
         print(f"\n  [Chunk {chunk_num}] Predicting {current_start} to {chunk_end} ({chunk_days} days)...")
         
         # Predict this chunk using direct multi-step
+        # Note: category parameter not available in this old function, will use None
         chunk_predictions = predict_direct_multistep(
             model=model,
             device=device,
@@ -1378,7 +1379,8 @@ def predict_direct_multistep_rolling_old(
             start_date=current_start,
             end_date=chunk_end,
             config=config,
-            cat_id=cat_id
+            cat_id=cat_id,
+            category=None  # Old function doesn't have category context
         )
         
         all_predictions.append(chunk_predictions)
@@ -2481,7 +2483,8 @@ def main():
                 start_date=prediction_start_date,
                 end_date=prediction_end_date,
                 config=config_to_use,
-                cat_id=cat_id
+                cat_id=cat_id,
+                category=current_category
             )
         else:
             # Use single-shot prediction for short date ranges
@@ -2492,7 +2495,8 @@ def main():
                 start_date=prediction_start_date,
                 end_date=prediction_end_date,
                 config=config_to_use,
-                cat_id=cat_id
+                cat_id=cat_id,
+                category=current_category
             )
         # Attach category label so downstream metrics/CSVs can group by category
         recursive_preds[data_config['cat_col']] = current_category

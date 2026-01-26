@@ -21,8 +21,8 @@ data:
   #                       statistical heuristics (e.g., moving average) instead of LSTM.
   #                       These are excluded from training if specified.
   major_categories:
-    - "DRY"
-    # - "FRESH"
+    # - "DRY"
+    - "FRESH"
     # - "TET"
     # # - "POSM"
     # # - "OTHER"s
@@ -53,6 +53,7 @@ data:
     - "day_of_week_cos"
     - "weekday_volume_tier"
     - "is_high_volume_weekday"
+    - "Is_Monday"
     - "is_EOM"
     - "days_until_month_end"
     - "lunar_month"

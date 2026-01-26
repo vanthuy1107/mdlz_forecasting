@@ -38,6 +38,7 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_weekday_volume_tier_features,
+    add_is_monday_feature,
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
     add_seasonal_active_window_features
@@ -702,6 +703,14 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         is_high_volume_weekday_col="is_high_volume_weekday"
     )
     
+    # Feature engineering: Add Is_Monday feature to help model learn Monday peak patterns
+    print("  - Adding Is_Monday feature...")
+    filtered_data = add_is_monday_feature(
+        filtered_data,
+        time_col=time_col,
+        is_monday_col="Is_Monday"
+    )
+    
     # Feature engineering: Add End-of-Month (EOM) surge features
     print("  - Adding EOM features (is_EOM, days_until_month_end)...")
     filtered_data = add_eom_features(
@@ -776,6 +785,16 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     samples_after_agg = len(filtered_data)
     print(f"  - Samples before aggregation: {samples_before_agg}")
     print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
+    
+    # Re-add Is_Monday feature after aggregation (date-level feature)
+    # This ensures it's present even if it was lost during aggregation
+    if "Is_Monday" not in filtered_data.columns:
+        print("  - Re-adding Is_Monday feature after aggregation...")
+        filtered_data = add_is_monday_feature(
+            filtered_data,
+            time_col=time_col,
+            is_monday_col="Is_Monday"
+        )
     
     # Context-aware operational status flags (holiday/off, Sunday downtime, anomalies)
     # NOTE: This runs on the daily aggregated series. If you need strict calendar
@@ -901,10 +920,15 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"    - Zero count: {np.sum(test_target_before_scaling == 0)} / {len(test_target_before_scaling)}")
     
     # Fit scaler on training data and apply to all splits
+    # CRITICAL: Scaler is category-specific because train_data is already filtered to category_filter
+    # This ensures FRESH data is scaled independently from DRY/TET, preserving signal intensity
     print(f"\n[6.5/8] Scaling target values in column '{target_col_for_model}'...")
+    print(f"  - Scaler will be fitted exclusively on {category_filter or 'all categories'} data")
     scaler = fit_scaler(train_data, target_col=target_col_for_model)
-    print(f"  - Scaler fitted on training data:")
+    print(f"  - Scaler fitted on training data (category-specific):")
     print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
+    if category_filter:
+        print(f"  - ✓ Verified: Scaler is category-specific for '{category_filter}' (isolated scaling)")
     
     train_data = apply_scaling(train_data, scaler, target_col=target_col_for_model)
     val_data = apply_scaling(val_data, scaler, target_col=target_col_for_model)
@@ -1080,18 +1104,138 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             category_loss_weights[cat2id[category_filter]] = cat_params['loss_weight']
             print(f"  - Loss weight for {category_filter}: {cat_params['loss_weight']}")
     
-    # Create a partial function that includes category loss weights
-    def create_criterion(cat_loss_weights):
-        def criterion_fn(y_pred, y_true, category_ids=None):
+    # Get Monday loss weight from config (for FRESH category)
+    monday_loss_weight = 3.0  # Default
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'monday_loss_weight' in cat_params:
+        monday_loss_weight = float(cat_params['monday_loss_weight'])
+        print(f"  - Monday loss weight: {monday_loss_weight}x (for {category_filter or 'default'})")
+    
+    # Find Is_Monday and day_of_week feature indices for extracting from inputs
+    is_monday_idx = None
+    day_of_week_sin_idx = None
+    day_of_week_cos_idx = None
+    if 'Is_Monday' in feature_cols:
+        is_monday_idx = feature_cols.index('Is_Monday')
+        print(f"  - Is_Monday feature found at index {is_monday_idx}")
+    if 'day_of_week_sin' in feature_cols and 'day_of_week_cos' in feature_cols:
+        day_of_week_sin_idx = feature_cols.index('day_of_week_sin')
+        day_of_week_cos_idx = feature_cols.index('day_of_week_cos')
+        print(f"  - day_of_week_sin/cos features found at indices {day_of_week_sin_idx}/{day_of_week_cos_idx}")
+    
+    # Create a partial function that includes category loss weights and Monday weighting
+    def create_criterion(cat_loss_weights, monday_weight, is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, horizon_days):
+        def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
+            # Extract Is_Monday for the prediction horizon
+            is_monday_horizon = None
+            if (is_monday_feature_idx is not None or (day_of_week_sin_idx is not None and day_of_week_cos_idx is not None)) and inputs is not None and monday_weight > 1.0:
+                # inputs shape: (batch, input_size, features)
+                batch_size = inputs.shape[0]
+                
+                # Compute day of week for the last input day
+                # Method 1: Use Is_Monday if available (most direct)
+                if is_monday_feature_idx is not None:
+                    last_day_is_monday = inputs[:, -1, is_monday_feature_idx]  # (batch,) or (batch, 1)
+                    # Ensure 1D
+                    if last_day_is_monday.ndim > 1:
+                        last_day_is_monday = last_day_is_monday.squeeze()
+                    # If Is_Monday == 1, then day_of_week = 0 (Monday)
+                    # For non-Monday days, we set to -1 (unknown) and skip Monday weighting for those
+                    last_day_dow = torch.where(
+                        last_day_is_monday > 0.5, 
+                        torch.tensor(0.0, device=inputs.device), 
+                        torch.tensor(-1.0, device=inputs.device)
+                    )
+                    # Ensure 1D shape
+                    if last_day_dow.ndim > 1:
+                        last_day_dow = last_day_dow.squeeze()
+                # Method 2: Compute from day_of_week_sin/cos (more accurate)
+                elif day_of_week_sin_idx is not None and day_of_week_cos_idx is not None:
+                    last_day_sin = inputs[:, -1, day_of_week_sin_idx]  # (batch,) or (batch, 1)
+                    last_day_cos = inputs[:, -1, day_of_week_cos_idx]  # (batch,) or (batch, 1)
+                    # Ensure 1D
+                    if last_day_sin.ndim > 1:
+                        last_day_sin = last_day_sin.squeeze()
+                    if last_day_cos.ndim > 1:
+                        last_day_cos = last_day_cos.squeeze()
+                    # Recover day_of_week from sin/cos: atan2(sin, cos) * 7 / (2*pi)
+                    # Monday (0) -> sin=0, cos=1
+                    # We'll use a simpler approach: check if values are close to Monday's encoding
+                    # Monday: sin ≈ 0, cos ≈ 1
+                    last_day_is_monday = (torch.abs(last_day_sin) < 0.1) & (last_day_cos > 0.9)
+                    last_day_dow = torch.where(
+                        last_day_is_monday, 
+                        torch.tensor(0.0, device=inputs.device), 
+                        torch.tensor(-1.0, device=inputs.device)
+                    )
+                    # Ensure 1D shape
+                    if last_day_dow.ndim > 1:
+                        last_day_dow = last_day_dow.squeeze()
+                else:
+                    last_day_is_monday = None
+                    last_day_dow = None
+                
+                if last_day_dow is not None:
+                    # Ensure last_day_dow is 1D: (batch_size,)
+                    # Squeeze all dimensions of size 1
+                    while last_day_dow.ndim > 1:
+                        last_day_dow = last_day_dow.squeeze()
+                    # If still not 1D, flatten it
+                    if last_day_dow.ndim > 1:
+                        last_day_dow = last_day_dow.flatten()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        horizon = y_pred.shape[1]
+                        is_monday_horizon = torch.zeros((batch_size, horizon), device=y_pred.device)
+                        
+                        # Compute which days in horizon are Mondays
+                        # If last input day is Monday (dow=0), then:
+                        # - Horizon day 0 (tomorrow) is Tuesday (dow=1)
+                        # - Horizon day 6 is Monday (dow=0)
+                        # - Horizon day 13 is Monday (dow=0)
+                        # General: horizon day H is Monday if (last_day_dow + H + 1) % 7 == 0
+                        for h in range(horizon):
+                            # Compute day of week for horizon day h
+                            # Last input day is day -1, first horizon day is day 0
+                            # last_day_dow is (batch_size,), we add h+1 and take mod 7
+                            # Only compute if we know the day of week (last_day_dow >= 0)
+                            known_dow_mask = last_day_dow >= 0  # True where we know the day of week
+                            horizon_day_dow = torch.where(
+                                known_dow_mask,
+                                (last_day_dow + h + 1) % 7,
+                                torch.tensor(-1.0, device=inputs.device)  # Unknown
+                            )
+                            # Ensure result is 1D
+                            if horizon_day_dow.ndim > 1:
+                                horizon_day_dow = horizon_day_dow.squeeze()
+                            # Monday is day 0, and only mark as Monday if we knew the starting day
+                            is_monday_horizon[:, h] = ((horizon_day_dow == 0) & known_dow_mask).float()
+                    else:  # Single-step
+                        # For single-step, check if the prediction day is Monday
+                        # If last input day is Monday, next day is Tuesday (not Monday)
+                        # We need to check if next day is Monday: (last_day_dow + 1) % 7 == 0
+                        next_day_dow = (last_day_dow + 1) % 7
+                        if next_day_dow.ndim > 1:
+                            next_day_dow = next_day_dow.squeeze()
+                        is_monday_horizon = (next_day_dow == 0).float()
+                else:
+                    # If we can't determine day of week, set all to zero (no Monday weighting)
+                    if y_pred.ndim == 2:
+                        is_monday_horizon = torch.zeros((batch_size, y_pred.shape[1]), device=y_pred.device)
+                    else:
+                        is_monday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
+            
             return spike_aware_mse(
                 y_pred, 
                 y_true, 
                 category_ids=category_ids,
-                category_loss_weights=cat_loss_weights if cat_loss_weights else None
+                category_loss_weights=cat_loss_weights if cat_loss_weights else None,
+                is_monday=is_monday_horizon,
+                monday_loss_weight=monday_weight
             )
         return criterion_fn
     
-    criterion = create_criterion(category_loss_weights)
+    criterion = create_criterion(category_loss_weights, monday_loss_weight, is_monday_idx, day_of_week_sin_idx, day_of_week_cos_idx, horizon)
     
     # Build optimizer with category-specific learning rate
     # Priority: category-specific config > category_specific_params > base config

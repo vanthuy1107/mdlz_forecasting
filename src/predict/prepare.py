@@ -16,6 +16,7 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_weekday_volume_tier_features,
+    add_is_monday_feature,
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
     add_seasonal_active_window_features,
@@ -96,6 +97,14 @@ def prepare_prediction_data(
         time_col=time_col,
         weekday_volume_tier_col="weekday_volume_tier",
         is_high_volume_weekday_col="is_high_volume_weekday"
+    )
+    
+    # Add Is_Monday feature to help model learn Monday peak patterns
+    print("  - Adding Is_Monday feature...")
+    data = add_is_monday_feature(
+        data,
+        time_col=time_col,
+        is_monday_col="Is_Monday"
     )
     
     # Add End-of-Month (EOM) surge features
