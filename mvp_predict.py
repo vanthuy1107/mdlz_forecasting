@@ -1268,6 +1268,219 @@ def predict_direct_multistep(
     return predictions_df
 
 
+def predict_direct_multistep_rolling(
+    model,
+    device,
+    initial_window_data: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    config,
+    cat_id: int
+):
+    """
+    Predict for a long date range by looping through chunks of horizon days.
+    
+    This function extends predict_direct_multistep() to handle date ranges longer
+    than the model's horizon (e.g., predicting a full year when horizon=30 days).
+    It predicts in rolling chunks, updating the window with predictions from each
+    chunk to use as input for the next chunk.
+    
+    Args:
+        model: Trained PyTorch model (already on device and in eval mode)
+        device: PyTorch device
+        initial_window_data: DataFrame with last input_size days of historical data
+                            Must have all feature columns and be sorted by time
+        start_date: First date to predict (e.g., date(2025, 1, 1))
+        end_date: Last date to predict (e.g., date(2025, 12, 31))
+        config: Configuration object
+        cat_id: Category ID (integer)
+    
+    Returns:
+        DataFrame with columns: date, predicted
+    """
+    window_config = config.window
+    data_config = config.data
+    
+    input_size = window_config['input_size']
+    horizon = window_config['horizon']
+    feature_cols = data_config['feature_cols']
+    target_col = data_config['target_col']
+    time_col = data_config['time_col']
+    
+    # Validate initial window has enough data
+    if len(initial_window_data) < input_size:
+        raise ValueError(
+            f"Initial window must have at least {input_size} samples, "
+            f"got {len(initial_window_data)}"
+        )
+    
+    # Initialize window with historical data
+    window = initial_window_data.tail(input_size).copy()
+    window = window.sort_values(time_col).reset_index(drop=True)
+    
+    all_predictions = []
+    current_start = start_date
+    chunk_num = 0
+    
+    total_days = (end_date - start_date).days + 1
+    print(f"  - Starting rolling prediction for {total_days} days (horizon={horizon} days per chunk)")
+    print(f"  - Date range: {start_date} to {end_date}")
+    print(f"  - Initial window: {window[time_col].min()} to {window[time_col].max()}")
+    
+    while current_start <= end_date:
+        chunk_num += 1
+        # Calculate end date for this chunk (min of horizon days or remaining days)
+        chunk_end = min(
+            current_start + timedelta(days=horizon - 1),
+            end_date
+        )
+        chunk_days = (chunk_end - current_start).days + 1
+        
+        print(f"\n  [Chunk {chunk_num}] Predicting {current_start} to {chunk_end} ({chunk_days} days)...")
+        
+        # Predict this chunk using direct multi-step
+        chunk_predictions = predict_direct_multistep(
+            model=model,
+            device=device,
+            initial_window_data=window,
+            start_date=current_start,
+            end_date=chunk_end,
+            config=config,
+            cat_id=cat_id
+        )
+        
+        all_predictions.append(chunk_predictions)
+        
+        # Update window with predictions from this chunk
+        # We need to convert predictions to feature rows and append to window
+        print(f"  - Updating window with {len(chunk_predictions)} predictions...")
+        
+        # Get the last row from window as a template
+        last_row_template = window.iloc[-1:].copy()
+        
+        # For each predicted date, create a feature row
+        new_rows = []
+        for _, pred_row in chunk_predictions.iterrows():
+            pred_date = pred_row['date']
+            pred_value = pred_row['predicted']  # Already in scaled space
+            
+            # Create new row based on template
+            new_row = last_row_template.copy()
+            new_row[time_col] = pd.Timestamp(pred_date)
+            new_row[target_col] = pred_value  # Use predicted value
+            
+            # Compute temporal features for this date
+            pred_datetime = pd.Timestamp(pred_date)
+            month = pred_datetime.month
+            dayofmonth = pred_datetime.day
+            new_row['month_sin'] = np.sin(2 * np.pi * (month - 1) / 12)
+            new_row['month_cos'] = np.cos(2 * np.pi * (month - 1) / 12)
+            new_row['dayofmonth_sin'] = np.sin(2 * np.pi * (dayofmonth - 1) / 31)
+            new_row['dayofmonth_cos'] = np.cos(2 * np.pi * (dayofmonth - 1) / 31)
+            
+            # Compute weekend features
+            day_of_week = pred_datetime.dayofweek
+            new_row['is_weekend'] = 1 if day_of_week >= 5 else 0
+            new_row['day_of_week_sin'] = np.sin(2 * np.pi * day_of_week / 7)
+            new_row['day_of_week_cos'] = np.cos(2 * np.pi * day_of_week / 7)
+            
+            # Compute weekday volume tier
+            if day_of_week == 2:  # Wednesday
+                weekday_volume_tier = 2
+            elif day_of_week == 4:  # Friday
+                weekday_volume_tier = 1
+            elif day_of_week in [1, 3]:  # Tuesday, Thursday
+                weekday_volume_tier = 0
+            else:
+                weekday_volume_tier = -1
+            new_row['weekday_volume_tier'] = weekday_volume_tier
+            new_row['is_high_volume_weekday'] = 1 if day_of_week in [2, 4] else 0
+            
+            # Compute lunar calendar features
+            lunar_month, lunar_day = solar_to_lunar_date(pred_date)
+            new_row['lunar_month'] = lunar_month
+            new_row['lunar_day'] = lunar_day
+            
+            # Compute holiday features
+            extended_end = end_date + timedelta(days=365)
+            holidays = get_vietnam_holidays(pred_date, extended_end)
+            holiday_set = set(holidays)
+            new_row['holiday_indicator'] = 1 if pred_date in holiday_set else 0
+            
+            # Days until next holiday
+            next_holiday = None
+            for holiday in holidays:
+                if holiday > pred_date:
+                    next_holiday = holiday
+                    break
+            new_row['days_until_next_holiday'] = (next_holiday - pred_date).days if next_holiday else 365
+            
+            # Days since last holiday
+            last_holiday = None
+            for holiday in sorted(holidays, reverse=True):
+                if holiday <= pred_date:
+                    last_holiday = holiday
+                    break
+            new_row['days_since_holiday'] = (pred_date - last_holiday).days if last_holiday else 365
+            
+            # EOM features
+            is_eom = pred_datetime.day >= 28  # Approximate end of month
+            new_row['is_EOM'] = 1 if is_eom else 0
+            days_in_month = (pred_datetime.replace(day=28) + timedelta(days=4)).day
+            days_until_month_end = days_in_month - pred_datetime.day
+            new_row['days_until_month_end'] = max(0, days_until_month_end)
+            
+            new_rows.append(new_row)
+        
+        # Append new rows to window
+        if new_rows:
+            new_rows_df = pd.concat(new_rows, ignore_index=True)
+            window = pd.concat([window, new_rows_df], ignore_index=True)
+            window = window.sort_values(time_col).reset_index(drop=True)
+            
+            # Recompute rolling features for the updated window
+            # This ensures rolling_mean_7d, rolling_mean_30d, and momentum are correct
+            qty_values = window[target_col].values
+            
+            for i in range(len(window)):
+                # Rolling mean 7d: last 7 values
+                start_idx_7d = max(0, i - 6)
+                rolling_mean_7d = np.mean(qty_values[start_idx_7d:i+1])
+                
+                # Rolling mean 30d: last 30 values (or all available if less)
+                start_idx_30d = max(0, i - 29)
+                rolling_mean_30d = np.mean(qty_values[start_idx_30d:i+1])
+                
+                # Momentum: 3d vs 14d
+                start_idx_3d = max(0, i - 2)
+                start_idx_14d = max(0, i - 13)
+                rolling_mean_3d = np.mean(qty_values[start_idx_3d:i+1]) if i >= 2 else np.mean(qty_values[:i+1])
+                rolling_mean_14d = np.mean(qty_values[start_idx_14d:i+1]) if i >= 13 else np.mean(qty_values[:i+1])
+                momentum_3d_vs_14d = rolling_mean_3d - rolling_mean_14d
+                
+                window.loc[i, 'rolling_mean_7d'] = rolling_mean_7d
+                window.loc[i, 'rolling_mean_30d'] = rolling_mean_30d
+                window.loc[i, 'momentum_3d_vs_14d'] = momentum_3d_vs_14d
+            
+            # Keep only the last input_size rows for next iteration
+            window = window.tail(input_size).copy()
+            window = window.sort_values(time_col).reset_index(drop=True)
+        
+        # Move to next chunk
+        current_start = chunk_end + timedelta(days=1)
+    
+    # Combine all predictions
+    if all_predictions:
+        final_predictions = pd.concat(all_predictions, ignore_index=True)
+        # Remove duplicates (in case of overlap) by keeping first occurrence
+        final_predictions = final_predictions.drop_duplicates(subset=['date'], keep='first')
+        final_predictions = final_predictions.sort_values('date').reset_index(drop=True)
+        print(f"\n  - Completed rolling prediction: {len(final_predictions)} total predictions")
+        return final_predictions
+    else:
+        return pd.DataFrame(columns=['date', 'predicted'])
+
+
 def predict_recursive(
     model,
     device,
@@ -1583,9 +1796,9 @@ def main():
     requested_days = (prediction_end_date - prediction_start_date).days + 1
     if requested_days > horizon_days:
         print(
-            f"[WARNING] Requested {requested_days} days but recursive mode predicts only "
-            f"the first {horizon_days} days (window.horizon). Result will cover "
-            f"{prediction_start_date} to {prediction_start_date + timedelta(days=horizon_days - 1)} only."
+            f"[INFO] Requested {requested_days} days exceeds horizon ({horizon_days} days). "
+            f"Will use rolling prediction to cover the full date range from "
+            f"{prediction_start_date} to {prediction_end_date}."
         )
     print("=" * 80)
     print(f"\n[2/7] Loading historical {historical_year} data...")
@@ -2182,15 +2395,34 @@ def main():
 
         # Run direct multi-step prediction over configured prediction window
         # This addresses exposure bias by predicting entire horizon at once
-        recursive_preds = predict_direct_multistep(
-            model=model,
-            device=device,
-            initial_window_data=historical_window_filtered,
-            start_date=prediction_start_date,
-            end_date=prediction_end_date,
-            config=config,
-            cat_id=cat_id
-        )
+        # If date range is longer than horizon, use rolling prediction
+        horizon_days = config.window.get('horizon', 30)
+        requested_days = (prediction_end_date - prediction_start_date).days + 1
+        
+        if requested_days > horizon_days:
+            # Use rolling prediction for long date ranges
+            print(f"  - Date range ({requested_days} days) exceeds horizon ({horizon_days} days)")
+            print(f"  - Using rolling prediction to cover full date range")
+            recursive_preds = predict_direct_multistep_rolling(
+                model=model,
+                device=device,
+                initial_window_data=historical_window_filtered,
+                start_date=prediction_start_date,
+                end_date=prediction_end_date,
+                config=config,
+                cat_id=cat_id
+            )
+        else:
+            # Use single-shot prediction for short date ranges
+            recursive_preds = predict_direct_multistep(
+                model=model,
+                device=device,
+                initial_window_data=historical_window_filtered,
+                start_date=prediction_start_date,
+                end_date=prediction_end_date,
+                config=config,
+                cat_id=cat_id
+            )
         # Attach category label so downstream metrics/CSVs can group by category
         recursive_preds[data_config['cat_col']] = current_category
 
