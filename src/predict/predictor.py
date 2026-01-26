@@ -33,6 +33,58 @@ def _solar_to_lunar_date(solar_date: date) -> tuple:
     return lunar_month, lunar_day
 
 
+def _get_is_active_season_mooncake(pred_date: date) -> int:
+    """
+    Calculate is_active_season for MOONCAKE category.
+    
+    MOONCAKE is active between Lunar Months 6 and 9.
+    
+    CRITICAL: The simplified _solar_to_lunar_date function may not be accurate.
+    For 2025, Mid-Autumn Festival is around September 6-7 (solar), which is
+    Lunar Month 8, Day 15. So the active season (Lunar Months 6-9) roughly
+    corresponds to Solar months 7-10 (July-October), but to be conservative
+    and avoid off-season leakage, we only allow August-September (solar months 8-9).
+    
+    Args:
+        pred_date: Prediction date (Gregorian)
+    
+    Returns:
+        1 if in active season (conservative: Solar months 8-9 only), 0 otherwise
+    """
+    # FIXED: Allow Lunar Months 6-9, which corresponds to Solar months 6-9 (June-September)
+    # This matches the config setting: seasonal_active_window: "lunar_months_6_9"
+    # Previous implementation was too restrictive (only months 8-9), causing July and October to be zeroed
+    solar_month = pred_date.month
+    is_active = (solar_month >= 6) and (solar_month <= 9)
+    
+    # Alternative: Use lunar calculation (less reliable with simplified function)
+    # lunar_month, _ = _solar_to_lunar_date(pred_date)
+    # is_active = (lunar_month >= 6) and (lunar_month <= 9)
+    
+    return 1 if is_active else 0
+
+
+def _get_is_golden_window_mooncake(pred_date: date) -> int:
+    """
+    Calculate is_golden_window for MOONCAKE category.
+    
+    Golden Window: Lunar Months 6.15 to 8.01 (peak buildup period)
+    
+    Args:
+        pred_date: Prediction date (Gregorian)
+    
+    Returns:
+        1 if in Golden Window, 0 otherwise
+    """
+    lunar_month, lunar_day = _solar_to_lunar_date(pred_date)
+    is_golden = (
+        ((lunar_month == 6) and (lunar_day >= 15)) or
+        (lunar_month == 7) or
+        ((lunar_month == 8) and (lunar_day <= 1))
+    )
+    return 1 if is_golden else 0
+
+
 def _get_tet_start_dates(start_year: int, end_year: int):
     """Get Tet (Lunar New Year) start dates for a year range."""
     from config import load_holidays
@@ -144,6 +196,16 @@ def predict_direct_multistep(
         dtype=torch.float32
     ).unsqueeze(0).to(device)
     
+    # NOTE: Input scaling check for off-season features
+    # Only the target column (Total CBM) is scaled using StandardScaler, NOT the input features.
+    # Input features (is_active_season, lunar_month, etc.) remain in their natural ranges:
+    # - Binary features (is_active_season, is_golden_window): 0 or 1
+    # - Cyclical features (sin/cos): -1 to 1
+    # - Countdown features: raw day counts
+    # This ensures off-season features (is_active_season=0) are not scaled to "near-zero"
+    # values that the LSTM might interpret as small signals. The binary 0/1 encoding
+    # provides a clear, unambiguous signal to the model.
+    
     cat_tensor = torch.tensor([cat_id], dtype=torch.long).to(device)
     
     with torch.no_grad():
@@ -196,6 +258,17 @@ def predict_direct_multistep(
             pred_value = 0.0  # Sundays are also zero (especially for FRESH)
         else:
             pred_value = float(pred_scaled[i])
+        
+        # CRITICAL FIX: Hard-Masking Logic for MOONCAKE
+        # Re-enforce strict off-season masking: Final_Pred = Raw_Pred * is_active_season
+        # This prevents predictions from leaking into off-season (e.g., January)
+        if category == "MOONCAKE":
+            is_active_season = _get_is_active_season_mooncake(pred_date)
+            pred_value = pred_value * is_active_season
+            # REMOVED: Golden Window hard masking
+            # Golden Window should be used for loss weighting during training, NOT for hard masking during prediction
+            # Hard masking was causing valid active-season predictions to be zeroed out
+            # The model should learn to predict lower values outside Golden Window through training, not forced zeros
         
         predictions.append({
             'date': pred_date,

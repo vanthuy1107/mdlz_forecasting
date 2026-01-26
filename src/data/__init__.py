@@ -14,6 +14,7 @@ from .preprocessing import (
     aggregate_daily,
     apply_sunday_to_monday_carryover,
     add_cbm_density_features,
+    add_year_over_year_volume_features,
     fit_scaler,
     apply_scaling,
     inverse_transform_scaling
@@ -34,6 +35,7 @@ __all__ = [
     'aggregate_daily',
     'apply_sunday_to_monday_carryover',
     'add_cbm_density_features',
+    'add_year_over_year_volume_features',
     'fit_scaler',
     'apply_scaling',
     'inverse_transform_scaling'

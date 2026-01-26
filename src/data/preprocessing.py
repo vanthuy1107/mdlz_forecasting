@@ -702,6 +702,9 @@ def aggregate_daily(
         'weekday_volume_tier', 'is_high_volume_weekday',
         'Is_Monday',  # Binary flag for Monday peak patterns (FRESH category)
         'lunar_month', 'lunar_day',
+        'lunar_month_sin', 'lunar_month_cos', 'lunar_day_sin', 'lunar_day_cos',
+        'days_to_tet', 'days_to_mid_autumn',  # Tet and Mid-Autumn countdown features
+        'is_active_season', 'days_until_peak', 'is_golden_window',  # Seasonal active-window features
         # Lunar cyclical encodings and Tet countdown should also persist after aggregation
         'lunar_month_sin', 'lunar_month_cos',
         'lunar_day_sin', 'lunar_day_cos',
@@ -857,6 +860,7 @@ def add_seasonal_active_window_features(
     days_to_tet_col: str = "days_to_tet",
     is_active_season_col: str = "is_active_season",
     days_until_peak_col: str = "days_until_peak",
+    is_golden_window_col: str = "is_golden_window",
 ) -> pd.DataFrame:
     """
     Add seasonal active-window masking features for seasonal categories (TET, MOONCAKE).
@@ -868,6 +872,9 @@ def add_seasonal_active_window_features(
     - days_until_peak: Continuous countdown feature to the peak event
       - For MOONCAKE: Days until Mid-Autumn Festival (lunar month 8, day 15)
       - For TET: Days until Tet start (from days_to_tet)
+    - is_golden_window: Binary feature (1 if date is in Golden Window, 0 otherwise)
+      - For MOONCAKE: Golden Window is Lunar Months 6.15 to 8.01 (peak buildup period)
+      - For TET: Not applicable (set to 0)
     
     This feature helps the model learn when seasonal categories are "active" and
     provides a gradient signal for approaching peak demand periods.
@@ -880,6 +887,7 @@ def add_seasonal_active_window_features(
         days_to_tet_col: Name of days_to_tet column (for TET category).
         is_active_season_col: Name for is_active_season column.
         days_until_peak_col: Name for days_until_peak column.
+        is_golden_window_col: Name for is_golden_window column.
     
     Returns:
         DataFrame with added seasonal active-window features.
@@ -893,6 +901,7 @@ def add_seasonal_active_window_features(
     # Initialize columns
     df[is_active_season_col] = 0
     df[days_until_peak_col] = np.nan
+    df[is_golden_window_col] = 0  # Initialize Golden Window feature
     
     # Process each category
     for category in df[cat_col].unique():
@@ -905,16 +914,25 @@ def add_seasonal_active_window_features(
                 raise ValueError(f"Lunar month column '{lunar_month_col}' not found. Call add_lunar_calendar_features first.")
             
             # Active season: Lunar months 6-9
-            is_active = (df[lunar_month_col] >= 6) & (df[lunar_month_col] <= 9)
+            lunar_month = df.loc[cat_mask, lunar_month_col]
+            lunar_day = df.loc[cat_mask, "lunar_day"] if "lunar_day" in df.columns else None
+            
+            is_active = (lunar_month >= 6) & (lunar_month <= 9)
             df.loc[cat_mask & is_active, is_active_season_col] = 1
             
-            # Calculate days until peak (Mid-Autumn Festival: Lunar Month 8, Day 15)
-            # For simplicity, we approximate: if in lunar month 8, days_until_peak = abs(lunar_day - 15)
-            # Otherwise, calculate based on lunar month distance
-            mooncake_mask = cat_mask
-            lunar_month = df.loc[mooncake_mask, lunar_month_col]
-            lunar_day = df.loc[mooncake_mask, "lunar_day"] if "lunar_day" in df.columns else None
+            # Golden Window: Lunar Months 6.15 to 8.01 (peak buildup period)
+            # This is the critical period where the model must recognize peak occurs 30-45 days before Day 15 of Month 8
+            if lunar_day is not None:
+                # Golden Window: (lunar_month == 6 and lunar_day >= 15) OR (lunar_month == 7) OR (lunar_month == 8 and lunar_day <= 1)
+                is_golden = (
+                    ((lunar_month == 6) & (lunar_day >= 15)) |
+                    (lunar_month == 7) |
+                    ((lunar_month == 8) & (lunar_day <= 1))
+                )
+                df.loc[cat_mask & is_golden, is_golden_window_col] = 1
             
+            # Calculate days until peak (Mid-Autumn Festival: Lunar Month 8, Day 15)
+            mooncake_mask = cat_mask
             if lunar_day is not None:
                 # If in lunar month 8, countdown to day 15
                 in_month_8 = lunar_month == 8
@@ -945,9 +963,20 @@ def add_seasonal_active_window_features(
             
             # days_until_peak for TET is simply days_to_tet
             df.loc[cat_mask, days_until_peak_col] = days_to_tet.values
+            
+            # TET does not have a Golden Window (set to 0)
+            df.loc[cat_mask, is_golden_window_col] = 0
+        
+        # For any other categories not explicitly handled, ensure columns exist with defaults
+        # (is_golden_window already initialized to 0 for all rows at line 901)
+        # (days_until_peak will be filled with NaN and then 365 below)
     
     # Fill NaN values with large number (outside active season)
     df[days_until_peak_col] = df[days_until_peak_col].fillna(365)
+    
+    # Ensure is_golden_window exists for all rows (should already be initialized, but double-check)
+    if is_golden_window_col not in df.columns:
+        df[is_golden_window_col] = 0
     
     return df
 
@@ -1028,6 +1057,89 @@ def add_cbm_density_features(
         )
         df[density_last_year_col] = df[density_last_year_col].fillna(cat_median)
 
+    return df
+
+
+def add_year_over_year_volume_features(
+    df: pd.DataFrame,
+    target_col: str = "Total CBM",
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    yoy_1y_col: str = "cbm_last_year",
+    yoy_2y_col: str = "cbm_2_years_ago",
+) -> pd.DataFrame:
+    """
+    Add year-over-year volume features for seasonal products like MOONCAKE.
+    
+    For highly seasonal products that follow annual patterns (e.g., Mid-Autumn Festival),
+    the same calendar period from previous years is more predictive than recent days.
+    
+    Creates:
+    - cbm_last_year: Total CBM from the same calendar date one year earlier (same category)
+    - cbm_2_years_ago: Total CBM from the same calendar date two years earlier (same category)
+    
+    This gives the model explicit year-over-year patterns, which is critical for seasonal
+    products that have strong annual periodicity (like MOONCAKE around Mid-Autumn Festival).
+    
+    Args:
+        df: DataFrame with daily aggregated data (one row per date per category).
+        target_col: Name of target volume column (e.g., "Total CBM").
+        time_col: Name of time column.
+        cat_col: Name of category column.
+        yoy_1y_col: Name for 1-year-ago volume feature.
+        yoy_2y_col: Name for 2-years-ago volume feature.
+    
+    Returns:
+        DataFrame with added year-over-year volume features.
+    """
+    df = df.copy()
+    
+    # Basic checks
+    if target_col not in df.columns:
+        return df
+    
+    # Ensure time column is datetime for DateOffset operations
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Coerce target to numeric
+    target_numeric = pd.to_numeric(df[target_col], errors="coerce").fillna(0.0)
+    
+    # Build mapping for 1 year ago: (category, date+1year) -> volume
+    aux_1y = df[[time_col, cat_col, target_col]].copy()
+    aux_1y[time_col] = aux_1y[time_col] + pd.DateOffset(years=1)
+    aux_1y = aux_1y.rename(columns={target_col: yoy_1y_col})
+    
+    # Merge back to align each row with volume from exactly one year before
+    df = df.merge(
+        aux_1y[[time_col, cat_col, yoy_1y_col]],
+        on=[time_col, cat_col],
+        how="left",
+    )
+    
+    # Build mapping for 2 years ago: (category, date+2years) -> volume
+    aux_2y = df[[time_col, cat_col, target_col]].copy()
+    aux_2y[time_col] = aux_2y[time_col] + pd.DateOffset(years=2)
+    aux_2y = aux_2y.rename(columns={target_col: yoy_2y_col})
+    
+    # Merge back to align each row with volume from exactly two years before
+    df = df.merge(
+        aux_2y[[time_col, cat_col, yoy_2y_col]],
+        on=[time_col, cat_col],
+        how="left",
+    )
+    
+    # For dates where we don't have data from prior years, fall back to 0.0
+    # (off-season periods should be 0, which is correct for MOONCAKE)
+    df[yoy_1y_col] = df[yoy_1y_col].fillna(0.0)
+    df[yoy_2y_col] = df[yoy_2y_col].fillna(0.0)
+    
+    # CRITICAL: Add trend deviation feature - compares recent trend vs year-over-year baseline
+    # This allows the model to adjust the year-over-year baseline based on recent patterns
+    # For example: if last year was 100 CBM but recent 21 days average is 120 CBM,
+    # the model should predict closer to 120 (trend-adjusted) rather than blindly using 100
+    # We'll compute this after rolling features are added (in training pipeline)
+    
     return df
 
 

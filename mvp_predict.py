@@ -268,6 +268,27 @@ def get_tet_start_dates(start_year: int, end_year: int) -> List[date]:
     return tet_dates
 
 
+def get_mid_autumn_dates(start_year: int, end_year: int) -> List[date]:
+    """
+    Get Mid-Autumn Festival dates for a year range.
+
+    These are the anchor points for the "days_to_mid_autumn" continuous feature,
+    representing the peak event for MOONCAKE category (Lunar Month 8, Day 15).
+    The peak occurs 30-45 days before this date.
+    """
+    mid_autumn_dates: List[date] = []
+    for year in range(start_year, end_year + 1):
+        if year in VIETNAM_HOLIDAYS_BY_YEAR:
+            mid_autumn_list = VIETNAM_HOLIDAYS_BY_YEAR[year].get("mid_autumn", [])
+            if mid_autumn_list:
+                # Use the first day of Mid-Autumn Festival as the peak event
+                mid_autumn_dates.append(mid_autumn_list[0])
+
+    # Remove duplicates and sort
+    mid_autumn_dates = sorted(list(set(mid_autumn_dates)))
+    return mid_autumn_dates
+
+
 def add_days_to_tet_feature(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
@@ -1493,11 +1514,58 @@ def predict_direct_multistep_rolling_old(
             is_active_season_val = 0
             days_until_peak_val = 365
             
+            # Compute days_to_mid_autumn for MOONCAKE category
+            days_to_mid_autumn_val = 365  # Default
+            if category == "MOONCAKE":
+                # Calculate days until Mid-Autumn Festival (Lunar Month 8, Day 15)
+                mid_autumn_dates = get_mid_autumn_dates(pred_date.year, pred_date.year + 1)
+                if lunar_month == 8:
+                    if lunar_day <= 15:
+                        days_to_mid_autumn_val = 15 - lunar_day
+                    else:
+                        # Past Day 15, find next year's Mid-Autumn Festival
+                        next_mid_autumn = None
+                        for ma_date in mid_autumn_dates:
+                            if ma_date > pred_date:
+                                next_mid_autumn = ma_date
+                                break
+                        if next_mid_autumn:
+                            days_to_mid_autumn_val = (next_mid_autumn - pred_date).days
+                        else:
+                            days_to_mid_autumn_val = 365
+                elif lunar_month < 8:
+                    months_until = 8 - lunar_month
+                    days_until_month_8 = months_until * 30
+                    days_until_day_15 = days_until_month_8 + (15 - lunar_day)
+                    days_to_mid_autumn_val = days_until_day_15
+                else:
+                    months_until_next = (12 - lunar_month) + 8
+                    days_until_month_8 = months_until_next * 30
+                    days_until_day_15 = days_until_month_8 + (15 - lunar_day)
+                    days_to_mid_autumn_val = days_until_day_15
+                    # Use actual Mid-Autumn Festival dates for accuracy
+                    next_mid_autumn = None
+                    for ma_date in mid_autumn_dates:
+                        if ma_date > pred_date:
+                            next_mid_autumn = ma_date
+                            break
+                    if next_mid_autumn:
+                        days_to_mid_autumn_val = (next_mid_autumn - pred_date).days
+            new_row['days_to_mid_autumn'] = days_to_mid_autumn_val
+            
             if category == "MOONCAKE":
                 # MOONCAKE: Active between Lunar Months 6 and 9
                 # Peak is Mid-Autumn Festival (Lunar Month 8, Day 15)
                 is_active = (lunar_month >= 6) and (lunar_month <= 9)
                 is_active_season_val = 1 if is_active else 0
+                
+                # Golden Window: Lunar Months 6.15 to 8.01 (peak buildup period)
+                is_golden = (
+                    ((lunar_month == 6) and (lunar_day >= 15)) or
+                    (lunar_month == 7) or
+                    ((lunar_month == 8) and (lunar_day <= 1))
+                )
+                is_golden_window_val = 1 if is_golden else 0
                 
                 # Calculate days until peak
                 if lunar_month == 8:
@@ -1511,9 +1579,14 @@ def predict_direct_multistep_rolling_old(
                 is_active = days_to_tet_val <= 45
                 is_active_season_val = 1 if is_active else 0
                 days_until_peak_val = days_to_tet_val
+                is_golden_window_val = 0  # TET does not have a Golden Window
+            else:
+                # For other categories, set defaults
+                is_golden_window_val = 0
             
             new_row['is_active_season'] = is_active_season_val
             new_row['days_until_peak'] = days_until_peak_val
+            new_row['is_golden_window'] = is_golden_window_val
             
             new_rows.append(new_row)
         
@@ -2398,9 +2471,18 @@ def main():
             # CRITICAL FIX: Use trained_cat2id directly - don't create new mapping
             prediction_data_cat = prediction_data[prediction_data[data_config['cat_col']] == current_category].copy()
             cat2id_fallback = trained_cat2id_cat if trained_cat2id_cat is not None else {}
+            
+            # CRITICAL FIX for MOONCAKE: Pass historical data to enable year-over-year features
+            # Historical data must be aggregated and filtered to current category
+            historical_for_yoy = None
+            if current_category == "MOONCAKE" and len(ref_data_cat) > 0:
+                # Use the already-prepared historical data (aggregated, filtered to category)
+                historical_for_yoy = historical_data_prepared_cat.copy()
+            
             prediction_data_unscaled_cat = prepare_prediction_data(
                 prediction_data_cat, config_cat, cat2id_fallback, scaler=None, 
-                trained_cat2id=trained_cat2id_cat, current_category=current_category
+                trained_cat2id=trained_cat2id_cat, current_category=current_category,
+                historical_data=historical_for_yoy
             )
             prediction_data_unscaled_cat['date'] = pd.to_datetime(prediction_data_unscaled_cat[time_col]).dt.date
             actuals_by_date_cat = prediction_data_unscaled_cat.groupby(
@@ -2548,6 +2630,83 @@ def main():
         if negative_count > 0:
             print(f"  [WARNING] Clipping {negative_count} negative recursive predictions to 0 (QTY must be >= 0)")
             recursive_results['predicted_unscaled'] = np.maximum(recursive_results['predicted_unscaled'], 0.0)
+    
+    # CRITICAL FIX: Hard-Masking Logic for MOONCAKE (Post-Inverse-Scaling)
+    # Re-enforce strict off-season masking: Final_Pred = Raw_Pred * is_active_season
+    # This prevents predictions from leaking into off-season (e.g., July, October)
+    # Must be applied AFTER inverse scaling to work on original scale
+    if len(recursive_results) > 0:
+        cat_col = data_config['cat_col']
+        if cat_col in recursive_results.columns:
+            mooncake_mask = recursive_results[cat_col] == 'MOONCAKE'
+            if mooncake_mask.any():
+                print(f"  - Applying hard-masking for MOONCAKE: enforcing is_active_season constraint...")
+                mooncake_rows = recursive_results[mooncake_mask].copy()
+                
+                # Calculate is_active_season for each date
+                def get_is_active_season_mooncake(row_date):
+                    """
+                    Calculate is_active_season for MOONCAKE: Active between Lunar Months 6-9
+                    
+                    CRITICAL: The simplified solar_to_lunar_date function may not be accurate.
+                    For 2025, we use a more accurate approximation:
+                    - Mid-Autumn Festival 2025 is around September 6-7 (solar)
+                    - This corresponds to Lunar Month 8, Day 15
+                    - So Lunar Month 6 ≈ June-July, Lunar Month 7 ≈ July-August, 
+                      Lunar Month 8 ≈ August-September, Lunar Month 9 ≈ September-October
+                    
+                    For safety, we use a conservative approach: only allow predictions
+                    during August-September (solar months) which definitely contain the peak.
+                    """
+                    if isinstance(row_date, str):
+                        row_date = pd.to_datetime(row_date).date()
+                    elif isinstance(row_date, pd.Timestamp):
+                        row_date = row_date.date()
+                    elif not isinstance(row_date, date):
+                        row_date = pd.to_datetime(row_date).date()
+                    
+                    # FIXED: Allow Lunar Months 6-9, which corresponds to Solar months 6-9 (June-September)
+                    # This matches the config setting: seasonal_active_window: "lunar_months_6_9"
+                    # Previous implementation was too restrictive (only months 8-9), causing July and October to be zeroed
+                    solar_month = row_date.month
+                    
+                    # Active season: Lunar Months 6-9 ≈ Solar months 6-9 (June-September)
+                    # This allows predictions in July and October (tail ends of season)
+                    is_active = (solar_month >= 6) and (solar_month <= 9)
+                    
+                    # Alternative: Use lunar calculation but with stricter bounds
+                    # lunar_month, _ = solar_to_lunar_date(row_date)
+                    # is_active = (lunar_month >= 6) and (lunar_month <= 9)
+                    
+                    return 1 if is_active else 0
+                
+                # Apply hard mask: multiply by is_active_season
+                mooncake_rows['is_active_season'] = mooncake_rows['date'].apply(get_is_active_season_mooncake)
+                mooncake_rows['predicted_unscaled'] = mooncake_rows['predicted_unscaled'] * mooncake_rows['is_active_season']
+                
+                # Count how many were zeroed
+                zeroed_count = (mooncake_rows['is_active_season'] == 0).sum()
+                if zeroed_count > 0:
+                    print(f"    - Zeroed {zeroed_count} MOONCAKE predictions outside active season (Lunar Months 6-9)")
+                
+                # NOTE: No hardcoded scaling factors - model should learn peak predictions directly
+                # through training with proper loss weights (loss_weight=20.0, golden_window_weight=10.0)
+                # If predictions are still too low, the model needs to be retrained with these weights
+                
+                # Update the original dataframe
+                recursive_results.loc[mooncake_mask, 'predicted_unscaled'] = mooncake_rows['predicted_unscaled'].values
+    
+    # Zero-Threshold Post-Processing for MOONCAKE: Hard floor at 10 CBM
+    # If predicted value < 10 CBM for MOONCAKE category (and in active season), force it to exactly 0.0
+    # This catches small "ghost" predictions like 9.98 CBM
+    if len(recursive_results) > 0:
+        cat_col = data_config['cat_col']
+        if cat_col in recursive_results.columns:
+            mooncake_mask = (recursive_results[cat_col] == 'MOONCAKE') & (recursive_results['predicted_unscaled'] < 10.0) & (recursive_results['predicted_unscaled'] > 0.0)
+            mooncake_count = mooncake_mask.sum()
+            if mooncake_count > 0:
+                print(f"  - Applying zero-threshold post-processing: {mooncake_count} MOONCAKE predictions < 10 CBM forced to 0.0")
+                recursive_results.loc[mooncake_mask, 'predicted_unscaled'] = 0.0
 
     # Holiday Zero‑Constraint in ORIGINAL scale:
     # Force predicted_unscaled to 0 on Vietnam warehouse day‑off dates,

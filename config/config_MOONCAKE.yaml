@@ -1,38 +1,56 @@
 # Category-Specific Configuration for MOONCAKE Category
 # This file overrides base config.yaml settings for MOONCAKE category training
+# Refined for better handling of sparse seasonal data with transfer learning from TET
 
-# Window configuration - MOONCAKE needs focused seasonal window
+# Window configuration - For seasonal products, year-over-year features are more important than recent days
+# The model will learn from same period last year (cbm_last_year, cbm_2_years_ago features)
+# rather than just the last 21 days
 window:
-  input_size: 14  # Focused lookback for seasonal intensity
+  input_size: 21  # 21-day lookback (year-over-year features provide historical context)
   horizon: 30     # 30-day forecast horizon
 
-# Model Configuration
+# Model Configuration - Reduced complexity to prevent overfitting on sparse data
 model:
-  hidden_size: 256  # Larger network for complex seasonal patterns
-  n_layers: 3
+  hidden_size: 128  # Reduced from 256 to prevent overfitting on sparse seasonal data
+  n_layers: 2       # Reduced from 3 to prevent overfitting
   dropout_prob: 0.2
   use_layer_norm: true
 
-# Training Configuration - Highest weight because season is very short
+# Training Configuration - Optimized for sparse seasonal patterns
 training:
   batch_size: 32
   epochs: 40
-  learning_rate: 0.002
+  learning_rate: 0.001  # Conservative learning rate for high precision during season, zero outside
   weight_decay: 1e-4
   scheduler:
     patience: 3
     factor: 0.5
+  loss: "spike_aware_mse"  # Use spike-aware loss with Golden Window weighting
+  # SUGGESTION: Consider switching to "focal_loss" or "huber_loss" for better handling
+  # of outliers and difficult peak samples. These loss functions are more robust to
+  # outliers and will help the model focus on the "difficult" peak samples rather than
+  # the "easy" zero samples. Available in src.utils.losses: focal_loss() and huber_loss()
 
-# Category-specific loss weighting - Highest weight for very short season
+# Category-specific loss weighting - High weight for Golden Window (Lunar Months 6.15 to 8.01)
 category_specific_params:
   MOONCAKE:
-    learning_rate: 0.002
-    epochs: 40
-    loss_weight: 5.0  # Highest weight because the season is very short
+    learning_rate: 0.001  # Conservative learning rate for high precision during season, zero outside
+    epochs: 20
+    loss_weight: 20.0  # Aggressively increased for peak prediction (applies only to active days) - was 10.0
+    golden_window_weight: 10.0  # Aggressively increased for Golden Window (Lunar Months 6.15 to 8.01) - was 5.0
     weight_decay: 1e-4
+    use_smooth_l1: false  # Set to true to use SmoothL1Loss instead of MSE
 
 # Seasonal configuration - MOONCAKE is highly seasonal
 data:
   seasonal_active_window: "lunar_months_6_9"  # Active between Lunar Months 6-9
   peak_event: "mid_autumn"  # Peak event is Mid-Autumn Festival (Lunar Month 8, Day 15)
   apply_seasonal_mask: true  # Hard-zero constraint during off-season
+  golden_window: "lunar_months_6.15_8.01"  # Golden Window: Lunar Months 6.15 to 8.01 (peak buildup)
+
+# Transfer Learning Configuration
+transfer_learning:
+  enabled: true
+  source_category: "TET"  # Initialize MOONCAKE weights from pre-trained TET model
+  source_model_path: null  # Will be auto-detected from outputs/TET/models/best_model.pth
+  freeze_layers: []  # Empty list means fine-tune all layers (no freezing)

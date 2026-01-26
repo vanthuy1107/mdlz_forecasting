@@ -30,6 +30,7 @@ from src.data import (
     add_temporal_features,
     aggregate_daily,
     add_cbm_density_features,
+    add_year_over_year_volume_features,
     fit_scaler,
     apply_scaling,
     inverse_transform_scaling
@@ -146,6 +147,27 @@ def get_tet_start_dates(start_year: int, end_year: int) -> List[date]:
     # Remove duplicates and sort
     tet_dates = sorted(list(set(tet_dates)))
     return tet_dates
+
+
+def get_mid_autumn_dates(start_year: int, end_year: int) -> List[date]:
+    """
+    Get Mid-Autumn Festival dates for a year range.
+
+    These are the anchor points for the "days_to_mid_autumn" continuous feature,
+    representing the peak event for MOONCAKE category (Lunar Month 8, Day 15).
+    The peak occurs 30-45 days before this date.
+    """
+    mid_autumn_dates: List[date] = []
+    for year in range(start_year, end_year + 1):
+        if year in VIETNAM_HOLIDAYS_BY_YEAR:
+            mid_autumn_list = VIETNAM_HOLIDAYS_BY_YEAR[year].get("mid_autumn", [])
+            if mid_autumn_list:
+                # Use the first day of Mid-Autumn Festival as the peak event
+                mid_autumn_dates.append(mid_autumn_list[0])
+
+    # Remove duplicates and sort
+    mid_autumn_dates = sorted(list(set(mid_autumn_dates)))
+    return mid_autumn_dates
 
 
 def add_holiday_features_vietnam(
@@ -572,6 +594,112 @@ def add_days_to_tet_feature(
     return df
 
 
+def add_days_to_mid_autumn_feature(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    lunar_month_col: str = "lunar_month",
+    lunar_day_col: str = "lunar_day",
+    days_to_mid_autumn_col: str = "days_to_mid_autumn",
+) -> pd.DataFrame:
+    """
+    Add a continuous "days_to_mid_autumn" feature for MOONCAKE category.
+    
+    This feature calculates the number of days until the Mid-Autumn Festival
+    (Lunar Month 8, Day 15), which is the peak event for MOONCAKE.
+    The model must recognize that the peak occurs exactly 30-45 days before
+    the 15th of Lunar Month 8.
+    
+    For each date, this feature:
+    - If in Lunar Month 8: calculates days until Day 15
+    - If before Lunar Month 8: calculates days until next Mid-Autumn Festival
+    - If after Lunar Month 8: calculates days until next year's Mid-Autumn Festival
+    
+    Args:
+        df: DataFrame with time and lunar calendar columns
+        time_col: Name of time column
+        lunar_month_col: Name of lunar month column
+        lunar_day_col: Name of lunar day column
+        days_to_mid_autumn_col: Name for days_to_mid_autumn column
+    
+    Returns:
+        DataFrame with added days_to_mid_autumn feature
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Check if lunar columns exist
+    if lunar_month_col not in df.columns or lunar_day_col not in df.columns:
+        raise ValueError(f"Lunar calendar columns '{lunar_month_col}' and '{lunar_day_col}' must exist. "
+                        f"Call add_lunar_calendar_features first.")
+    
+    min_date = df[time_col].min().date()
+    max_date = df[time_col].max().date()
+    
+    # Get Mid-Autumn Festival dates
+    extended_max = max_date + timedelta(days=365)
+    mid_autumn_dates = get_mid_autumn_dates(min_date.year, extended_max.year)
+    
+    # Initialize column
+    df[days_to_mid_autumn_col] = np.nan
+    
+    for idx, row in df.iterrows():
+        current_date = row[time_col].date()
+        lunar_month = int(row[lunar_month_col])
+        lunar_day = int(row[lunar_day_col])
+        
+        # Calculate days until Mid-Autumn Festival (Lunar Month 8, Day 15)
+        if lunar_month == 8:
+            # In Lunar Month 8: countdown to Day 15
+            if lunar_day <= 15:
+                days_to_peak = 15 - lunar_day
+            else:
+                # Past Day 15, find next year's Mid-Autumn Festival
+                days_to_peak = (30 - lunar_day) + 15  # Days to end of month + 15 days into next month
+                # Add days until next Mid-Autumn Festival date
+                next_mid_autumn = None
+                for ma_date in mid_autumn_dates:
+                    if ma_date > current_date:
+                        next_mid_autumn = ma_date
+                        break
+                if next_mid_autumn:
+                    # Approximate: use solar date difference
+                    days_to_peak = (next_mid_autumn - current_date).days
+                else:
+                    days_to_peak = 365  # Fallback
+        elif lunar_month < 8:
+            # Before Lunar Month 8: calculate days until Day 15 of Month 8
+            months_until = 8 - lunar_month
+            days_until_month_8 = months_until * 30  # Approximate 30 days per lunar month
+            days_until_day_15 = days_until_month_8 + (15 - lunar_day)
+            days_to_peak = days_until_day_15
+        else:
+            # After Lunar Month 8: find next year's Mid-Autumn Festival
+            months_until_next = (12 - lunar_month) + 8  # Months until next Month 8
+            days_until_month_8 = months_until_next * 30
+            days_until_day_15 = days_until_month_8 + (15 - lunar_day)
+            days_to_peak = days_until_day_15
+            
+            # Also try to use actual Mid-Autumn Festival dates for accuracy
+            next_mid_autumn = None
+            for ma_date in mid_autumn_dates:
+                if ma_date > current_date:
+                    next_mid_autumn = ma_date
+                    break
+            if next_mid_autumn:
+                # Use actual date difference for better accuracy
+                days_to_peak = (next_mid_autumn - current_date).days
+        
+        df.at[idx, days_to_mid_autumn_col] = days_to_peak
+    
+    # Fill any remaining NaN values
+    df[days_to_mid_autumn_col] = df[days_to_mid_autumn_col].fillna(365)
+    
+    return df
+
+
 def train_single_model(data, config, category_filter, output_suffix=""):
     """
     Train a single model for a specific category.
@@ -605,18 +733,29 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     # Get category-specific parameters from config (needed early for batch_size and other params)
     category_specific_params = config.category_specific_params
 
-    # Dynamically extend feature list with lunar cyclical + Tet distance features
+    # Dynamically extend feature list with lunar cyclical + Tet/Mid-Autumn distance features
     extra_features = [
         "lunar_month_sin",
         "lunar_month_cos",
         "lunar_day_sin",
         "lunar_day_cos",
         "days_to_tet",
+        "days_to_mid_autumn",  # Days-to-Mid-Autumn countdown for MOONCAKE
         "is_active_season",  # Seasonal active-window masking
         "days_until_peak",  # Countdown to peak event
+        "is_golden_window",  # Golden Window indicator (Lunar Months 6.15 to 8.01 for MOONCAKE)
         # Structural prior on payload density (CBM per QTY)
         "cbm_per_qty",
         "cbm_per_qty_last_year",
+        # Year-over-year volume features for seasonal products (MOONCAKE)
+        # NOTE: These are conditionally added later only for MOONCAKE category
+        # "cbm_last_year",
+        # "cbm_2_years_ago",
+        # Trend deviation features - compare recent trend vs year-over-year baseline
+        # NOTE: These are conditionally added later only for MOONCAKE category
+        # "rolling_mean_21d",
+        # "trend_vs_yoy_ratio",
+        # "trend_vs_yoy_diff",
     ]
     current_features = list(data_config["feature_cols"])
     for feat in extra_features:
@@ -760,8 +899,25 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         days_to_tet_col="days_to_tet",
     )
     
+    # Feature engineering: Days-to-Mid-Autumn countdown for MOONCAKE category
+    # This recognizes that peak occurs 30-45 days before the 15th of Lunar Month 8
+    # Always create this feature (set to default for non-MOONCAKE categories)
+    if category_filter == "MOONCAKE":
+        print("  - Adding Days-to-Mid-Autumn countdown feature (days_to_mid_autumn)...")
+        filtered_data = add_days_to_mid_autumn_feature(
+            filtered_data,
+            time_col=time_col,
+            lunar_month_col="lunar_month",
+            lunar_day_col="lunar_day",
+            days_to_mid_autumn_col="days_to_mid_autumn",
+        )
+    else:
+        # For non-MOONCAKE categories, create the column with default value
+        if "days_to_mid_autumn" not in filtered_data.columns:
+            filtered_data["days_to_mid_autumn"] = 365  # Default: far from Mid-Autumn Festival
+    
     # Feature engineering: Seasonal active-window masking for seasonal categories
-    print("  - Adding seasonal active-window features (is_active_season, days_until_peak)...")
+    print("  - Adding seasonal active-window features (is_active_season, days_until_peak, is_golden_window)...")
     filtered_data = add_seasonal_active_window_features(
         filtered_data,
         time_col=time_col,
@@ -770,6 +926,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         days_to_tet_col="days_to_tet",
         is_active_season_col="is_active_season",
         days_until_peak_col="days_until_peak",
+        is_golden_window_col="is_golden_window",
     )
     
     # Daily aggregation: Group by date and category, sum QTY
@@ -786,14 +943,42 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"  - Samples before aggregation: {samples_before_agg}")
     print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
     
-    # Re-add Is_Monday feature after aggregation (date-level feature)
-    # This ensures it's present even if it was lost during aggregation
+    # Re-add date-level features after aggregation (they might be lost during aggregation)
+    # This ensures they're present even if they were lost during aggregation
     if "Is_Monday" not in filtered_data.columns:
         print("  - Re-adding Is_Monday feature after aggregation...")
         filtered_data = add_is_monday_feature(
             filtered_data,
             time_col=time_col,
             is_monday_col="Is_Monday"
+        )
+    
+    # Ensure days_to_mid_autumn exists after aggregation
+    if "days_to_mid_autumn" not in filtered_data.columns:
+        print("  - Re-adding days_to_mid_autumn feature after aggregation...")
+        if category_filter == "MOONCAKE":
+            filtered_data = add_days_to_mid_autumn_feature(
+                filtered_data,
+                time_col=time_col,
+                lunar_month_col="lunar_month",
+                lunar_day_col="lunar_day",
+                days_to_mid_autumn_col="days_to_mid_autumn",
+            )
+        else:
+            filtered_data["days_to_mid_autumn"] = 365  # Default for non-MOONCAKE
+    
+    # Ensure is_golden_window exists after aggregation
+    if "is_golden_window" not in filtered_data.columns:
+        print("  - Re-adding is_golden_window feature after aggregation...")
+        filtered_data = add_seasonal_active_window_features(
+            filtered_data,
+            time_col=time_col,
+            cat_col=cat_col,
+            lunar_month_col="lunar_month",
+            days_to_tet_col="days_to_tet",
+            is_active_season_col="is_active_season",
+            days_until_peak_col="days_until_peak",
+            is_golden_window_col="is_golden_window",
         )
     
     # Context-aware operational status flags (holiday/off, Sunday downtime, anomalies)
@@ -832,6 +1017,27 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         density_col="cbm_per_qty",
         density_last_year_col="cbm_per_qty_last_year",
     )
+    
+    # CRITICAL: Add year-over-year volume features for seasonal products (especially MOONCAKE)
+    # For highly seasonal products, same period from previous years is more predictive than recent days
+    if category_filter == "MOONCAKE":
+        print("  - Adding year-over-year volume features for MOONCAKE (cbm_last_year, cbm_2_years_ago)...")
+        print("    - MOONCAKE is highly seasonal - same period from previous years is more predictive")
+        filtered_data = add_year_over_year_volume_features(
+            filtered_data,
+            target_col=target_col_name,
+            time_col=time_col,
+            cat_col=cat_col,
+            yoy_1y_col="cbm_last_year",
+            yoy_2y_col="cbm_2_years_ago",
+        )
+        # Add these features to feature_cols
+        if "cbm_last_year" not in data_config["feature_cols"]:
+            data_config["feature_cols"].append("cbm_last_year")
+        if "cbm_2_years_ago" not in data_config["feature_cols"]:
+            data_config["feature_cols"].append("cbm_2_years_ago")
+        config.set("data.feature_cols", data_config["feature_cols"])
+        print(f"    - Added year-over-year features: cbm_last_year, cbm_2_years_ago")
 
     # Feature engineering: Add rolling means and momentum features (after aggregation)
     print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
@@ -844,6 +1050,44 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         rolling_30_col="rolling_mean_30d",
         momentum_col="momentum_3d_vs_14d"
     )
+    
+    # CRITICAL for MOONCAKE: Add trend deviation feature - compares recent trend vs year-over-year baseline
+    # This allows the model to adjust the year-over-year baseline based on recent patterns
+    # Example: If last year same period was 100 CBM, but recent 21 days average is 120 CBM,
+    # the model should predict closer to 120 (trend-adjusted) rather than blindly using 100
+    if category_filter == "MOONCAKE" and "cbm_last_year" in filtered_data.columns:
+        print("  - Adding trend deviation feature for MOONCAKE (recent_trend_vs_yoy)...")
+        print("    - Compares recent 21-day trend vs year-over-year baseline to detect deviations")
+        
+        # Calculate 21-day rolling mean (matches input_size window)
+        filtered_data = filtered_data.sort_values([cat_col, time_col]).reset_index(drop=True)
+        rolling_21d = filtered_data.groupby(cat_col)[target_col_name].transform(
+            lambda x: x.rolling(window=21, min_periods=1).mean()
+        )
+        filtered_data["rolling_mean_21d"] = rolling_21d
+        
+        # Calculate trend deviation: ratio of recent trend to year-over-year baseline
+        # If ratio > 1.0: recent trend is higher than last year (upward deviation)
+        # If ratio < 1.0: recent trend is lower than last year (downward deviation)
+        # If ratio = 1.0: recent trend matches last year (no deviation)
+        cbm_last_year = filtered_data["cbm_last_year"].replace(0, np.nan)  # Avoid division by zero
+        filtered_data["trend_vs_yoy_ratio"] = np.where(
+            cbm_last_year > 0,
+            rolling_21d / cbm_last_year,
+            1.0  # If no last year data, assume no deviation
+        )
+        filtered_data["trend_vs_yoy_ratio"] = filtered_data["trend_vs_yoy_ratio"].fillna(1.0)
+        
+        # Also add absolute difference for cases where ratio might be misleading
+        filtered_data["trend_vs_yoy_diff"] = rolling_21d - filtered_data["cbm_last_year"]
+        
+        # Add these features to feature_cols
+        for feat in ["rolling_mean_21d", "trend_vs_yoy_ratio", "trend_vs_yoy_diff"]:
+            if feat not in data_config["feature_cols"]:
+                data_config["feature_cols"].append(feat)
+        config.set("data.feature_cols", data_config["feature_cols"])
+        print(f"    - Added trend deviation features: rolling_mean_21d, trend_vs_yoy_ratio, trend_vs_yoy_diff")
+        print(f"    - Model will learn to adjust year-over-year baseline based on recent 21-day trend")
     
     # Residual learning: define causal baseline and residual target (optional)
     use_residual = data_config.get("use_residual_target", False)
@@ -939,6 +1183,21 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print("\n[7/8] Creating sliding windows...")
     window_config = config.window
     feature_cols = data_config['feature_cols']
+    
+    # CRITICAL: Filter feature_cols to only include columns that actually exist in the dataframe
+    # This prevents KeyError when features are conditionally created (e.g., YoY features only for MOONCAKE)
+    available_cols = set(train_data.columns)
+    feature_cols = [col for col in feature_cols if col in available_cols]
+    
+    # Warn if any expected features are missing
+    missing_features = set(data_config['feature_cols']) - set(feature_cols)
+    if missing_features:
+        print(f"  - WARNING: Some features in config are not available in data and will be skipped: {missing_features}")
+    
+    # Update config with filtered feature list
+    data_config['feature_cols'] = feature_cols
+    config.set("data.feature_cols", feature_cols)
+    
     # The model's supervised target column (may be residual or absolute)
     target_col = [target_col_for_model]
     cat_col_list = [cat_id_col]
@@ -1092,6 +1351,63 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"  - Model: {model_config['name']}")
     print(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
+    # Transfer Learning: Initialize MOONCAKE weights from pre-trained TET model
+    transfer_config = config.get('transfer_learning', {})
+    if transfer_config.get('enabled', False) and category_filter == "MOONCAKE":
+        source_category = transfer_config.get('source_category', 'TET')
+        source_model_path = transfer_config.get('source_model_path')
+        
+        if source_model_path is None:
+            # Auto-detect TET model path
+            base_output_dir = config.output.get('output_dir', '../outputs')
+            source_model_path = Path(base_output_dir) / source_category / 'models' / 'best_model.pth'
+        
+        source_model_path = Path(source_model_path)
+        
+        if source_model_path.exists():
+            print(f"  - Transfer Learning: Loading weights from {source_category} model at {source_model_path}")
+            try:
+                checkpoint = torch.load(source_model_path, map_location='cpu')
+                source_state_dict = checkpoint.get('model_state_dict', checkpoint)
+                
+                # Get current model state dict
+                current_state_dict = model.state_dict()
+                
+                # Filter compatible layers (same architecture components)
+                # Only transfer weights if layer names and shapes match
+                transferred_layers = []
+                skipped_layers = []
+                
+                for name, param in source_state_dict.items():
+                    if name in current_state_dict:
+                        if current_state_dict[name].shape == param.shape:
+                            current_state_dict[name] = param
+                            transferred_layers.append(name)
+                        else:
+                            skipped_layers.append(f"{name} (shape mismatch: {param.shape} vs {current_state_dict[name].shape})")
+                    else:
+                        skipped_layers.append(f"{name} (not in target model)")
+                
+                # Load the filtered state dict
+                model.load_state_dict(current_state_dict, strict=False)
+                
+                print(f"  - Transfer Learning: Transferred {len(transferred_layers)} layers from {source_category}")
+                if skipped_layers:
+                    print(f"  - Transfer Learning: Skipped {len(skipped_layers)} incompatible layers")
+                
+                # Freeze layers if specified
+                freeze_layers = transfer_config.get('freeze_layers', [])
+                if freeze_layers:
+                    for name, param in model.named_parameters():
+                        if any(freeze_pattern in name for freeze_pattern in freeze_layers):
+                            param.requires_grad = False
+                            print(f"  - Transfer Learning: Frozen layer {name}")
+            except Exception as e:
+                print(f"  - Transfer Learning: Failed to load weights from {source_category} model: {e}")
+                print(f"  - Continuing with random initialization...")
+        else:
+            print(f"  - Transfer Learning: Source model not found at {source_model_path}, using random initialization")
+    
     # Build loss function with category-specific weights
     print("  - Configuring spike_aware_mse loss with category-specific weights...")
     
@@ -1111,10 +1427,25 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         monday_loss_weight = float(cat_params['monday_loss_weight'])
         print(f"  - Monday loss weight: {monday_loss_weight}x (for {category_filter or 'default'})")
     
-    # Find Is_Monday and day_of_week feature indices for extracting from inputs
+    # Get Golden Window loss weight from config (for MOONCAKE category)
+    golden_window_weight = 1.0  # Default (no additional weighting)
+    use_smooth_l1 = False
+    smooth_l1_beta = 1.0
+    if 'golden_window_weight' in cat_params:
+        golden_window_weight = float(cat_params['golden_window_weight'])
+        print(f"  - Golden Window loss weight: {golden_window_weight}x (for {category_filter or 'default'})")
+    if 'use_smooth_l1' in cat_params:
+        use_smooth_l1 = bool(cat_params['use_smooth_l1'])
+        print(f"  - Using SmoothL1Loss: {use_smooth_l1} (for {category_filter or 'default'})")
+    if 'smooth_l1_beta' in cat_params:
+        smooth_l1_beta = float(cat_params['smooth_l1_beta'])
+        print(f"  - SmoothL1Loss beta: {smooth_l1_beta} (for {category_filter or 'default'})")
+    
+    # Find feature indices for extracting from inputs
     is_monday_idx = None
     day_of_week_sin_idx = None
     day_of_week_cos_idx = None
+    is_golden_window_idx = None
     if 'Is_Monday' in feature_cols:
         is_monday_idx = feature_cols.index('Is_Monday')
         print(f"  - Is_Monday feature found at index {is_monday_idx}")
@@ -1122,9 +1453,13 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         day_of_week_sin_idx = feature_cols.index('day_of_week_sin')
         day_of_week_cos_idx = feature_cols.index('day_of_week_cos')
         print(f"  - day_of_week_sin/cos features found at indices {day_of_week_sin_idx}/{day_of_week_cos_idx}")
+    if 'is_golden_window' in feature_cols:
+        is_golden_window_idx = feature_cols.index('is_golden_window')
+        print(f"  - is_golden_window feature found at index {is_golden_window_idx}")
     
-    # Create a partial function that includes category loss weights and Monday weighting
-    def create_criterion(cat_loss_weights, monday_weight, is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, horizon_days):
+    # Create a partial function that includes category loss weights, Monday weighting, and Golden Window weighting
+    def create_criterion(cat_loss_weights, monday_weight, golden_window_weight, use_smooth_l1, smooth_l1_beta,
+                        is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_golden_window_idx, horizon_days):
         def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
             # Extract Is_Monday for the prediction horizon
             is_monday_horizon = None
@@ -1225,17 +1560,50 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     else:
                         is_monday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
             
+            # Extract is_golden_window for the prediction horizon (for MOONCAKE category)
+            is_golden_window_horizon = None
+            if is_golden_window_idx is not None and inputs is not None and golden_window_weight > 1.0:
+                # Extract is_golden_window from the last timestep of input
+                # For multi-step forecasting, we use the last input day's golden window status
+                # and apply it to all horizon days (simplified approach)
+                last_day_is_golden = inputs[:, -1, is_golden_window_idx]  # (batch,) or (batch, 1)
+                if last_day_is_golden.ndim > 1:
+                    last_day_is_golden = last_day_is_golden.squeeze()
+                
+                if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                    batch_size = y_pred.shape[0]
+                    horizon = y_pred.shape[1]
+                    # Expand to match horizon shape
+                    is_golden_window_horizon = last_day_is_golden.unsqueeze(-1).expand(batch_size, horizon)
+                else:  # Single-step
+                    is_golden_window_horizon = last_day_is_golden
+            
             return spike_aware_mse(
                 y_pred, 
                 y_true, 
                 category_ids=category_ids,
                 category_loss_weights=cat_loss_weights if cat_loss_weights else None,
                 is_monday=is_monday_horizon,
-                monday_loss_weight=monday_weight
+                monday_loss_weight=monday_weight,
+                is_golden_window=is_golden_window_horizon,
+                golden_window_weight=golden_window_weight,
+                use_smooth_l1=use_smooth_l1,
+                smooth_l1_beta=smooth_l1_beta
             )
         return criterion_fn
     
-    criterion = create_criterion(category_loss_weights, monday_loss_weight, is_monday_idx, day_of_week_sin_idx, day_of_week_cos_idx, horizon)
+    criterion = create_criterion(
+        category_loss_weights, 
+        monday_loss_weight, 
+        golden_window_weight,
+        use_smooth_l1,
+        smooth_l1_beta,
+        is_monday_idx, 
+        day_of_week_sin_idx, 
+        day_of_week_cos_idx, 
+        is_golden_window_idx,
+        horizon
+    )
     
     # Build optimizer with category-specific learning rate
     # Priority: category-specific config > category_specific_params > base config
@@ -1375,10 +1743,13 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     # This enforces that predictions are zero during off-season periods
     # Check if category-specific config requires seasonal masking
     apply_seasonal_mask = data_config.get('apply_seasonal_mask', False)
+    seasonal_active_window = data_config.get('seasonal_active_window', None)
     seasonal_categories = ["TET", "MOONCAKE"]  # Known seasonal categories
     
     if apply_seasonal_mask or category_filter in seasonal_categories:
         print(f"  - Applying seasonal active-window masking for {category_filter}...")
+        print(f"  - Seasonal active window: {seasonal_active_window}")
+        
         # Find is_active_season feature index
         feature_cols = data_config['feature_cols']
         if 'is_active_season' in feature_cols:
@@ -1400,8 +1771,23 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     is_active_mask = is_active_season_values
                 
                 # Apply hard-zero constraint: set predictions to 0 when not in active season
-                y_pred = y_pred * (is_active_mask > 0.5).astype(float)
-                print(f"  - Applied seasonal masking: {np.sum(is_active_mask > 0.5)}/{len(is_active_mask)} samples in active season")
+                # This is a strict enforcement - any prediction outside the active window must be zero
+                zero_mask = (is_active_mask > 0.5).astype(float)
+                y_pred = y_pred * zero_mask
+                
+                num_active = np.sum(zero_mask > 0.5)
+                num_total = zero_mask.size
+                print(f"  - Applied seasonal masking: {num_active}/{num_total} timesteps in active season")
+                print(f"  - Zero-enforced predictions: {num_total - num_active} timesteps forced to zero")
+                
+                # Additional check for MOONCAKE: ensure lunar_months_6_9 is strictly enforced
+                if category_filter == "MOONCAKE" and seasonal_active_window == "lunar_months_6_9":
+                    # Verify that predictions outside the window are indeed zero
+                    num_nonzero_outside = np.sum((y_pred > 1e-6) & (zero_mask < 0.5))
+                    if num_nonzero_outside > 0:
+                        print(f"  - WARNING: Found {num_nonzero_outside} non-zero predictions outside active window!")
+                        print(f"  - Forcing all off-season predictions to zero...")
+                        y_pred = y_pred * zero_mask  # Re-apply mask to ensure strict enforcement
         else:
             print(f"  - Warning: is_active_season feature not found in feature_cols. Seasonal masking skipped.")
     
