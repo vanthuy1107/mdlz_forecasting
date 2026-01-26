@@ -76,7 +76,15 @@ class Trainer:
                 labels = labels.unsqueeze(-1)
             elif labels.ndim == 1:
                 labels = labels.unsqueeze(-1) if outputs.ndim > 1 else labels
-            loss = self.criterion(outputs, labels)
+            
+            # Pass category IDs to loss function if it accepts them
+            # Check if criterion accepts category_ids parameter
+            import inspect
+            sig = inspect.signature(self.criterion)
+            if 'category_ids' in sig.parameters:
+                loss = self.criterion(outputs, labels, category_ids=cat)
+            else:
+                loss = self.criterion(outputs, labels)
             
             # Backward pass
             loss.backward()
@@ -124,7 +132,14 @@ class Trainer:
                     labels = labels.unsqueeze(-1)
                 elif labels.ndim == 1:
                     labels = labels.unsqueeze(-1) if outputs.ndim > 1 else labels
-                loss = self.criterion(outputs, labels)
+                
+                # Pass category IDs to loss function if it accepts them
+                import inspect
+                sig = inspect.signature(self.criterion)
+                if 'category_ids' in sig.parameters:
+                    loss = self.criterion(outputs, labels, category_ids=cat)
+                else:
+                    loss = self.criterion(outputs, labels)
                 
                 losses.append(loss.item())
                 

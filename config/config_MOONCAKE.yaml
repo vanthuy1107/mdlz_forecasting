@@ -1,0 +1,38 @@
+# Category-Specific Configuration for MOONCAKE Category
+# This file overrides base config.yaml settings for MOONCAKE category training
+
+# Window configuration - MOONCAKE needs focused seasonal window
+window:
+  input_size: 14  # Focused lookback for seasonal intensity
+  horizon: 30     # 30-day forecast horizon
+
+# Model Configuration
+model:
+  hidden_size: 256  # Larger network for complex seasonal patterns
+  n_layers: 3
+  dropout_prob: 0.2
+  use_layer_norm: true
+
+# Training Configuration - Highest weight because season is very short
+training:
+  batch_size: 32
+  epochs: 40
+  learning_rate: 0.002
+  weight_decay: 1e-4
+  scheduler:
+    patience: 3
+    factor: 0.5
+
+# Category-specific loss weighting - Highest weight for very short season
+category_specific_params:
+  MOONCAKE:
+    learning_rate: 0.002
+    epochs: 40
+    loss_weight: 5.0  # Highest weight because the season is very short
+    weight_decay: 1e-4
+
+# Seasonal configuration - MOONCAKE is highly seasonal
+data:
+  seasonal_active_window: "lunar_months_6_9"  # Active between Lunar Months 6-9
+  peak_event: "mid_autumn"  # Peak event is Mid-Autumn Festival (Lunar Month 8, Day 15)
+  apply_seasonal_mask: true  # Hard-zero constraint during off-season

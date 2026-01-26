@@ -10,12 +10,14 @@ import torch
 class Config:
     """Configuration class to manage hyperparameters and paths."""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, category: Optional[str] = None):
         """
         Initialize configuration from YAML file.
         
         Args:
             config_path: Path to config.yaml file. If None, uses default.
+            category: Optional category name (e.g., "DRY", "TET") to load category-specific config.
+                     If provided, will attempt to load config_{category}.yaml and merge with base config.
         """
         if config_path is None:
             # Default to config/config.yaml relative to this file
@@ -28,8 +30,53 @@ class Config:
         with open(self.config_path, 'r') as f:
             self._config = yaml.safe_load(f)
         
+        # Load category-specific config if provided
+        self.category = category
+        if category:
+            self._load_category_config(category)
+        
         # Set dynamic values
         self._update_device()
+    
+    def _load_category_config(self, category: str):
+        """
+        Load category-specific configuration file and merge with base config.
+        
+        Category-specific configs override base config values. The merge is deep
+        so nested dictionaries are properly merged.
+        
+        Args:
+            category: Category name (e.g., "DRY", "TET")
+        """
+        config_dir = self.config_path.parent
+        category_config_path = config_dir / f"config_{category}.yaml"
+        
+        if category_config_path.exists():
+            with open(category_config_path, 'r') as f:
+                category_config = yaml.safe_load(f)
+            
+            # Deep merge category config into base config
+            self._deep_merge(self._config, category_config)
+        else:
+            # If category config doesn't exist, use base config with category name set
+            # This allows the system to work even if not all categories have specific configs
+            pass
+    
+    def _deep_merge(self, base: Dict, override: Dict):
+        """
+        Deep merge override dictionary into base dictionary.
+        
+        Args:
+            base: Base configuration dictionary (modified in-place)
+            override: Override configuration dictionary
+        """
+        for key, value in override.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dictionaries
+                self._deep_merge(base[key], value)
+            else:
+                # Override base value
+                base[key] = value
     
     def _update_device(self):
         """Set device based on config."""
@@ -66,6 +113,11 @@ class Config:
     def inference(self) -> Dict[str, Any]:
         """Get inference configuration."""
         return self._config['inference']
+    
+    @property
+    def category_specific_params(self) -> Dict[str, Any]:
+        """Get category-specific hyperparameter configuration."""
+        return self._config.get('category_specific_params', {})
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by dot-separated key (e.g., 'data.years')."""
@@ -108,17 +160,18 @@ class Config:
             yaml.dump(self._config, f, default_flow_style=False, sort_keys=False)
 
 
-def load_config(config_path: Optional[str] = None) -> Config:
+def load_config(config_path: Optional[str] = None, category: Optional[str] = None) -> Config:
     """
     Load configuration from YAML file.
     
     Args:
-        config_path: Path to config.yaml file.
+        config_path: Path to config.yaml file. If None, uses default.
+        category: Optional category name to load category-specific config.
     
     Returns:
         Config object.
     """
-    return Config(config_path)
+    return Config(config_path, category=category)
 
 
 def load_holidays(holidays_path: Optional[str] = None, holiday_type: str = "model") -> Dict[int, Dict[str, List[date]]]:

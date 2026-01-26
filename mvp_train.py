@@ -39,11 +39,40 @@ from src.data.preprocessing import (
     add_eom_features,
     add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover,
-    add_operational_status_flags
+    add_operational_status_flags,
+    add_seasonal_active_window_features
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, spike_aware_mse
+
+
+###############################################################################
+# Helper Functions
+###############################################################################
+
+def get_category_params(category_specific_params: dict, category: str = None) -> dict:
+    """
+    Get category-specific parameters with default fallback.
+    
+    Priority:
+    1. category_specific_params[category] if category exists and has specific config
+    2. category_specific_params['default'] as fallback
+    3. Empty dict if neither exists
+    
+    Args:
+        category_specific_params: Dictionary of category-specific parameters
+        category: Category name (e.g., "DRY", "TET")
+    
+    Returns:
+        Dictionary of parameters for the category or default
+    """
+    if category and category in category_specific_params:
+        return category_specific_params[category]
+    elif 'default' in category_specific_params:
+        return category_specific_params['default']
+    else:
+        return {}
 
 
 ###############################################################################
@@ -542,24 +571,27 @@ def add_days_to_tet_feature(
     return df
 
 
-def train_single_model(data, config, category_filter=None, output_suffix=""):
+def train_single_model(data, config, category_filter, output_suffix=""):
     """
-    Train a single model with optional category filtering.
+    Train a single model for a specific category.
     
     Args:
         data: Full DataFrame with all data
-        config: Configuration object
-        category_filter: Optional category name to filter (None means all categories)
-        output_suffix: Suffix for output directories (e.g., "_DRY", "_all", etc.)
+        config: Configuration object (should be category-specific config)
+        category_filter: Category name to filter (required - system now operates in category-specific mode)
+        output_suffix: Suffix for output directories (typically empty as directory is category-specific)
     
     Returns:
         Dictionary with training results and metadata
     """
+    if category_filter is None:
+        raise ValueError(
+            "category_filter is required. The system now operates exclusively in "
+            "Category-Specific Mode. Each category must be trained independently."
+        )
+    
     print("\n" + "=" * 80)
-    if category_filter:
-        print(f"TRAINING MODEL FOR CATEGORY: {category_filter}")
-    else:
-        print("TRAINING MODEL FOR ALL CATEGORIES")
+    print(f"TRAINING MODEL FOR CATEGORY: {category_filter}")
     print("=" * 80)
     
     data_config = config.data
@@ -568,6 +600,9 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     target_col_name = data_config['target_col']
     major_categories = data_config.get("major_categories", ["DRY", "FRESH"])
     minor_categories = data_config.get("minor_categories", [])
+    
+    # Get category-specific parameters from config (needed early for batch_size and other params)
+    category_specific_params = config.category_specific_params
 
     # Dynamically extend feature list with lunar cyclical + Tet distance features
     extra_features = [
@@ -576,6 +611,8 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         "lunar_day_sin",
         "lunar_day_cos",
         "days_to_tet",
+        "is_active_season",  # Seasonal active-window masking
+        "days_until_peak",  # Countdown to peak event
         # Structural prior on payload density (CBM per QTY)
         "cbm_per_qty",
         "cbm_per_qty_last_year",
@@ -591,67 +628,31 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     # Create a copy of data for this training run
     filtered_data = data.copy()
 
-    # Apply category filter if specified
-    if category_filter:
-        print(f"\n[4/8] Filtering data to category: {category_filter}...")
-        samples_before = len(filtered_data)
+    # Apply category filter (required in category-specific mode)
+    print(f"\n[4/8] Filtering data to category: {category_filter}...")
+    samples_before = len(filtered_data)
 
-        if cat_col not in filtered_data.columns:
-            raise ValueError(
-                f"Category column '{cat_col}' not found in data. "
-                f"Available columns: {list(filtered_data.columns)}"
-            )
+    if cat_col not in filtered_data.columns:
+        raise ValueError(
+            f"Category column '{cat_col}' not found in data. "
+            f"Available columns: {list(filtered_data.columns)}"
+        )
 
-        filtered_data = filtered_data[filtered_data[cat_col] == category_filter].copy()
-        samples_after = len(filtered_data)
+    filtered_data = filtered_data[filtered_data[cat_col] == category_filter].copy()
+    samples_after = len(filtered_data)
 
-        print(f"  - Samples before filtering: {samples_before}")
-        print(f"  - Samples after filtering (CATEGORY == '{category_filter}'): {samples_after}")
+    print(f"  - Samples before filtering: {samples_before}")
+    print(f"  - Samples after filtering (CATEGORY == '{category_filter}'): {samples_after}")
 
-        if samples_after == 0:
-            raise ValueError(
-                f"No samples found with CATEGORY == '{category_filter}'. Please check your data."
-            )
-    else:
-        # Multi-target decomposition rule:
-        # When training a *global* head (no category_filter), we only allow
-        # high-volume / structurally stable categories (DRY, FRESH) to reach
-        # the LSTM. Low-volume / noisy categories (e.g., POSM, OTHER) are
-        # excluded here and should be handled by simple heuristics instead.
-        print("\n[4/8] Using major categories only for LSTM training...")
-        samples_before = len(filtered_data)
-
-        if cat_col not in filtered_data.columns:
-            raise ValueError(
-                f"Category column '{cat_col}' not found in data. "
-                f"Available columns: {list(filtered_data.columns)}"
-            )
-
-        filtered_data = filtered_data[filtered_data[cat_col].isin(major_categories)].copy()
-        samples_after = len(filtered_data)
-
-        print(f"  - Major categories: {major_categories}")
-        if minor_categories:
-            print(f"  - Minor categories (excluded from LSTM): {minor_categories}")
-        print(f"  - Samples before filtering: {samples_before}")
-        print(f"  - Samples after filtering (CATEGORY in major_categories): {samples_after}")
-
-        if samples_after == 0:
-            raise ValueError(
-                "No samples found for major_categories. "
-                f"Please check that {major_categories} exist in the data."
-            )
+    if samples_after == 0:
+        raise ValueError(
+            f"No samples found with CATEGORY == '{category_filter}'. Please check your data."
+        )
     
-    # Update output directories with suffix
-    base_output_dir = config.output.get('output_dir', 'outputs/mvp_test')
-    base_models_dir = config.output.get('model_dir', os.path.join(base_output_dir, 'models'))
-    
-    if output_suffix:
-        mvp_output_dir = f"{base_output_dir}{output_suffix}"
-        mvp_models_dir = os.path.join(mvp_output_dir, "models")
-    else:
-        mvp_output_dir = base_output_dir
-        mvp_models_dir = base_models_dir
+    # Set output directories (should already be set in main() for category-specific paths)
+    # But ensure they exist and are properly configured
+    mvp_output_dir = config.output.get('output_dir', os.path.join('outputs', category_filter))
+    mvp_models_dir = config.output.get('model_dir', os.path.join(mvp_output_dir, 'models'))
     
     os.makedirs(mvp_output_dir, exist_ok=True)
     os.makedirs(mvp_models_dir, exist_ok=True)
@@ -748,6 +749,18 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         filtered_data,
         time_col=time_col,
         days_to_tet_col="days_to_tet",
+    )
+    
+    # Feature engineering: Seasonal active-window masking for seasonal categories
+    print("  - Adding seasonal active-window features (is_active_season, days_until_peak)...")
+    filtered_data = add_seasonal_active_window_features(
+        filtered_data,
+        time_col=time_col,
+        cat_col=cat_col,
+        lunar_month_col="lunar_month",
+        days_to_tet_col="days_to_tet",
+        is_active_season_col="is_active_season",
+        days_until_peak_col="days_until_peak",
     )
     
     # Daily aggregation: Group by date and category, sum QTY
@@ -912,6 +925,8 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     # Ensure model input_dim matches the final feature count (including new lunar encodings)
     num_features = len(feature_cols)
     config.set("model.input_dim", num_features)
+    # Ensure model output_dim matches horizon for direct multi-step prediction
+    config.set("model.output_dim", horizon)
     model_config = config.model
 
     print(f"  - Input size: {input_size}")
@@ -978,9 +993,17 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     
     # Create data loaders
     training_config = config.training
+    
+    # Get category-specific batch_size if specified
+    train_batch_size = training_config['batch_size']
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'batch_size' in cat_params:
+        train_batch_size = cat_params['batch_size']
+        print(f"  - Using category-specific batch_size: {train_batch_size} (for {category_filter or 'default'})")
+    
     train_loader = DataLoader(
         train_dataset,
-        batch_size=training_config['batch_size'],
+        batch_size=train_batch_size,
         shuffle=True
     )
     val_loader = DataLoader(
@@ -996,37 +1019,136 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     
     # Build model
     print("\n[8/8] Building model and trainer...")
+    
+    # Determine model hyperparameters (from category-specific config or fallback to category_specific_params)
+    # Category-specific configs should already have these values loaded, but we check both sources
+    model_hidden_size = model_config.get('hidden_size', 128)
+    model_n_layers = model_config.get('n_layers', 2)
+    model_dropout = model_config.get('dropout_prob', 0.0)
+    
+    # Check category_specific_params as fallback (for backward compatibility)
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'hidden_size' in cat_params:
+        model_hidden_size = cat_params['hidden_size']
+        print(f"  - Using category-specific hidden_size from category_specific_params: {model_hidden_size} (for {category_filter or 'default'})")
+    if 'dropout_prob' in cat_params:
+        model_dropout = cat_params['dropout_prob']
+        print(f"  - Using category-specific dropout_prob from category_specific_params: {model_dropout} (for {category_filter or 'default'})")
+    
+    # Ensure numeric types (YAML may parse values as strings)
+    model_hidden_size = int(model_hidden_size)
+    model_n_layers = int(model_n_layers)
+    model_dropout = float(model_dropout)
+    
+    # Auto-calculate cat_emb_dim if not explicitly set in config
+    # Default: use a fraction of hidden_size (common practice: hidden_size // 4 to hidden_size // 2)
+    # This ensures the embedding dimension scales appropriately with model capacity
+    if 'cat_emb_dim' in model_config:
+        cat_emb_dim = model_config['cat_emb_dim']
+    else:
+        # Auto-calculate: use hidden_size // 4 as default (e.g., 128 -> 32, 64 -> 16)
+        # But ensure minimum of 4 and maximum of hidden_size
+        cat_emb_dim = max(4, min(model_hidden_size // 4, model_hidden_size))
+        print(f"  - Auto-calculated cat_emb_dim={cat_emb_dim} from hidden_size={model_hidden_size}")
+    
+    # Log the final model architecture
+    print(f"  - Model architecture: hidden_size={model_hidden_size}, n_layers={model_n_layers}, dropout={model_dropout}, cat_emb_dim={cat_emb_dim}")
+    
     model = RNNWithCategory(
         num_categories=num_categories,
-        cat_emb_dim=model_config['cat_emb_dim'],
+        cat_emb_dim=cat_emb_dim,
         input_dim=model_config['input_dim'],
-        hidden_size=model_config['hidden_size'],
-        n_layers=model_config['n_layers'],
-        output_dim=model_config['output_dim'],
+        hidden_size=model_hidden_size,
+        n_layers=model_n_layers,
+        output_dim=horizon,  # output_dim must match horizon for direct multi-step prediction
         use_layer_norm=model_config.get('use_layer_norm', True),
+        dropout_prob=model_dropout,
+        category_specific_params=category_specific_params,
     )
     print(f"  - Model: {model_config['name']}")
     print(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Build loss, optimizer, scheduler
-    # Force spike_aware_mse loss function for Vietnamese market demand spikes
-    print("  - Using spike_aware_mse loss (3x weight for top 20% QTY values)...")
-    criterion = spike_aware_mse
+    # Build loss function with category-specific weights
+    print("  - Configuring spike_aware_mse loss with category-specific weights...")
+    
+    # Build category loss weights mapping (category_id -> loss_weight)
+    category_loss_weights = {}
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'loss_weight' in cat_params:
+        # Map category name to category_id
+        if category_filter and category_filter in cat2id:
+            category_loss_weights[cat2id[category_filter]] = cat_params['loss_weight']
+            print(f"  - Loss weight for {category_filter}: {cat_params['loss_weight']}")
+    
+    # Create a partial function that includes category loss weights
+    def create_criterion(cat_loss_weights):
+        def criterion_fn(y_pred, y_true, category_ids=None):
+            return spike_aware_mse(
+                y_pred, 
+                y_true, 
+                category_ids=category_ids,
+                category_loss_weights=cat_loss_weights if cat_loss_weights else None
+            )
+        return criterion_fn
+    
+    criterion = create_criterion(category_loss_weights)
+    
+    # Build optimizer with category-specific learning rate
+    # Priority: category-specific config > category_specific_params > base config
+    optimizer_lr = training_config.get('learning_rate', 0.001)
+    optimizer_weight_decay = training_config.get('weight_decay', 0.0)
+    
+    # Check category_specific_params as fallback (for backward compatibility)
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'learning_rate' in cat_params:
+        optimizer_lr = cat_params['learning_rate']
+        print(f"  - Using category-specific learning_rate from category_specific_params: {optimizer_lr} (for {category_filter or 'default'})")
+    if 'weight_decay' in cat_params:
+        optimizer_weight_decay = cat_params['weight_decay']
+        print(f"  - Using category-specific weight_decay from category_specific_params: {optimizer_weight_decay} (for {category_filter or 'default'})")
+    
+    # Ensure numeric types (YAML may parse scientific notation as strings)
+    optimizer_lr = float(optimizer_lr)
+    optimizer_weight_decay = float(optimizer_weight_decay)
+    
+    print(f"  - Optimizer: Adam(lr={optimizer_lr}, weight_decay={optimizer_weight_decay})")
     
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=training_config['learning_rate']
+        lr=optimizer_lr,
+        weight_decay=optimizer_weight_decay
     )
     
+    # Build scheduler with category-specific parameters
+    # Priority: category-specific config > category_specific_params > base config
     scheduler_config = training_config.get('scheduler', {})
-    scheduler_name = scheduler_config.get('name')
+    scheduler_name = scheduler_config.get('name', 'ReduceLROnPlateau')
+    
+    scheduler_factor = scheduler_config.get('factor', 0.5)
+    scheduler_patience = scheduler_config.get('patience', 3)
+    
+    # Check category_specific_params as fallback (for backward compatibility)
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'scheduler_factor' in cat_params:
+        scheduler_factor = cat_params['scheduler_factor']
+        print(f"  - Using category-specific scheduler_factor from category_specific_params: {scheduler_factor} (for {category_filter or 'default'})")
+    if 'patience' in cat_params:
+        scheduler_patience = cat_params['patience']
+        print(f"  - Using category-specific scheduler patience from category_specific_params: {scheduler_patience} (for {category_filter or 'default'})")
+    
+    # Ensure numeric types (YAML may parse values as strings)
+    scheduler_factor = float(scheduler_factor)
+    scheduler_patience = int(scheduler_patience)
+    
     if scheduler_name == 'ReduceLROnPlateau':
+        min_lr = scheduler_config.get('min_lr', 1e-5)
+        min_lr = float(min_lr)  # Ensure min_lr is float
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode=scheduler_config.get('mode', 'min'),
-            factor=scheduler_config.get('factor', 0.5),
-            patience=scheduler_config.get('patience', 3),
-            min_lr=scheduler_config.get('min_lr', 1e-5)
+            factor=scheduler_factor,
+            patience=scheduler_patience,
+            min_lr=min_lr
         )
     else:
         scheduler = None
@@ -1058,10 +1180,25 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     # Convert config to dictionary for saving in checkpoint and metadata
     config_dict = config._config.copy()
     
+    # Get category-specific epochs
+    # Priority: category-specific config > category_specific_params > base config
+    training_epochs = training_config.get('epochs', 20)
+    
+    # Check category_specific_params as fallback (for backward compatibility)
+    cat_params = get_category_params(category_specific_params, category_filter)
+    if 'epochs' in cat_params:
+        training_epochs = cat_params['epochs']
+        print(f"  - Using category-specific epochs from category_specific_params: {training_epochs} (for {category_filter or 'default'})")
+    
+    # Ensure numeric type (YAML may parse values as strings)
+    training_epochs = int(training_epochs)
+    
+    print(f"  - Training epochs: {training_epochs}")
+    
     train_losses, val_losses = trainer.fit(
         train_loader=train_loader,
         val_loader=val_loader,
-        epochs=training_config['epochs'],
+        epochs=training_epochs,
         save_best=True,
         verbose=True,
         config=config_dict
@@ -1089,6 +1226,40 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     )
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test samples: {len(y_true)}")
+    
+    # Apply seasonal active-window masking (hard-zero constraint) for seasonal categories
+    # This enforces that predictions are zero during off-season periods
+    # Check if category-specific config requires seasonal masking
+    apply_seasonal_mask = data_config.get('apply_seasonal_mask', False)
+    seasonal_categories = ["TET", "MOONCAKE"]  # Known seasonal categories
+    
+    if apply_seasonal_mask or category_filter in seasonal_categories:
+        print(f"  - Applying seasonal active-window masking for {category_filter}...")
+        # Find is_active_season feature index
+        feature_cols = data_config['feature_cols']
+        if 'is_active_season' in feature_cols:
+            is_active_idx = feature_cols.index('is_active_season')
+            print(f"  - Found is_active_season at feature index {is_active_idx}")
+            
+            # Extract is_active_season from test data windows
+            # Note: This is a simplified approach using the last timestep's value
+            # For production, compute is_active_season for each future timestep in horizon
+            test_dataset = test_loader.dataset
+            if hasattr(test_dataset, 'X'):
+                # Get is_active_season from the last timestep of input windows
+                is_active_season_values = test_dataset.X[:, -1, is_active_idx]  # (N_samples,)
+                
+                # Expand to match prediction shape (N_samples, horizon)
+                if y_pred.ndim == 2:
+                    is_active_mask = np.tile(is_active_season_values[:, np.newaxis], (1, y_pred.shape[1]))
+                else:
+                    is_active_mask = is_active_season_values
+                
+                # Apply hard-zero constraint: set predictions to 0 when not in active season
+                y_pred = y_pred * (is_active_mask > 0.5).astype(float)
+                print(f"  - Applied seasonal masking: {np.sum(is_active_mask > 0.5)}/{len(is_active_mask)} samples in active season")
+        else:
+            print(f"  - Warning: is_active_season feature not found in feature_cols. Seasonal masking skipped.")
     
     # DEBUG: Check y_true values (should be in scaled space of target_col_for_model)
     print("  - DEBUG: Checking y_true values (scaled):")
@@ -1235,54 +1406,38 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
 
 
 def main():
-    """Main execution function for MVP test."""
+    """
+    Main execution function for Category-Specific Independent Training Pipeline.
+    
+    The system now operates exclusively in Category-Specific Mode, where each category
+    (DRY, TET, FRESH, etc.) is treated as a standalone task with its own unique
+    architectural and training parameters loaded from category-specific config files.
+    """
     print("=" * 80)
-    print("MVP TEST: MDLZ Warehouse Prediction System")
+    print("MDLZ FORECASTING: Category-Specific Independent Training Pipeline")
     print("=" * 80)
     
-    # Load default configuration
-    print("\n[1/8] Loading configuration...")
-    config = load_config()
+    # Load base configuration
+    print("\n[1/8] Loading base configuration...")
+    base_config = load_config()
     
-    # Override configuration for MVP test
-    print("\n[2/8] Applying MVP test overrides...")
-    # Use years from config.yaml instead of hardcoding
-    config.set('data.years', config.data.get('years'))
-    # Longer warm-up and lower LR for complex feature set
-    # training.epochs and training.learning_rate now come from config.yaml
-    config.set('training.learning_rate', 0.001)
-    config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
+    # Override configuration for training
+    print("\n[2/8] Applying training overrides...")
+    base_config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
+    base_config.set('output.save_model', True)  # Ensure model saving is enabled
     
-    # Set base output directory
-    mvp_output_dir = "outputs/mvp_test"
-    mvp_models_dir = os.path.join(mvp_output_dir, "models")
-    os.makedirs(mvp_output_dir, exist_ok=True)
-    os.makedirs(mvp_models_dir, exist_ok=True)
-    config.set('output.output_dir', mvp_output_dir)
-    config.set('output.model_dir', mvp_models_dir)
-    config.set('output.save_model', True)  # Ensure model saving is enabled
-    
-    # Get category mode from config
-    data_config = config.data
-    category_mode = data_config.get('category_mode', 'single')  # Default to 'single' for backward compatibility
-    category_filter = data_config.get('category_filter', 'DRY')  # Default to 'DRY' for backward compatibility
-    
-    print(f"  - Data years: {config.data['years']}")
-    print(f"  - Training epochs: {config.training['epochs']}")
+    print(f"  - Data years: {base_config.data['years']}")
     print(f"  - Loss function: spike_aware_mse (forced)")
-    print(f"  - Category mode: {category_mode}")
-    if category_mode == 'single':
-        print(f"  - Category filter: {category_filter}")
-    print(f"  - Base output directory: {mvp_output_dir}")
     
     # Load data
     print("\n[3/8] Loading data...")
+    data_config = base_config.data
     data_reader = DataReader(
         data_dir=data_config['data_dir'],
         file_pattern=data_config['file_pattern']
     )
     
-    # Load 2023 and 2024 data
+    # Load data
     try:
         data = data_reader.load(years=data_config['years'])
     except FileNotFoundError:
@@ -1314,79 +1469,80 @@ def main():
     available_categories = sorted(data[cat_col].unique().tolist())
     print(f"  - Available categories in data: {available_categories}")
     
-    # Determine training tasks based on category_mode
-    training_tasks = []
-    
-    if category_mode == 'all':
-        # Train on all categories
-        training_tasks.append((None, "_all"))
-    elif category_mode == 'single':
-        # Train on single category
-        if category_filter not in available_categories:
-            raise ValueError(f"Category '{category_filter}' not found in data. Available categories: {available_categories}")
-        training_tasks.append((category_filter, f"_{category_filter}"))
-    elif category_mode == 'both':
-        # Train on all categories first
-        training_tasks.append((None, "_all"))
-        # Then train on each category separately
-        for cat in available_categories:
-            training_tasks.append((cat, f"_{cat}"))
-    elif category_mode == 'each':
-        # Train on each category separately (using major_categories if specified)
-        major_categories = data_config.get("major_categories", [])
-        if major_categories:
-            # Only train on major categories
-            categories_to_train = [cat for cat in major_categories if cat in available_categories]
-            print(f"  - 'each' mode: Training on major_categories only: {categories_to_train}")
-            if not categories_to_train:
-                raise ValueError(f"None of the specified major_categories {major_categories} found in data. Available: {available_categories}")
-        else:
-            # Train on all available categories
-            categories_to_train = available_categories
-            print(f"  - 'each' mode: Training on all available categories: {categories_to_train}")
-        
-        for cat in categories_to_train:
-            training_tasks.append((cat, f"_{cat}"))
+    # Get categories to train from config (major_categories or all available)
+    major_categories = data_config.get("major_categories", [])
+    if major_categories:
+        # Only train on major categories that exist in data
+        categories_to_train = [cat for cat in major_categories if cat in available_categories]
+        print(f"  - Training on major_categories: {categories_to_train}")
+        if not categories_to_train:
+            raise ValueError(
+                f"None of the specified major_categories {major_categories} found in data. "
+                f"Available: {available_categories}"
+            )
     else:
-        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all', 'single', 'both', or 'each'")
+        # Train on all available categories
+        categories_to_train = available_categories
+        print(f"  - Training on all available categories: {categories_to_train}")
     
-    print(f"\n[SUMMARY] Will train {len(training_tasks)} model(s):")
-    for i, (cat, suffix) in enumerate(training_tasks, 1):
-        cat_name = cat if cat else "ALL CATEGORIES"
-        print(f"  {i}. {cat_name} -> suffix: {suffix}")
+    print(f"\n[SUMMARY] Will train {len(categories_to_train)} independent model(s):")
+    for i, cat in enumerate(categories_to_train, 1):
+        print(f"  {i}. {cat} -> outputs/{cat}/")
     
-    # Execute training tasks
+    # Execute training tasks - each category is independent
     results = []
-    for task_idx, (category_filter, suffix) in enumerate(training_tasks, 1):
+    for task_idx, category in enumerate(categories_to_train, 1):
         print(f"\n{'=' * 80}")
-        print(f"TASK {task_idx}/{len(training_tasks)}")
+        print(f"TASK {task_idx}/{len(categories_to_train)}: {category}")
         print(f"{'=' * 80}")
         
         try:
-            result = train_single_model(data, config, category_filter=category_filter, output_suffix=suffix)
+            # Load category-specific config (merges with base config)
+            print(f"\n[Loading category-specific config for {category}...]")
+            category_config = load_config(category=category)
+            
+            # Override training loss
+            category_config.set('training.loss', 'spike_aware_mse')
+            
+            # Create isolated output directory for this category
+            category_output_dir = os.path.join("outputs", category)
+            category_models_dir = os.path.join(category_output_dir, "models")
+            os.makedirs(category_output_dir, exist_ok=True)
+            os.makedirs(category_models_dir, exist_ok=True)
+            category_config.set('output.output_dir', category_output_dir)
+            category_config.set('output.model_dir', category_models_dir)
+            
+            # Train model for this category
+            result = train_single_model(
+                data, 
+                category_config, 
+                category_filter=category, 
+                output_suffix=""  # No suffix needed, directory is category-specific
+            )
             results.append(result)
             
-            print(f"\n✓ Task {task_idx} completed successfully")
+            print(f"\n✓ Task {task_idx} ({category}) completed successfully")
             print(f"  - Results saved to: {result['output_dir']}")
             print(f"  - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
         except Exception as e:
-            print(f"\n✗ Task {task_idx} failed: {str(e)}")
+            print(f"\n✗ Task {task_idx} ({category}) failed: {str(e)}")
             import traceback
             traceback.print_exc()
-            if category_mode == 'single':
-                # If single mode fails, we should raise
-                raise
+            # Continue with other categories even if one fails
+            print(f"  - Continuing with remaining categories...")
     
     # Print final summary
     print("\n" + "=" * 80)
-    print("MVP TEST COMPLETE!")
+    print("CATEGORY-SPECIFIC TRAINING COMPLETE!")
     print("=" * 80)
-    print(f"Total tasks completed: {len(results)}/{len(training_tasks)}")
+    print(f"Total tasks completed: {len(results)}/{len(categories_to_train)}")
     for i, result in enumerate(results, 1):
-        cat_name = result['category_filter'] if result['category_filter'] else "ALL CATEGORIES"
+        cat_name = result['category_filter']
         print(f"\n{i}. {cat_name}:")
         print(f"   - Output directory: {result['output_dir']}")
         print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
+        print(f"   - Scaler: {os.path.join(result['model_dir'], 'scaler.pkl')}")
+        print(f"   - Metadata: {os.path.join(result['model_dir'], 'metadata.json')}")
         print(f"   - Test predictions plot: {result['plot_path']}")
         print(f"   - Test loss: {result['test_loss']:.4f}")
         print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")

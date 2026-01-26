@@ -668,6 +668,8 @@ def aggregate_daily(
         'days_to_tet',
         # EOM (End-of-Month) surge features
         'is_EOM', 'days_until_month_end',
+        # Seasonal active-window features
+        'is_active_season', 'days_until_peak',
     ]
     
     for col in feature_cols_to_keep:
@@ -804,6 +806,109 @@ def add_operational_status_flags(
     df[expected_zero_flag_col] = ((status == holiday_label) | (status == weekend_label)).astype(int)
     df[anomaly_flag_col] = (status == anomaly_label).astype(int)
 
+    return df
+
+
+def add_seasonal_active_window_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    lunar_month_col: str = "lunar_month",
+    days_to_tet_col: str = "days_to_tet",
+    is_active_season_col: str = "is_active_season",
+    days_until_peak_col: str = "days_until_peak",
+) -> pd.DataFrame:
+    """
+    Add seasonal active-window masking features for seasonal categories (TET, MOONCAKE).
+    
+    Creates:
+    - is_active_season: Binary feature (1 if date is in active season, 0 otherwise)
+      - For MOONCAKE: Active only between Lunar Months 6 and 9
+      - For TET: Active only 45 days prior to the Lunar New Year
+    - days_until_peak: Continuous countdown feature to the peak event
+      - For MOONCAKE: Days until Mid-Autumn Festival (lunar month 8, day 15)
+      - For TET: Days until Tet start (from days_to_tet)
+    
+    This feature helps the model learn when seasonal categories are "active" and
+    provides a gradient signal for approaching peak demand periods.
+    
+    Args:
+        df: DataFrame with time, category, and lunar calendar columns.
+        time_col: Name of time column.
+        cat_col: Name of category column.
+        lunar_month_col: Name of lunar month column.
+        days_to_tet_col: Name of days_to_tet column (for TET category).
+        is_active_season_col: Name for is_active_season column.
+        days_until_peak_col: Name for days_until_peak column.
+    
+    Returns:
+        DataFrame with added seasonal active-window features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Initialize columns
+    df[is_active_season_col] = 0
+    df[days_until_peak_col] = np.nan
+    
+    # Process each category
+    for category in df[cat_col].unique():
+        cat_mask = df[cat_col] == category
+        
+        if category == "MOONCAKE":
+            # MOONCAKE: Active between Lunar Months 6 and 9
+            # Peak is Mid-Autumn Festival (Lunar Month 8, Day 15)
+            if lunar_month_col not in df.columns:
+                raise ValueError(f"Lunar month column '{lunar_month_col}' not found. Call add_lunar_calendar_features first.")
+            
+            # Active season: Lunar months 6-9
+            is_active = (df[lunar_month_col] >= 6) & (df[lunar_month_col] <= 9)
+            df.loc[cat_mask & is_active, is_active_season_col] = 1
+            
+            # Calculate days until peak (Mid-Autumn Festival: Lunar Month 8, Day 15)
+            # For simplicity, we approximate: if in lunar month 8, days_until_peak = abs(lunar_day - 15)
+            # Otherwise, calculate based on lunar month distance
+            mooncake_mask = cat_mask
+            lunar_month = df.loc[mooncake_mask, lunar_month_col]
+            lunar_day = df.loc[mooncake_mask, "lunar_day"] if "lunar_day" in df.columns else None
+            
+            if lunar_day is not None:
+                # If in lunar month 8, countdown to day 15
+                in_month_8 = lunar_month == 8
+                days_to_peak = np.where(
+                    in_month_8,
+                    np.abs(lunar_day - 15),
+                    np.where(
+                        lunar_month < 8,
+                        (8 - lunar_month) * 30 + (15 - lunar_day),  # Approximate
+                        (lunar_month - 8) * 30 + lunar_day - 15  # Past peak
+                    )
+                )
+                df.loc[mooncake_mask, days_until_peak_col] = days_to_peak
+            else:
+                # Fallback: use lunar month distance
+                days_to_peak = np.abs((lunar_month - 8) * 30)
+                df.loc[mooncake_mask, days_until_peak_col] = days_to_peak
+        
+        elif category == "TET":
+            # TET: Active 45 days prior to Lunar New Year
+            if days_to_tet_col not in df.columns:
+                raise ValueError(f"Days to Tet column '{days_to_tet_col}' not found. Call add_days_to_tet_feature first.")
+            
+            # Active season: 45 days before Tet (days_to_tet <= 45)
+            days_to_tet = df.loc[cat_mask, days_to_tet_col]
+            is_active = days_to_tet <= 45
+            df.loc[cat_mask & is_active, is_active_season_col] = 1
+            
+            # days_until_peak for TET is simply days_to_tet
+            df.loc[cat_mask, days_until_peak_col] = days_to_tet.values
+    
+    # Fill NaN values with large number (outside active season)
+    df[days_until_peak_col] = df[days_until_peak_col].fillna(365)
+    
     return df
 
 

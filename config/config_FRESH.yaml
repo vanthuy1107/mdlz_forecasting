@@ -1,0 +1,37 @@
+# Category-Specific Configuration for FRESH Category
+# This file overrides base config.yaml settings for FRESH category training
+
+# Window configuration - FRESH driven by short-term lag
+window:
+  input_size: 14  # Short-term lookback (1-2 days dependency)
+  horizon: 30     # 30-day forecast horizon
+
+# Model Configuration
+model:
+  hidden_size: 128
+  n_layers: 2
+  dropout_prob: 0.15
+  use_layer_norm: true
+
+# Training Configuration
+training:
+  batch_size: 32
+  epochs: 25
+  learning_rate: 0.001
+  weight_decay: 1e-4
+  scheduler:
+    factor: 0.1  # Reduce LR faster if encountering volatility
+    patience: 3
+
+# Category-specific loss weighting
+category_specific_params:
+  FRESH:
+    learning_rate: 0.001
+    batch_size: 32
+    scheduler_factor: 0.1
+    loss_weight: 1.0
+
+# Seasonal configuration - FRESH is not seasonal
+data:
+  seasonal_active_window: null
+  peak_event: null

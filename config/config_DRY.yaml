@@ -1,0 +1,37 @@
+# Category-Specific Configuration for DRY Category
+# This file overrides base config.yaml settings for DRY category training
+
+# Window configuration - DRY needs longer lookback for weekly stability
+window:
+  input_size: 28  # 28-day lookback for weekly pattern stability
+  horizon: 20      # 30-day forecast horizon
+
+# Model Configuration - DRY-specific architecture
+model:
+  hidden_size: 128
+  n_layers: 2
+  dropout_prob: 0.1  # Lower dropout for stable patterns
+  use_layer_norm: true
+
+# Training Configuration - Lower learning rate for stability
+training:
+  batch_size: 64
+  epochs: 30
+  learning_rate: 0.0005  # Lower LR for smooth convergence
+  weight_decay: 1e-5     # Light regularization
+  scheduler:
+    patience: 5  # Wait longer before reducing LR
+    factor: 0.5
+
+# Category-specific loss weighting
+category_specific_params:
+  DRY:
+    learning_rate: 0.0005
+    weight_decay: 1e-5
+    patience: 5
+    loss_weight: 1.0  # Standard weight for stable category
+
+# Seasonal configuration - DRY is not seasonal
+data:
+  seasonal_active_window: null  # No seasonal masking for DRY
+  peak_event: null  # No peak event countdown

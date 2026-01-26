@@ -1,0 +1,38 @@
+# Category-Specific Configuration for TET Category
+# This file overrides base config.yaml settings for TET category training
+
+# Window configuration - TET needs focused lookback for seasonal intensity
+window:
+  input_size: 14  # 14-day lookback focused on seasonal intensity
+  horizon: 30     # 30-day forecast horizon
+
+# Model Configuration - TET-specific architecture
+model:
+  hidden_size: 256  # Larger network to capture complex seasonal patterns
+  n_layers: 3       # Deeper network for seasonal dependencies
+  dropout_prob: 0.2
+  use_layer_norm: true
+
+# Training Configuration - Higher learning rate to capture rapid spikes
+training:
+  batch_size: 32
+  epochs: 60  # More epochs to learn sparse seasonal patterns
+  learning_rate: 0.002  # Higher LR to capture rapid spikes
+  weight_decay: 1e-4    # Moderate regularization
+  scheduler:
+    patience: 3
+    factor: 0.5
+
+# Category-specific loss weighting - High weight during peak periods
+category_specific_params:
+  TET:
+    learning_rate: 0.002
+    epochs: 60
+    loss_weight: 3.0  # High weight to capture Tet peak (45 days before Lunar New Year)
+    weight_decay: 1e-4
+
+# Seasonal configuration - TET is highly seasonal
+data:
+  seasonal_active_window: 45  # Active 45 days before Tet
+  peak_event: "tet"  # Peak event is Tet (Lunar New Year)
+  apply_seasonal_mask: true  # Hard-zero constraint during off-season

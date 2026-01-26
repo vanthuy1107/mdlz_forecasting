@@ -6,26 +6,30 @@ data:
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
   years: [2023, 2024]
   
-  # Category selection for MVP test
-  # Options:
-  #   "all" - Train on all categories combined
-  #   "single" - Train on one specific category (specify in category_filter)
-  #   "both" - Train on all categories AND each category separately
-  #   "each" - Train on each category separately (uses major_categories if specified)
-  category_mode: "single"  # "all", "single", "both", or "each"
-  category_filter: "DRY"  # Only used when category_mode is "single". Specify category name or null for all
-  # Category behavior rules for multi-target decomposition:
-  #   - major_categories: High-volume, structurally stable categories that should be modeled with the LSTM
-  #                       and full entity embeddings (e.g., DRY, FRESH).
-  #   - minor_categories: Low-volume / noisy categories that should be handled by simple statistical
-  #                       heuristics (e.g., moving average) instead of the LSTM, to avoid corrupting
-  #                       the shared hidden state.
+  # Category-Specific Independent Training Mode
+  # The system now operates exclusively in Category-Specific Mode, where each category
+  # is treated as a standalone task with its own unique architectural and training parameters.
+  # Each category listed in major_categories will be trained independently with its own
+  # configuration file (config_{CATEGORY}.yaml) that overrides base settings.
+  #
+  # Category behavior rules:
+  #   - major_categories: Categories to train independently. Each category gets its own
+  #                       model, output directory (outputs/{CATEGORY}/), and configuration.
+  #                       Category-specific configs (config_{CATEGORY}.yaml) define unique
+  #                       hyperparameters, window sizes, and seasonal settings.
+  #   - minor_categories: Low-volume / noisy categories that can be handled by simple
+  #                       statistical heuristics (e.g., moving average) instead of LSTM.
+  #                       These are excluded from training if specified.
   major_categories:
     - "DRY"
-    - "FRESH"
+    # - "FRESH"
+    # - "TET"
+    # # - "POSM"
+    # # - "OTHER"s
+    # - "MOONCAKE"
   minor_categories:
-    - "POSM"
-    - "OTHER"
+    # - "POSM"
+    # - "OTHER"
   # Residual / baseline configuration for scale-invariant forecasting
   # When enabled, the model is trained to predict the residual
   #   residual_t = target_col_t - baseline_col_t
@@ -71,43 +75,59 @@ data:
   val_size: 0.1
   test_size: 0.2
 
-# Window configuration
-# Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
-# This prevents exposure bias from recursive forecasting where errors compound
-window:
-  input_size: 30  # Increased from 30 to provide more context
-  horizon: 30     # Changed from 1 to 30 for direct multi-step prediction
+# Base Configuration (Defaults)
+# These values serve as DEFAULT/BASE settings that apply to all categories.
+# Category-specific config files (config_{CATEGORY}.yaml) can override any of these values.
+# If a category doesn't have a specific config file, these base values are used.
+#
+# Priority order:
+#   1. Category-specific config file (config_{CATEGORY}.yaml) - highest priority
+#   2. category_specific_params section (fallback/backward compatibility)
+#   3. Base config values (defaults) - lowest priority
 
-# Model Configuration
+# Window configuration (Base defaults)
+# Direct Multi-step Forecasting: Use longer context to predict entire horizon at once
+# This prevents exposure bias from recursive forecasting where errors compound
+# NOTE: Each category can override these in config_{CATEGORY}.yaml
+#       Example: DRY uses 28-day lookback, TET uses 14-day lookback
+window:
+  input_size: 30  # Base default: 30-day lookback (can be overridden per category)
+  horizon: 30     # Base default: 30-day forecast horizon (can be overridden per category)
+
+# Model Configuration (Base defaults)
+# NOTE: Each category can override architecture in config_{CATEGORY}.yaml
+#       Example: TET uses hidden_size=256, n_layers=3; POSM uses hidden_size=32
 model:
   name: "RNNWithCategory"  # or "RNNForecastor"
-  num_categories: null  # Will be set dynamically from data
-  cat_emb_dim: 4
+  num_categories: null  # Will be set dynamically from data (always 1 in category-specific mode)
+  cat_emb_dim: 5
   input_dim: 15  # Updated dynamically in code to match feature_cols length
-  hidden_size: 128
-  n_layers: 2
-  output_dim: 30  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
-  dropout_prob: 0.2  # Only for RNNForecastor
+  hidden_size: 128  # Base default (can be overridden per category)
+  n_layers: 2  # Base default (can be overridden per category)
+  output_dim: 30  # Base default: direct multi-step prediction (can be overridden per category)
+  dropout_prob: 0.2  # Base default (can be overridden per category)
   use_layer_norm: true  # Apply LayerNorm on final hidden state before output
 
-# Training Configuration
+# Training Configuration (Base defaults)
+# NOTE: Each category can override training parameters in config_{CATEGORY}.yaml
+#       Example: TET uses learning_rate=0.002, epochs=60; DRY uses learning_rate=0.0005
 training:
-  batch_size: 64
+  batch_size: 64  # Base default (can be overridden per category)
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 20
-  learning_rate: 0.001
+  epochs: 20  # Base default (can be overridden per category)
+  learning_rate: 0.001  # Base default (can be overridden per category)
   optimizer: "Adam"
   
   # Loss function
-  loss: "MSE"  # or "spike_aware_mse"
+  loss: "MSE"  # or "spike_aware_mse" (forced to spike_aware_mse in training script)
   
   # Learning rate scheduler
   scheduler:
     name: "ReduceLROnPlateau"
     mode: "min"
-    factor: 0.5
-    patience: 3
+    factor: 0.5  # Base default (can be overridden per category)
+    patience: 3  # Base default (can be overridden per category)
     min_lr: 0.00001
   
   # Logging
@@ -115,6 +135,47 @@ training:
   
   # Device
   device: "auto"  # "auto", "cuda", or "cpu"
+
+# Category-Specific Hyperparameter Configuration (Default Fallback)
+# 
+# IMPORTANT: Priority order for category-specific parameters:
+#   1. config_{CATEGORY}.yaml file (if exists) - HIGHEST PRIORITY
+#      Category-specific config files (e.g., config_DRY.yaml, config_TET.yaml) contain
+#      their own category_specific_params section that will override the default below.
+#   2. category_specific_params.default section below (if config file doesn't exist) - FALLBACK
+#   3. Base config values (window, model, training sections) - LOWEST PRIORITY
+#
+# Example:
+#   - If config_DRY.yaml exists → use values from config_DRY.yaml's category_specific_params.DRY
+#   - If config_DRY.yaml doesn't exist → use values from category_specific_params.default below
+#   - If neither exists → use base config defaults
+#
+# The preferred way to set category-specific parameters is via config_{CATEGORY}.yaml files.
+# This section provides a SINGLE DEFAULT fallback for categories that don't have dedicated config files.
+#
+# Technical Rationale for category-specific parameters:
+# 1. Statistical Heterogeneity (Variance & Volume): Categories have vastly different scales and behaviors.
+#    DRY goods represent baseline volume with high stability, requiring lower learning rate for smooth convergence.
+#    TET and MOONCAKE are sparse, high-variance categories requiring higher learning rate and more epochs to
+#    capture short-lived peaks.
+# 2. Divergent Temporal Dependencies: FRESH driven by short-term lag (1-2 days), DRY by weekly cycles (7-14 days),
+#    SEASONAL (Tet/Mooncake) by Lunar Calendar and annual cycles. One-size-fits-all parameters lead to
+#    "Mean-Reverting" problem where model under-predicts peaks and over-predicts during off-season.
+# 3. Mitigation of "Zero-Inflation" Problem: Categories like TET, POSM, and MOONCAKE contain high frequency of
+#    zero-volume days. Standard MSE treats error on zero-day same as peak-day. Loss Weight Multiplier for seasonal
+#    categories forces LSTM to prioritize accuracy during high-stakes periods (e.g., 30 days before Tet).
+# 4. Regularization and Noise Control: Noisy categories with low volume (POSM, OTHER) risk corrupting shared
+#    hidden states. Specific Weight Decay and Dropout settings prevent model from "hallucinating" patterns in
+#    essentially random operational noise.
+category_specific_params:
+  # Single default configuration for categories without dedicated config_{CATEGORY}.yaml files
+  # If a category-specific config file exists (e.g., config_DRY.yaml, config_TET.yaml),
+  # it will override these default values with category-specific parameters.
+  default:
+    learning_rate: 0.001
+    weight_decay: 1e-5
+    patience: 3
+    loss_weight: 1.0
 
 # Output Configuration
 output:
@@ -132,8 +193,9 @@ inference:
   n_samples_for_plot: 100
   save_predictions: true
   
-  # Category selection for prediction now reuses data.category_mode and
-  # data.category_filter so train & prediction share one setting.
+  # Category selection for prediction: Each category has its own trained model
+  # located in outputs/{CATEGORY}/models/best_model.pth. The inference script
+  # should load the appropriate model for each category being predicted.
 
   # Prediction horizon (time range and data file for inference script)
   # These values are used by mvp_predict.py so you can easily change
@@ -147,4 +209,3 @@ inference:
   prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
   prediction_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
   prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
-

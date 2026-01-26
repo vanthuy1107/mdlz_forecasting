@@ -55,6 +55,8 @@ class RNNWithCategory(nn.Module):
         n_layers: int,
         output_dim: int,
         use_layer_norm: bool = True,
+        dropout_prob: float = 0.0,
+        category_specific_params: Optional[dict] = None,
     ) -> None:
         super().__init__()
 
@@ -64,6 +66,8 @@ class RNNWithCategory(nn.Module):
         self.hidden_size = hidden_size
         self.n_layers = n_layers
         self.use_layer_norm = use_layer_norm
+        self.dropout_prob = dropout_prob
+        self.category_specific_params = category_specific_params or {}
 
         # Category embedding
         self.cat_embedding = nn.Embedding(num_categories, cat_emb_dim)
@@ -72,11 +76,13 @@ class RNNWithCategory(nn.Module):
         self.h0_fc = nn.Linear(cat_emb_dim, hidden_size)
 
         # LSTM over concatenated [time_features, category_embedding]
+        # Note: Dropout in LSTM is applied between layers (not per timestep)
         self.lstm = nn.LSTM(
             input_size=input_dim + cat_emb_dim,
             hidden_size=hidden_size,
             num_layers=n_layers,
             batch_first=True,
+            dropout=dropout_prob if n_layers > 1 else 0.0,  # Dropout only between layers
         )
 
         # Final prediction layer: outputs entire forecast horizon at once (direct multi-step)
@@ -86,13 +92,24 @@ class RNNWithCategory(nn.Module):
         # Optional Layer Normalization on the final hidden state to
         # reduce sensitivity to absolute scale and improve stability.
         self.layer_norm = nn.LayerNorm(hidden_size) if use_layer_norm else None
+        
+        # Optional dropout before final layer (category-specific dropout handled in forward)
+        self.dropout = nn.Dropout(dropout_prob) if dropout_prob > 0 else None
 
-    def forward(self, x_seq: Tensor, x_cat: Tensor) -> Tensor:
+    def forward(
+        self, 
+        x_seq: Tensor, 
+        x_cat: Tensor,
+        apply_seasonal_mask: bool = False,
+        is_active_season_idx: Optional[int] = None
+    ) -> Tensor:
         """Forward pass.
 
         Args:
             x_seq: Input sequence of shape (B, T, D) with D == input_dim.
             x_cat: Category IDs of shape (B,) or (B, 1).
+            apply_seasonal_mask: Whether to apply seasonal active-window masking.
+            is_active_season_idx: Index of is_active_season feature in x_seq (if apply_seasonal_mask=True).
 
         Returns:
             Tensor of shape (B, output_dim) with predictions for entire forecast horizon.
@@ -138,9 +155,34 @@ class RNNWithCategory(nn.Module):
         if self.layer_norm is not None:
             last_out = self.layer_norm(last_out)
 
+        # Apply category-specific dropout if configured
+        # Note: This is a simplified approach. For per-category dropout, we'd need
+        # to apply different dropout rates per sample, which is complex.
+        # For now, we use the global dropout_prob.
+        if self.dropout is not None:
+            last_out = self.dropout(last_out)
+
         # Final prediction: outputs entire forecast horizon at once
         # Shape: (B, output_dim) where output_dim = horizon (e.g., 30)
         pred = self.fc(last_out)
+        
+        # Apply seasonal active-window masking if requested
+        # This enforces hard-zero constraint for off-season periods
+        if apply_seasonal_mask and is_active_season_idx is not None:
+            # Extract is_active_season from the last timestep of input sequence
+            # Shape: (B,)
+            is_active = x_seq[:, -1, is_active_season_idx] > 0.5  # Binary threshold
+            
+            # For multi-step forecasting, we need to expand the mask to match horizon
+            # For now, we apply the same mask to all steps in the horizon
+            # In practice, you'd want to extract is_active_season for each future timestep
+            # from the forecast window, but that requires additional feature engineering
+            if pred.ndim == 2:
+                is_active = is_active.unsqueeze(-1).expand_as(pred)
+            
+            # Apply hard-zero constraint: set predictions to 0 when not in active season
+            pred = pred * is_active.float()
+        
         return pred
 
 

@@ -1,10 +1,10 @@
-"""Prediction script for January 2025 using MVP test model.
+"""Prediction script using MVP test model.
 
 This script loads the trained model from mvp_test.py and makes predictions
-for January 2025 data, filtering to DRY category only.
+for the configured prediction period.
 
 Two modes are supported:
-1. Teacher Forcing (Test Evaluation): Uses actual ground truth QTY values from 2025 as features
+1. Teacher Forcing (Test Evaluation): Uses actual ground truth QTY values from prediction data as features
 2. Recursive (Production Forecast): Uses model's own predictions as inputs for future dates
 """
 import torch
@@ -42,11 +42,21 @@ from src.data.preprocessing import (
     add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
+    add_seasonal_active_window_features,
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE
 from src.utils.google_sheets import upload_history_prediction
+# Import from new predict module
+from src.predict import (
+    load_model_for_prediction,
+    prepare_prediction_data,
+    create_prediction_windows,
+    predict_direct_multistep,
+    predict_direct_multistep_rolling,
+    get_historical_window_data
+)
 
 
 ###############################################################################
@@ -678,7 +688,9 @@ def analyze_improvement(current_metrics: dict, previous_runs: list) -> str:
     return "\n".join(analysis_lines)
 
 
-def load_model_for_prediction(model_path: str, config):
+# DEPRECATED: This function has been moved to src.predict.loader
+# Keeping for backward compatibility - will be removed in future version
+def load_model_for_prediction_old(model_path: str, config):
     """Load trained model from checkpoint and scaler."""
     # Load metadata first to get the training-time model/data config
     model_dir = Path(model_path).parent
@@ -792,7 +804,9 @@ def load_model_for_prediction(model_path: str, config):
     return model, device, scaler, trained_category_filter, trained_cat2id
 
 
-def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=None):
+# DEPRECATED: This function has been moved to src.predict.prepare
+# Keeping for backward compatibility - will be removed in future version  
+def prepare_prediction_data_old(data, config, cat2id, scaler=None, trained_cat2id=None):
     """
     Prepare data for prediction using the same preprocessing as training.
     
@@ -903,6 +917,18 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
         days_to_tet_col="days_to_tet",
     )
     
+    # Feature engineering: Seasonal active-window masking for seasonal categories
+    print("  - Adding seasonal active-window features (is_active_season, days_until_peak)...")
+    data = add_seasonal_active_window_features(
+        data,
+        time_col=time_col,
+        cat_col=cat_col,
+        lunar_month_col="lunar_month",
+        days_to_tet_col="days_to_tet",
+        is_active_season_col="is_active_season",
+        days_until_peak_col="days_until_peak",
+    )
+    
     # Daily aggregation: Group by date and category, sum target
     # This matches the training pipeline
     print("  - Aggregating to daily totals by category...")
@@ -1001,7 +1027,9 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     return data
 
 
-def create_prediction_windows(data, config):
+# DEPRECATED: This function has been moved to src.predict.windows
+# Keeping for backward compatibility - will be removed in future version
+def create_prediction_windows_old(data, config):
     """
     Create sliding windows for prediction and extract corresponding dates.
     
@@ -1126,7 +1154,9 @@ def apply_sunday_to_monday_carryover_predictions(
     return df
 
 
-def predict_direct_multistep(
+# DEPRECATED: This function has been moved to src.predict.predictor
+# Keeping for backward compatibility - will be removed in future version
+def predict_direct_multistep_old(
     model,
     device,
     initial_window_data: pd.DataFrame,
@@ -1268,7 +1298,9 @@ def predict_direct_multistep(
     return predictions_df
 
 
-def predict_direct_multistep_rolling(
+# DEPRECATED: This function has been moved to src.predict.predictor
+# Keeping for backward compatibility - will be removed in future version
+def predict_direct_multistep_rolling_old(
     model,
     device,
     initial_window_data: pd.DataFrame,
@@ -1401,6 +1433,12 @@ def predict_direct_multistep_rolling(
             new_row['lunar_month'] = lunar_month
             new_row['lunar_day'] = lunar_day
             
+            # Compute lunar cyclical features (sine/cosine)
+            new_row['lunar_month_sin'] = np.sin(2 * np.pi * (lunar_month - 1) / 12.0)
+            new_row['lunar_month_cos'] = np.cos(2 * np.pi * (lunar_month - 1) / 12.0)
+            new_row['lunar_day_sin'] = np.sin(2 * np.pi * (lunar_day - 1) / 30.0)
+            new_row['lunar_day_cos'] = np.cos(2 * np.pi * (lunar_day - 1) / 30.0)
+            
             # Compute holiday features
             extended_end = end_date + timedelta(days=365)
             holidays = get_vietnam_holidays(pred_date, extended_end)
@@ -1429,6 +1467,51 @@ def predict_direct_multistep_rolling(
             days_in_month = (pred_datetime.replace(day=28) + timedelta(days=4)).day
             days_until_month_end = days_in_month - pred_datetime.day
             new_row['days_until_month_end'] = max(0, days_until_month_end)
+            
+            # Compute days_to_tet feature
+            tet_start_dates = get_tet_start_dates(pred_date.year, pred_date.year + 1)
+            days_to_tet_val = 365
+            if tet_start_dates:
+                tet_start_dates = sorted(tet_start_dates)
+                next_tet = None
+                for tet_date in tet_start_dates:
+                    if tet_date >= pred_date:
+                        next_tet = tet_date
+                        break
+                if next_tet:
+                    days_to_tet_val = (next_tet - pred_date).days
+            new_row['days_to_tet'] = days_to_tet_val
+            
+            # Compute seasonal active-window features (is_active_season, days_until_peak)
+            # Get category from template row
+            cat_col_name = data_config.get('cat_col', 'CATEGORY')
+            category = new_row[cat_col_name].iloc[0] if cat_col_name in new_row.columns else None
+            
+            # Initialize with default values
+            is_active_season_val = 0
+            days_until_peak_val = 365
+            
+            if category == "MOONCAKE":
+                # MOONCAKE: Active between Lunar Months 6 and 9
+                # Peak is Mid-Autumn Festival (Lunar Month 8, Day 15)
+                is_active = (lunar_month >= 6) and (lunar_month <= 9)
+                is_active_season_val = 1 if is_active else 0
+                
+                # Calculate days until peak
+                if lunar_month == 8:
+                    days_until_peak_val = abs(lunar_day - 15)
+                elif lunar_month < 8:
+                    days_until_peak_val = (8 - lunar_month) * 30 + (15 - lunar_day)  # Approximate
+                else:
+                    days_until_peak_val = (lunar_month - 8) * 30 + lunar_day - 15  # Past peak
+            elif category == "TET":
+                # TET: Active 45 days prior to Lunar New Year
+                is_active = days_to_tet_val <= 45
+                is_active_season_val = 1 if is_active else 0
+                days_until_peak_val = days_to_tet_val
+            
+            new_row['is_active_season'] = is_active_season_val
+            new_row['days_until_peak'] = days_until_peak_val
             
             new_rows.append(new_row)
         
@@ -1505,7 +1588,7 @@ def predict_recursive(
     Args:
         model: Trained PyTorch model (already on device and in eval mode)
         device: PyTorch device
-        initial_window_data: DataFrame with last 30 days of historical data (Dec 2024)
+        initial_window_data: DataFrame with last input_size days of historical data
                             Must have all feature columns and be sorted by time
         start_date: First date to predict (e.g., date(2025, 1, 1))
         end_date: Last date to predict (e.g., date(2025, 1, 31))
@@ -1698,7 +1781,9 @@ def predict_recursive(
     return predictions_df
 
 
-def get_historical_window_data(
+# DEPRECATED: This function has been moved to src.predict.predictor
+# Keeping for backward compatibility - will be removed in future version
+def get_historical_window_data_old(
     historical_data: pd.DataFrame,
     end_date: date,
     config,
@@ -1766,7 +1851,7 @@ def main():
     inference_config = config.inference or {}
     prediction_data_path_cfg = inference_config.get(
         "prediction_data_path",
-        "dataset/test/data_2025.csv",
+        "dataset/test/data_prediction.csv",
     )
     prediction_start_str = inference_config.get("prediction_start", "2025-01-01")
     prediction_end_str = inference_config.get("prediction_end", "2025-01-31")
@@ -1817,15 +1902,12 @@ def main():
         )
     
     # Get category mode from TRAINING config (use the same setting for train & prediction)
-    # This ensures we don't have two separate places to configure category_mode/category_filter.
-    # mvp_test.py also reads these from config.data.
+    # Category-Specific Independent Training Mode
+    # The system now operates exclusively in Category-Specific Mode, where each category
+    # is treated as a standalone task with its own trained model.
     data_config = config.data
-    category_mode = data_config.get('category_mode', 'single')  # Default to 'single' for backward compatibility
-    category_filter = data_config.get('category_filter', 'DRY')  # Default to 'DRY' for backward compatibility
     
-    print(f"  - Category mode: {category_mode}")
-    if category_mode == 'single':
-        print(f"  - Category filter: {category_filter}")
+    print(f"  - Category-Specific Mode: Each category uses its own trained model")
     
     # Encode all categories from reference data (don't filter yet - need full mapping)
     # Note: We encode here to get cat2id mapping, but num_categories for model will come from trained model metadata
@@ -1841,45 +1923,41 @@ def main():
     available_categories = sorted([cat for cat in unique_ref_cats if cat.lower() != 'nan'])
     print(f"  - Available categories in reference data: {available_categories}")
     
-    if category_mode == 'single':
-        if category_filter not in available_categories:
-            raise ValueError(f"Category '{category_filter}' not found in reference data. Available: {available_categories}")
-        categories_to_predict = [category_filter]
-    elif category_mode == 'all':
-        categories_to_predict = available_categories
-    elif category_mode == 'each':
-        # For 'each' mode, determine which categories have trained models
-        # Use major_categories if specified, otherwise use all available categories
-        major_categories = data_config.get("major_categories", [])
-        if major_categories:
-            categories_to_predict = [cat for cat in major_categories if cat in available_categories]
-            print(f"  - 'each' mode: Will process major_categories: {categories_to_predict}")
-        else:
-            categories_to_predict = available_categories
-            print(f"  - 'each' mode: Will process all available categories: {categories_to_predict}")
+    # Use major_categories from config to determine which categories to predict
+    # Each category must have its own trained model in outputs/{CATEGORY}/models/best_model.pth
+    major_categories = data_config.get("major_categories", [])
+    if major_categories:
+        categories_to_predict = [cat for cat in major_categories if cat in available_categories]
+        print(f"  - Will process major_categories: {categories_to_predict}")
+        if not categories_to_predict:
+            raise ValueError(
+                f"None of the specified major_categories {major_categories} found in reference data. "
+                f"Available: {available_categories}"
+            )
     else:
-        raise ValueError(f"Invalid category_mode: {category_mode}. Must be 'all', 'single', or 'each'")
+        categories_to_predict = available_categories
+        print(f"  - Will process all available categories: {categories_to_predict}")
     
     print(f"  - Categories to predict: {categories_to_predict}")
     
-    # Load prediction data (e.g., 2025 file)
+    # Load prediction data
     print("\n[4/7] Loading prediction data...")
-    data_2025_path = Path(prediction_data_path_cfg)
+    prediction_data_path = Path(prediction_data_path_cfg)
     
-    if not data_2025_path.exists():
+    if not prediction_data_path.exists():
         raise FileNotFoundError(
-            f"Prediction data file not found at: {data_2025_path.absolute()}"
+            f"Prediction data file not found at: {prediction_data_path.absolute()}"
         )
     
-    print(f"  - Loading from: {data_2025_path}")
+    print(f"  - Loading from: {prediction_data_path}")
     try:
-        data_2025 = pd.read_csv(data_2025_path, encoding='utf-8', low_memory=False)
+        prediction_data = pd.read_csv(prediction_data_path, encoding='utf-8', low_memory=False)
     except UnicodeDecodeError:
         try:
-            data_2025 = pd.read_csv(data_2025_path, encoding='latin-1', low_memory=False)
+            prediction_data = pd.read_csv(prediction_data_path, encoding='latin-1', low_memory=False)
         except Exception as e:
-            data_2025 = pd.read_csv(data_2025_path, encoding='cp1252', low_memory=False)
-    print(f"  - Loaded {len(data_2025)} samples")
+            prediction_data = pd.read_csv(prediction_data_path, encoding='cp1252', low_memory=False)
+    print(f"  - Loaded {len(prediction_data)} samples")
     
     # Filter to desired prediction window (keep all categories for now - will filter per category later)
     print("\n[5/7] Filtering data...")
@@ -1887,32 +1965,32 @@ def main():
     time_col = data_config['time_col']
     
     # Filter to configured prediction window first
-    if not pd.api.types.is_datetime64_any_dtype(data_2025[time_col]):
-        # The prediction CSV can contain dates like "13/01/2025" (dd/mm/YYYY).
+    if not pd.api.types.is_datetime64_any_dtype(prediction_data[time_col]):
+        # The prediction CSV can contain dates like "13/01/YYYY" (dd/mm/YYYY).
         # Use a robust parser that supports mixed formats and day-first dates.
-        data_2025[time_col] = pd.to_datetime(
-            data_2025[time_col],
+        prediction_data[time_col] = pd.to_datetime(
+            prediction_data[time_col],
             format="mixed",
             dayfirst=True,
         )
     
     # Store original data to check date range if filtering returns empty
-    data_2025_original = data_2025.copy()
+    prediction_data_original = prediction_data.copy()
     
-    data_2025 = data_2025[
-        (data_2025[time_col] >= prediction_filter_start)
-        & (data_2025[time_col] < prediction_filter_end)
+    prediction_data = prediction_data[
+        (prediction_data[time_col] >= prediction_filter_start)
+        & (prediction_data[time_col] < prediction_filter_end)
     ].copy()
     print(
         f"  - After date filter [{prediction_filter_start} .. {prediction_filter_end}): "
-        f"{len(data_2025)} samples"
+        f"{len(prediction_data)} samples"
     )
     
     # If no data after filtering, provide helpful error message with available date range
-    if len(data_2025) == 0:
-        if len(data_2025_original) > 0:
-            min_date = data_2025_original[time_col].min()
-            max_date = data_2025_original[time_col].max()
+    if len(prediction_data) == 0:
+        if len(prediction_data_original) > 0:
+            min_date = prediction_data_original[time_col].min()
+            max_date = prediction_data_original[time_col].max()
             raise ValueError(
                 f"No data found in prediction file for the specified date range "
                 f"[{prediction_filter_start} .. {prediction_filter_end}).\n"
@@ -1925,156 +2003,108 @@ def main():
                 f"Prediction data file is empty or contains no valid data."
             )
     
-    # Check which categories are available in 2025 data
+    # Check which categories are available in prediction data
     # Filter out NaN values and convert to string to handle mixed types
-    unique_cats = data_2025[cat_col].dropna().astype(str).unique().tolist()
-    available_2025_categories = sorted([cat for cat in unique_cats if cat.lower() != 'nan'])
-    print(f"  - Available categories in 2025 data: {available_2025_categories}")
+    unique_cats = prediction_data[cat_col].dropna().astype(str).unique().tolist()
+    available_prediction_categories = sorted([cat for cat in unique_cats if cat.lower() != 'nan'])
+    prediction_year = prediction_start_date.year
+    print(f"  - Available categories in {prediction_year} data: {available_prediction_categories}")
     
-    # Filter categories_to_predict to only those available in both reference and 2025 data
-    categories_to_predict = [cat for cat in categories_to_predict if cat in available_2025_categories]
+    # Filter categories_to_predict to only those available in both reference and prediction data
+    categories_to_predict = [cat for cat in categories_to_predict if cat in available_prediction_categories]
     
     if len(categories_to_predict) == 0:
-        raise ValueError(f"No matching categories found between reference data and 2025 data. "
-                        f"Reference: {available_categories}, 2025: {available_2025_categories}")
+        raise ValueError(f"No matching categories found between reference data and {prediction_year} data. "
+                        f"Reference: {available_categories}, {prediction_year}: {available_prediction_categories}")
     
     print(f"  - Final categories to predict: {categories_to_predict}")
     
-    # For "each" mode, we need to check that models exist for all categories
-    if category_mode == 'each':
-        print("\n[6/7] Checking for trained models for each category...")
-        base_output_dir = "outputs/mvp_test"
-        missing_models = []
-        for cat in categories_to_predict:
-            model_path = Path(f"{base_output_dir}_{cat}/models/best_model.pth")
-            if not model_path.exists():
-                missing_models.append(cat)
-        if missing_models:
-            raise FileNotFoundError(
-                f"Models not found for categories: {missing_models}. "
-                f"Please run mvp_test.py with category_mode='each' first to train all category models."
-            )
-        print(f"  - All required models found for {len(categories_to_predict)} category(ies)")
+    # Check that models exist for all categories (Category-Specific Mode)
+    print("\n[6/7] Checking for trained models for each category...")
+    missing_models = []
+    for cat in categories_to_predict:
+        # New directory structure: outputs/{CATEGORY}/models/best_model.pth
+        model_path = Path(f"outputs/{cat}/models/best_model.pth")
+        if not model_path.exists():
+            missing_models.append(cat)
+    if missing_models:
+        raise FileNotFoundError(
+            f"Models not found for categories: {missing_models}. "
+            f"Please run mvp_train.py first to train all category models. "
+            f"Expected paths: outputs/{{CATEGORY}}/models/best_model.pth"
+        )
+    print(f"  - All required models found for {len(categories_to_predict)} category(ies)")
     
     # Load trained model (to get scaler before data preparation)
-    # Determine model directory based on inference category_mode
-    # Match the directory structure from mvp_test.py (outputs/mvp_test{suffix}/models/)
-    print("\n[6/7] Loading trained model...")
-    base_output_dir = "outputs/mvp_test"
+    # Category-Specific Mode: Each category has its own model in outputs/{CATEGORY}/models/
+    print("\n[6/7] Loading trained models...")
     
-    # Determine suffix based on inference category_mode
-    # Note: This should match what mvp_test.py uses when training
-    # For "all": uses suffix "_all" -> outputs/mvp_test_all/models/
-    # For "single": uses suffix "_{category}" -> outputs/mvp_test_{category}/models/
-    # For "each": will be handled per-category in the loop below
-    # Default (no suffix): outputs/mvp_test/models/
-    
-    if category_mode == 'all':
-        model_suffix = "_all"
-    elif category_mode == 'single' and category_filter:
-        model_suffix = f"_{category_filter}"
-    else:
-        model_suffix = ""  # Default: outputs/mvp_test/models/
-    
-    # For "each" mode, we'll process each category separately with its own model
+    # Process each category separately with its own model
     # Store all results to combine later
-    if category_mode == 'each':
-        all_category_results = []
+    all_category_results = []
+    
+    for cat_idx, current_cat in enumerate(categories_to_predict, 1):
+        print(f"\n{'=' * 80}")
+        print(f"PROCESSING CATEGORY {cat_idx}/{len(categories_to_predict)}: {current_cat}")
+        print(f"{'=' * 80}")
         
-        for cat_idx, current_cat in enumerate(categories_to_predict, 1):
-            print(f"\n{'=' * 80}")
-            print(f"PROCESSING CATEGORY {cat_idx}/{len(categories_to_predict)}: {current_cat}")
-            print(f"{'=' * 80}")
-            
-            # Load this category's model
-            model_suffix = f"_{current_cat}"
-            model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
-            model_path = model_dir_path / "best_model.pth"
-            
-            if not model_path.exists():
-                raise FileNotFoundError(
-                    f"Model not found for category '{current_cat}' at {model_path}. "
-                    f"Please run mvp_test.py with category_mode='each' first."
-                )
-            
-            print(f"  - Using model from: {model_path}")
-            model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
-            
-            # Filter data to this category only
-            cat_to_process = [current_cat]
-            
-            # Process this category (will be continued below with rest of prediction logic)
-            # For now, we'll handle it in the main flow by temporarily setting variables
-            all_category_results.append({
-                'category': current_cat,
-                'model': model,
-                'device': device,
-                'scaler': scaler,
-                'trained_category_filter': trained_category_filter,
-                'trained_cat2id': trained_cat2id
-            })
+        # Load this category's model from new directory structure
+        # outputs/{CATEGORY}/models/best_model.pth
+        model_dir_path = Path(f"outputs/{current_cat}/models")
+        model_path = model_dir_path / "best_model.pth"
         
-        # For "each" mode, we need to load a model for Teacher Forcing evaluation
-        # We'll use the first category's model as a placeholder, but process all categories
-        # The recursive section will handle loading each category's model separately
-        print(f"\n[NOTE] 'each' mode: Will process all {len(categories_to_predict)} categories.")
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Model not found for category '{current_cat}' at {model_path}. "
+                f"Please run mvp_train.py first to train category-specific models."
+            )
+        
+        print(f"  - Using model from: {model_path}")
+        model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
+        
+        # Store results for this category
+        all_category_results.append({
+            'category': current_cat,
+            'model': model,
+            'device': device,
+            'scaler': scaler,
+            'trained_category_filter': trained_category_filter,
+            'trained_cat2id': trained_cat2id,
+            'model_dir_path': model_dir_path
+        })
+    
+    # Category-Specific Mode: Use first category's model for Teacher Forcing evaluation
+    # The recursive section will handle loading each category's model separately
+    if len(all_category_results) > 0:
+        print(f"\n[NOTE] Category-Specific Mode: Will process all {len(categories_to_predict)} categories.")
         print(f"       Teacher Forcing will use first category's model as placeholder.")
         print(f"       Recursive mode will load each category's model separately.")
-        current_cat = categories_to_predict[0]
-        model_suffix = f"_{current_cat}"
-        model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
-        model_path = model_dir_path / "best_model.pth"
-        print(f"  - Using model from: {model_path} (for Teacher Forcing placeholder)")
-        model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
-        # Keep all categories_to_predict - don't filter to just first category
-        # categories_to_predict remains as is with all categories
+        
+        # Use first category's model for initial setup (Teacher Forcing)
+        first_result = all_category_results[0]
+        model = first_result['model']
+        device = first_result['device']
+        scaler = first_result['scaler']
+        trained_category_filter = first_result['trained_category_filter']
+        trained_cat2id = first_result['trained_cat2id']
+        model_dir_path = first_result['model_dir_path']
     else:
-        # Normal flow for "all" or "single" mode
-        model_dir_path = Path(f"{base_output_dir}{model_suffix}/models")
-        model_path = model_dir_path / "best_model.pth"
-        
-        # If model not found at expected path, try default location as fallback
-        if not model_path.exists():
-            default_model_path = Path(f"{base_output_dir}/models/best_model.pth")
-            if default_model_path.exists():
-                print(f"  [WARNING] Model not found at expected path: {model_path}")
-                print(f"  [INFO] Using default model path: {default_model_path}")
-                model_path = default_model_path
-                model_dir_path = default_model_path.parent  # Update model_dir_path to match
-            else:
-                raise FileNotFoundError(
-                    f"Model not found at {model_path} or {default_model_path}. "
-                    f"Please run mvp_test.py first to train the model with "
-                    f"data.category_mode='{category_mode}'."
-                )
-        else:
-            print(f"  - Using model from: {model_path}")
-        
-        model, device, scaler, trained_category_filter, trained_cat2id = load_model_for_prediction(str(model_path), config)
+        raise ValueError("No category models loaded. Cannot proceed with prediction.")
     
-    # IMPORTANT: Filter predictions to only categories the model was trained on
-    # If model was trained on a single category, we can only predict that category
-    # EXCEPTION: For "each" mode, we want to process all categories separately, so don't filter here
-    if category_mode != 'each' and trained_category_filter is not None:
-        print(f"\n[INFO] Model was trained on category '{trained_category_filter}' only.")
-        print(f"       Filtering predictions to match training data (ignoring inference.category_mode).")
-        categories_to_predict = [trained_category_filter] if trained_category_filter in categories_to_predict else []
-        if len(categories_to_predict) == 0:
-            raise ValueError(
-                f"Model was trained on category '{trained_category_filter}', "
-                f"but this category is not available in the prediction data. "
-                f"Available categories: {available_2025_categories}"
-            )
-        print(f"  - Updated categories to predict: {categories_to_predict}")
-    elif category_mode == 'each':
-        print(f"\n[INFO] 'each' mode: Will process all {len(categories_to_predict)} categories with their respective models.")
+    # Keep all categories_to_predict - don't filter to just first category
+    # categories_to_predict remains as is with all categories
+    
+    # Category-Specific Mode: Each category has its own model
+    # categories_to_predict is already set correctly above
+    print(f"\n[INFO] Category-Specific Mode: Will process all {len(categories_to_predict)} categories with their respective models.")
     
     # Prepare data with scaler if available (matching training pipeline)
-    # For "each" mode, we'll prepare data separately per category, so skip global preparation
-    if category_mode != 'each':
+    # Category-Specific Mode: We'll prepare data separately per category, so skip global preparation
+    # Category-Specific Mode: Always process each category separately
+    if False:  # This branch is for legacy "all" or "single" modes (deprecated)
         print("\n[6.5/7] Preparing data with scaling...")
         historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler, trained_cat2id)
-        data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler, trained_cat2id)
+        prediction_data_prepared = prepare_prediction_data(prediction_data, config, cat2id, scaler, trained_cat2id)
         
         # Get last N days of historical year for initial window (after aggregation/scaling)
         historical_window = get_historical_window_data(
@@ -2087,7 +2117,7 @@ def main():
         print(f"  - Date range: {historical_window[data_config['time_col']].min()} to {historical_window[data_config['time_col']].max()}")
         
         # Recreate windows after scaling (all categories or filtered by categories_to_predict)
-        X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(data_2025_prepared, config)
+        X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(prediction_data_prepared, config)
     else:
         # For "each" mode, data preparation will happen per-category in the recursive loop
         print("\n[6.5/7] Data preparation will be done per-category in recursive mode.")
@@ -2096,7 +2126,8 @@ def main():
     
     # Filter predictions to selected categories if needed
     # Filter if: single category mode OR model was trained on single category (but not "each" mode)
-    if category_mode == 'single' or (category_mode != 'each' and trained_category_filter is not None and len(categories_to_predict) == 1):
+    # Category-Specific Mode: Always process each category separately
+    if False:  # Legacy single-category mode (deprecated)
         # Filter windows to selected category only
         # Use trained_cat2id if available, otherwise fall back to cat2id
         mapping_to_use = trained_cat2id if trained_cat2id is not None else cat2id
@@ -2110,26 +2141,23 @@ def main():
         pred_dates = pred_dates[mask] if hasattr(pred_dates, '__getitem__') else [pred_dates[i] for i in range(len(pred_dates)) if mask[i]]
         print(f"  - Filtered prediction windows to category '{categories_to_predict[0]}' (category ID: {cat_id})")
         print(f"  - Prediction windows after filtering: {len(X_pred)}")
-    elif category_mode == 'each':
-        # For "each" mode, Teacher Forcing will be skipped (only Recursive mode processes all categories)
-        print("\n[NOTE] Teacher Forcing mode skipped for 'each' mode.")
+    else:
+        # Category-Specific Mode: Teacher Forcing will be skipped (only Recursive mode processes all categories)
+        print("\n[NOTE] Teacher Forcing mode skipped for Category-Specific Mode.")
         print("       All categories will be processed in Recursive mode with their respective models.")
     
     # ========================================================================
-    # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual 2025 values
+    # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual prediction data values
     # ========================================================================
     print("\n" + "=" * 80)
     print("MODE 1: TEACHER FORCING (Test Evaluation)")
     print("=" * 80)
-    if category_mode == 'each':
-        print("[NOTE] Teacher Forcing is skipped in 'each' mode. Only Recursive mode processes categories.")
-        print("       This is expected - Recursive mode will handle all categories independently.")
-    else:
-        print(f"Using actual ground truth {data_config['target_col']} values from 2025 as features.")
-        print("This mode is suitable for model evaluation but not production forecasting.")
+    # Category-Specific Mode: Skip Teacher Forcing, only Recursive mode processes categories
+    print("[NOTE] Teacher Forcing is skipped in Category-Specific Mode. Only Recursive mode processes categories.")
+    print("       This is expected - Recursive mode will handle all categories independently.")
     
-    # Skip Teacher Forcing for "each" mode
-    if category_mode == 'each':
+    # Skip Teacher Forcing for Category-Specific Mode
+    if True:  # Always skip in category-specific mode
         print("  - Skipping Teacher Forcing evaluation for 'each' mode")
         y_true_tf = np.array([])
         y_pred_tf = np.array([])
@@ -2150,7 +2178,7 @@ def main():
             shuffle=False
         )
 
-        # If there are no prediction windows (e.g., January 2025 with large input_size/horizon),
+        # If there are no prediction windows (e.g., prediction period with large input_size/horizon),
         # skip teacher-forcing evaluation to avoid division-by-zero in the trainer.
         if len(pred_dataset) == 0:
             print("  [WARNING] No prediction windows available for Teacher Forcing. Skipping Mode 1 evaluation.")
@@ -2266,17 +2294,13 @@ def main():
     # Get category ID for the category being processed
     # Use trained_cat2id if available, otherwise fall back to cat2id
     mapping_to_use = trained_cat2id if trained_cat2id is not None else cat2id
-    if category_mode == 'single':
-        cat_id = mapping_to_use.get(categories_to_predict[0])
-        if cat_id is None:
-            raise ValueError(f"Category '{categories_to_predict[0]}' not found in category mapping")
-        process_categories = [categories_to_predict[0]]
-    elif category_mode == 'each':
-        # For "each" mode, process all categories from the original list
-        # Each will use its own model loaded separately
-        process_categories = categories_to_predict
-        print(f"  - 'each' mode: Will process {len(process_categories)} categories with separate models")
-    else:
+    # Category-Specific Mode: Process all categories from the original list
+    # Each will use its own model loaded separately
+    process_categories = categories_to_predict
+    print(f"  - Category-Specific Mode: Will process {len(process_categories)} categories with separate models")
+    
+    # Legacy code removed - no longer needed
+    if False:  # This branch is for legacy modes (deprecated)
         # For "all" mode, start from categories_to_predict but restrict
         # to only those the trained model actually knows about.
         known_categories = set(mapping_to_use.keys())
@@ -2296,21 +2320,27 @@ def main():
     recursive_results_list = []
 
     for current_category in process_categories:
-        # For "each" mode, load this category's specific model and prepare data independently
-        if category_mode == 'each':
+        # Category-Specific Mode: Load this category's specific model and prepare data independently
+        if True:  # Always true in category-specific mode
             print(f"\n{'=' * 80}")
             print(f"PROCESSING CATEGORY: {current_category}")
             print(f"{'=' * 80}")
             print(f"  - Loading model for category: {current_category}")
-            model_suffix_cat = f"_{current_category}"
-            model_dir_path_cat = Path(f"{base_output_dir}{model_suffix_cat}/models")
+            # New directory structure: outputs/{CATEGORY}/models/best_model.pth
+            model_dir_path_cat = Path(f"outputs/{current_category}/models")
             model_path_cat = model_dir_path_cat / "best_model.pth"
             
             if not model_path_cat.exists():
                 print(f"    [WARNING] Model not found for {current_category} at {model_path_cat}, skipping...")
                 continue
             
-            model_cat, device_cat, scaler_cat, trained_cat_filter, trained_cat2id_cat = load_model_for_prediction(str(model_path_cat), config)
+            # Load category-specific config to get correct horizon/input_size for this category
+            # This ensures the prediction uses the same window settings as training
+            config_cat = load_config(category=current_category)
+            print(f"  - Using category-specific config for {current_category}")
+            print(f"    - input_size: {config_cat.window['input_size']}, horizon: {config_cat.window['horizon']}")
+            
+            model_cat, device_cat, scaler_cat, trained_cat_filter, trained_cat2id_cat = load_model_for_prediction(str(model_path_cat), config_cat)
             # Use this category's model and mappings
             model = model_cat
             device = device_cat
@@ -2319,32 +2349,59 @@ def main():
             mapping_to_use = trained_cat2id_cat if trained_cat2id_cat is not None else cat2id
             
             # Prepare data independently for this category using its own scaler/mapping
+            # IMPORTANT: Filter to this category BEFORE preparation to ensure features are computed
+            # only on this category's data (especially rolling features)
             print(f"  - Preparing data for {current_category} using its own scaler/mapping...")
-            historical_data_prepared_cat = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler_cat, trained_cat2id_cat)
+            
+            # CRITICAL FIX: For category-specific models (num_categories=1), cat_id should always be 0
+            # This ensures DRY gets the same ID whether run alone or with FRESH
+            # Category-specific models were trained with num_categories=1, so the category embedding always expects cat_id=0
+            if trained_cat2id_cat is not None and len(trained_cat2id_cat) == 1:
+                # Category-specific model: always use cat_id = 0
+                cat_id = 0
+                print(f"  - Using cat_id=0 for category-specific model (trained on single category)")
+                print(f"  - Training-time mapping: {trained_cat2id_cat}, but using cat_id=0 for model input")
+                print(f"  - This ensures consistent results regardless of which categories are processed together")
+            else:
+                # Fallback: get from mapping (for multi-category models)
+                cat_id = mapping_to_use.get(current_category)
+                if cat_id is None:
+                    raise ValueError(f"Category '{current_category}' not found in category mapping")
+                print(f"  - Using cat_id={cat_id} from mapping: {mapping_to_use}")
+            
+            # Filter reference data to this category BEFORE preparation
+            # CRITICAL FIX: Don't create new cat2id mapping - always use trained_cat2id
+            # This ensures DRY gets the same ID whether run alone or with FRESH
+            ref_data_cat = ref_data[ref_data[data_config['cat_col']] == current_category].copy()
+            # Use trained_cat2id directly (or empty dict as fallback) - don't create new mapping
+            cat2id_fallback = trained_cat2id_cat if trained_cat2id_cat is not None else {}
+            # prepare_prediction_data will use trained_cat2id_cat (priority) and handle cat_id=0 for single-category models
+            historical_data_prepared_cat = prepare_prediction_data(
+                ref_data_cat, config_cat, cat2id_fallback, scaler_cat, trained_cat2id_cat, current_category=current_category
+            )
             
             # Get historical window for this category
             historical_window_cat = get_historical_window_data(
                 historical_data_prepared_cat,
                 end_date=date(historical_year, 12, 31),
-                config=config,
-                num_days=config.window['input_size']
+                config=config_cat,
+                num_days=config_cat.window['input_size']
             )
             print(f"  - Historical window for {current_category}: {len(historical_window_cat)} samples")
             
-            # Filter historical window to this category only
-            cat_id = mapping_to_use.get(current_category)
-            if cat_id is None:
-                raise ValueError(f"Category '{current_category}' not found in category mapping")
-            historical_window_filtered = historical_window_cat[
-                historical_window_cat[data_config['cat_id_col']] == cat_id
-            ].copy()
+            # Historical window should already be filtered to this category only
+            historical_window_filtered = historical_window_cat.copy()
             
-            # Prepare actuals for this category
-            data_2025_unscaled_cat = prepare_prediction_data(
-                data_2025.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id_cat
+            # Prepare actuals for this category (filter BEFORE preparation)
+            # CRITICAL FIX: Use trained_cat2id directly - don't create new mapping
+            prediction_data_cat = prediction_data[prediction_data[data_config['cat_col']] == current_category].copy()
+            cat2id_fallback = trained_cat2id_cat if trained_cat2id_cat is not None else {}
+            prediction_data_unscaled_cat = prepare_prediction_data(
+                prediction_data_cat, config_cat, cat2id_fallback, scaler=None, 
+                trained_cat2id=trained_cat2id_cat, current_category=current_category
             )
-            data_2025_unscaled_cat['date'] = pd.to_datetime(data_2025_unscaled_cat[time_col]).dt.date
-            actuals_by_date_cat = data_2025_unscaled_cat.groupby(
+            prediction_data_unscaled_cat['date'] = pd.to_datetime(prediction_data_unscaled_cat[time_col]).dt.date
+            actuals_by_date_cat = prediction_data_unscaled_cat.groupby(
                 ['date', data_config['cat_col']]
             )[data_config['target_col']].sum().reset_index()
             actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
@@ -2352,11 +2409,11 @@ def main():
             # For non-"each" mode, use the global prepared data
             # Build per-(date, category) actuals on ORIGINAL scale once, then reuse
             if current_category == process_categories[0]:  # Only do this once for first category
-                data_2025_unscaled = prepare_prediction_data(
-                    data_2025.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id
+                prediction_data_unscaled = prepare_prediction_data(
+                    prediction_data.copy(), config, cat2id, scaler=None, trained_cat2id=trained_cat2id
                 )
-                data_2025_unscaled['date'] = pd.to_datetime(data_2025_unscaled[time_col]).dt.date
-                actuals_by_date_cat = data_2025_unscaled.groupby(
+                prediction_data_unscaled['date'] = pd.to_datetime(prediction_data_unscaled[time_col]).dt.date
+                actuals_by_date_cat = prediction_data_unscaled.groupby(
                     ['date', data_config['cat_col']]
                 )[data_config['target_col']].sum().reset_index()
                 actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
@@ -2370,15 +2427,22 @@ def main():
                 historical_window[data_config['cat_id_col']] == cat_id
             ].copy()
 
-        if len(historical_window_filtered) < config.window['input_size']:
+        # Use category-specific config for window size
+        # In category-specific mode, config_cat is always defined; otherwise use base config
+        if 'config_cat' in locals():
+            input_size_cat = config_cat.window['input_size']
+        else:
+            input_size_cat = config.window['input_size']
+        
+        if len(historical_window_filtered) < input_size_cat:
             # If not enough data for this category, use available data and duplicate
             print(
                 f"  [WARNING] Only {len(historical_window_filtered)} samples for category "
-                f"{current_category} (ID={cat_id}), need {config.window['input_size']}"
+                f"{current_category} (ID={cat_id}), need {input_size_cat}"
             )
             if len(historical_window_filtered) > 0:
                 last_row = historical_window_filtered.iloc[-1:].copy()
-                while len(historical_window_filtered) < config.window['input_size']:
+                while len(historical_window_filtered) < input_size_cat:
                     historical_window_filtered = pd.concat(
                         [historical_window_filtered, last_row], ignore_index=True
                     )
@@ -2387,7 +2451,7 @@ def main():
 
         # Get last input_size samples
         historical_window_filtered = historical_window_filtered.tail(
-            config.window['input_size']
+            input_size_cat
         ).copy()
         historical_window_filtered = historical_window_filtered.sort_values(
             time_col
@@ -2396,7 +2460,14 @@ def main():
         # Run direct multi-step prediction over configured prediction window
         # This addresses exposure bias by predicting entire horizon at once
         # If date range is longer than horizon, use rolling prediction
-        horizon_days = config.window.get('horizon', 30)
+        # Use category-specific config for horizon if available, otherwise use base config
+        if 'config_cat' in locals():
+            config_to_use = config_cat
+            horizon_days = config_cat.window.get('horizon', 30)
+        else:
+            config_to_use = config
+            horizon_days = config.window.get('horizon', 30)
+        
         requested_days = (prediction_end_date - prediction_start_date).days + 1
         
         if requested_days > horizon_days:
@@ -2409,7 +2480,7 @@ def main():
                 initial_window_data=historical_window_filtered,
                 start_date=prediction_start_date,
                 end_date=prediction_end_date,
-                config=config,
+                config=config_to_use,
                 cat_id=cat_id
             )
         else:
@@ -2420,7 +2491,7 @@ def main():
                 initial_window_data=historical_window_filtered,
                 start_date=prediction_start_date,
                 end_date=prediction_end_date,
-                config=config,
+                config=config_to_use,
                 cat_id=cat_id
             )
         # Attach category label so downstream metrics/CSVs can group by category
@@ -2442,22 +2513,30 @@ def main():
         # error and abs_error are still computed instead of NaN.
         recursive_results_cat['actual'] = recursive_results_cat['actual'].fillna(0.0)
 
+        # CRITICAL FIX: Inverse transform predictions using THIS category's scaler
+        # This must be done per-category because each category has its own scaler
+        if scaler_cat is not None and len(recursive_results_cat) > 0:
+            print(f"  - Inverse transforming {current_category} predictions using its own scaler...")
+            recursive_results_cat['predicted_unscaled'] = inverse_transform_scaling(
+                recursive_results_cat['predicted'].values, scaler_cat
+            )
+        else:
+            recursive_results_cat['predicted_unscaled'] = recursive_results_cat['predicted'] if len(recursive_results_cat) > 0 else []
+
         recursive_results_list.append(recursive_results_cat)
 
     # Concatenate all categories
+    # NOTE: Each category's predictions have already been inverse transformed using its own scaler
     if len(recursive_results_list) > 0:
         recursive_results = pd.concat(recursive_results_list, ignore_index=True)
     else:
         recursive_results = pd.DataFrame(columns=['date', 'predicted', 'actual', data_config['cat_col']])
-
-    # Inverse transform predictions if scaler is available
-    if scaler is not None and len(recursive_results) > 0:
-        print("  - Inverse transforming recursive predictions to original scale...")
-        recursive_results['predicted_unscaled'] = inverse_transform_scaling(
-            recursive_results['predicted'].values, scaler
-        )
-    else:
-        recursive_results['predicted_unscaled'] = recursive_results['predicted'] if len(recursive_results) > 0 else []
+    
+    # Inverse transformation is now done per-category above, so no need to do it here
+    # If for some reason predicted_unscaled is missing, create it from predicted
+    if 'predicted_unscaled' not in recursive_results.columns and len(recursive_results) > 0:
+        print("  [WARNING] predicted_unscaled not found, using predicted values (may be in scaled space)")
+        recursive_results['predicted_unscaled'] = recursive_results['predicted']
 
     # Clip negative predictions to 0 (QTY/CBM cannot be negative)
     if len(recursive_results) > 0:
@@ -2476,7 +2555,7 @@ def main():
         holiday_mask_rec = recursive_results['date'].isin(rec_holidays)
         holiday_count = holiday_mask_rec.sum()
         if holiday_count > 0:
-            print(f"  - Applying zero‑volume holiday mask to {holiday_count} recursive prediction day(s).")
+            print(f"  - Applying zero-volume holiday mask to {holiday_count} recursive prediction day(s).")
             recursive_results.loc[holiday_mask_rec, 'predicted_unscaled'] = 0.0
     
     # Apply Sunday-to-Monday carryover rule to predictions (same as training data processing)
@@ -2819,19 +2898,11 @@ def main():
     print("=" * 80)
     
     # Create timestamped run directory
-    # Use the same suffix logic as model loading to match directory structure
+    # Category-Specific Mode: Save predictions to a shared predictions directory
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    base_output_dir = "outputs/mvp_test"
     
-    # Determine suffix based on inference category_mode (same logic as model loading)
-    if category_mode == 'all':
-        model_suffix = "_all"
-    elif category_mode == 'single' and category_filter:
-        model_suffix = f"_{category_filter}"
-    else:
-        model_suffix = ""  # Default: outputs/mvp_test/predictions/
-    
-    predictions_base_dir = Path(f"{base_output_dir}{model_suffix}/predictions")
+    # Use a shared predictions directory for all categories
+    predictions_base_dir = Path("outputs/predictions")
     predictions_base_dir.mkdir(parents=True, exist_ok=True)
     output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2972,16 +3043,20 @@ def main():
         f.write(f"Run ID: run_{run_timestamp}\n")
         f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Model: {model_path}\n")
-        category_label = 'ALL categories' if category_mode == 'all' else f'{categories_to_predict[0]} category only'
+        # Category-Specific Mode: Show all categories being predicted
+        if len(categories_to_predict) == 1:
+            category_label = f'{categories_to_predict[0]} category only'
+        else:
+            category_label = f'{len(categories_to_predict)} categories: {", ".join(categories_to_predict)}'
         category_info = (
             f"{prediction_start_date} to {prediction_end_date}, {category_label}\n"
         )
         f.write(f"Data: {category_info}")
-        f.write(f"Data source: dataset/test/data_2025.csv\n\n")
+        f.write(f"Data source: {prediction_data_path_cfg}\n\n")
         
         f.write("Teacher Forcing Mode (Test Evaluation):\n")
         f.write("-" * 70 + "\n")
-        f.write(f"  Description: Uses actual ground truth {data_config['target_col']} values from 2025 as features\n")
+        f.write(f"  Description: Uses actual ground truth {data_config['target_col']} values from {prediction_year} as features\n")
         f.write(f"  Suitable for: Model evaluation on test set\n")
         f.write(f"  Number of predictions: {len(y_pred_tf)}\n")
         if len(pred_dates) > 0:
@@ -3000,7 +3075,7 @@ def main():
         f.write(f"  Description: Uses model's own predictions as inputs\n")
         f.write(f"  Suitable for: Production forecasting of unknown future dates\n")
         f.write(f"  Number of predictions: {len(recursive_preds)}\n")
-        # Use actual recursive prediction date range (January 2025)
+        # Use actual recursive prediction date range
         if len(recursive_preds) > 0:
             rec_start_date = min(recursive_preds['date'])
             rec_end_date = max(recursive_preds['date'])
