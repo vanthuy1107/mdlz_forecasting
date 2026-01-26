@@ -17,6 +17,7 @@ import json
 import pickle
 import shutil
 import re
+import time
 from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import List
@@ -27,10 +28,12 @@ from src.data import (
     ForecastDataset,
     slicing_window_category,
     encode_categories,
+    split_data,
     add_holiday_features,
     add_temporal_features,
     aggregate_daily,
     add_cbm_density_features,
+    fit_scaler,
     apply_scaling,
     inverse_transform_scaling
 )
@@ -1229,17 +1232,254 @@ def get_historical_window_data(
     return window_data.sort_values(time_col).reset_index(drop=True)
 
 
-def main():
-    """Main prediction function with both Teacher Forcing and Recursive modes."""
-    print("=" * 80)
-    # Load configuration
-    print("\n[1/7] Loading configuration...")
-    config = load_config()
+def train_model_for_prediction(data, config):
+    """
+    Train a model on provided data before making predictions.
+    Similar to mvp_test.py's train_single_model but integrated here.
     
-    # Override to match MVP test settings
-    config.set('data.years', [2024])  # For loading category mapping reference
+    Args:
+        data: DataFrame with training data
+        config: Configuration object
+    
+    Returns:
+        Tuple of (trained_model, device, scaler, model_path)
+    """
+    print("\n" + "=" * 80)
+    print("PHASE 1: TRAINING MODEL")
+    print("=" * 80)
+    
     data_config = config.data
+    training_config = config.training
+    model_config = config.model
+    window_config = config.window
+    
+    cat_col = data_config['cat_col']
+    time_col = data_config['time_col']
+    target_col_name = data_config['target_col']
+    cat_id_col = data_config['cat_id_col']
+    category_filter = data_config.get('category_filter', 'DRY')
+    
+    # Extend feature list with lunar cyclical and Tet distance features
+    extra_features = [
+        "lunar_month_sin", "lunar_month_cos", "lunar_day_sin", "lunar_day_cos",
+        "days_to_tet", "cbm_per_qty", "cbm_per_qty_last_year",
+    ]
+    current_features = list(data_config["feature_cols"])
+    for feat in extra_features:
+        if feat not in current_features:
+            current_features.append(feat)
+    data_config["feature_cols"] = current_features
+    config.set("data.feature_cols", current_features)
+    
+    filtered_data = data.copy()
+    
+    # Filter to category
+    print(f"\n[T1/T7] Filtering data to category: {category_filter}...")
+    samples_before = len(filtered_data)
+    filtered_data = filtered_data[filtered_data[cat_col] == category_filter].copy()
+    samples_after = len(filtered_data)
+    print(f"  - Samples: {samples_before} -> {samples_after}")
+    
+    if samples_after == 0:
+        raise ValueError(f"No samples found with CATEGORY == '{category_filter}'")
+    
+    # Ensure time column is datetime and sort
+    if not pd.api.types.is_datetime64_any_dtype(filtered_data[time_col]):
+        filtered_data[time_col] = pd.to_datetime(filtered_data[time_col])
+    filtered_data = filtered_data.sort_values(time_col).reset_index(drop=True)
+    
+    # Feature engineering
+    print("\n[T2/T7] Adding features...")
+    filtered_data = add_temporal_features(
+        filtered_data, time_col=time_col,
+        month_sin_col="month_sin", month_cos_col="month_cos",
+        dayofmonth_sin_col="dayofmonth_sin", dayofmonth_cos_col="dayofmonth_cos"
+    )
+    filtered_data = add_weekend_features(
+        filtered_data, time_col=time_col,
+        is_weekend_col="is_weekend", day_of_week_col="day_of_week"
+    )
+    filtered_data = add_lunar_calendar_features(
+        filtered_data, time_col=time_col,
+        lunar_month_col="lunar_month", lunar_day_col="lunar_day"
+    )
+    filtered_data = add_lunar_cyclical_features(
+        filtered_data, lunar_month_col="lunar_month", lunar_day_col="lunar_day",
+        lunar_month_sin_col="lunar_month_sin", lunar_month_cos_col="lunar_month_cos",
+        lunar_day_sin_col="lunar_day_sin", lunar_day_cos_col="lunar_day_cos",
+    )
+    filtered_data = add_holiday_features_vietnam(
+        filtered_data, time_col=time_col,
+        holiday_indicator_col="holiday_indicator",
+        days_until_holiday_col="days_until_next_holiday",
+        days_since_holiday_col="days_since_holiday"
+    )
+    filtered_data = add_days_to_tet_feature(
+        filtered_data, time_col=time_col, days_to_tet_col="days_to_tet"
+    )
+    
+    # Daily aggregation
+    print("\n[T3/T7] Aggregating to daily totals...")
+    samples_before_agg = len(filtered_data)
+    filtered_data = aggregate_daily(
+        filtered_data, time_col=time_col, cat_col=cat_col, target_col=target_col_name
+    )
+    samples_after_agg = len(filtered_data)
+    print(f"  - Samples: {samples_before_agg} -> {samples_after_agg}")
+    
+    # CBM density and rolling features
+    print("  - Adding density and rolling features...")
+    filtered_data = add_cbm_density_features(
+        filtered_data, cbm_col=target_col_name, qty_col="Total QTY", time_col=time_col,
+        cat_col=cat_col, density_col="cbm_per_qty", density_last_year_col="cbm_per_qty_last_year",
+    )
+    filtered_data = add_rolling_and_momentum_features(
+        filtered_data, target_col=target_col_name, time_col=time_col, cat_col=cat_col,
+        rolling_7_col="rolling_mean_7d", rolling_30_col="rolling_mean_30d",
+        momentum_col="momentum_3d_vs_14d"
+    )
+    
+    # Encode categories
+    print("\n[T4/T7] Encoding categories and splitting data...")
+    filtered_data, cat2id, num_categories = encode_categories(filtered_data, cat_col)
+    config.set('model.num_categories', num_categories)
+    
+    # Split data
+    train_data, val_data, test_data = split_data(
+        filtered_data, train_size=0.7, val_size=0.1, test_size=0.2, temporal=True
+    )
+    print(f"  - Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
+    
+    # Scaling
+    scaler = fit_scaler(train_data, target_col=target_col_name)
+    train_data = apply_scaling(train_data, scaler, target_col=target_col_name)
+    val_data = apply_scaling(val_data, scaler, target_col=target_col_name)
+    test_data = apply_scaling(test_data, scaler, target_col=target_col_name)
+    
+    # Create windows
+    print("\n[T5/T7] Creating windows...")
+    feature_cols = data_config['feature_cols']
+    target_col = [target_col_name]
+    cat_col_list = [cat_id_col]
+    time_col_list = [time_col]
+    input_size = window_config['input_size']
+    horizon = window_config['horizon']
+    
+    num_features = len(feature_cols)
+    config.set("model.input_dim", num_features)
+    model_config = config.model
+    
+    X_train, y_train, cat_train = slicing_window_category(
+        train_data, input_size, horizon,
+        feature_cols=feature_cols, target_col=target_col, cat_col=cat_col_list, time_col=time_col_list
+    )
+    X_val, y_val, cat_val = slicing_window_category(
+        val_data, input_size, horizon,
+        feature_cols=feature_cols, target_col=target_col, cat_col=cat_col_list, time_col=time_col_list
+    )
+    X_test, y_test, cat_test = slicing_window_category(
+        test_data, input_size, horizon,
+        feature_cols=feature_cols, target_col=target_col, cat_col=cat_col_list, time_col=time_col_list
+    )
+    
+    print(f"  - X_train: {X_train.shape}, X_val: {X_val.shape}, X_test: {X_test.shape}")
+    
+    # Build datasets and loaders
+    from src.data import ForecastDataset
+    train_dataset = ForecastDataset(X_train, y_train, cat_train)
+    val_dataset = ForecastDataset(X_val, y_val, cat_val)
+    test_dataset = ForecastDataset(X_test, y_test, cat_test)
+    
+    train_loader = DataLoader(
+        train_dataset, batch_size=training_config['batch_size'], shuffle=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=training_config['val_batch_size'], shuffle=False
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=training_config['test_batch_size'], shuffle=False
+    )
+    
+    # Build model
+    print("\n[T6/T7] Building and training model...")
+    device = torch.device(training_config['device'])
+    model = RNNWithCategory(
+        num_categories=num_categories,
+        cat_emb_dim=model_config['cat_emb_dim'],
+        input_dim=model_config['input_dim'],
+        hidden_size=model_config['hidden_size'],
+        n_layers=model_config['n_layers'],
+        output_dim=model_config['output_dim'],
+        use_layer_norm=model_config.get('use_layer_norm', True),
+    ).to(device)
+    
+    # Training
+    from torch import optim
+    
+    # Create optimizer
+    if training_config['optimizer'].lower() == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=training_config['learning_rate'])
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=training_config['learning_rate'])
+    
+    # Create loss function
+    if training_config['loss'] == 'spike_aware_mse':
+        from src.utils import spike_aware_mse
+        criterion = spike_aware_mse
+    else:
+        criterion = nn.MSELoss()
+    
+    trainer = Trainer(
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        device=device,
+        scheduler=None,
+    )
+    
+    print(f"  - Training for {training_config['epochs']} epochs...")
+    start_time = time.time()
+    
+    train_losses, val_losses = trainer.fit(
+        train_loader, val_loader,
+        epochs=training_config['epochs'],
+        save_best=True,
+        verbose=True
+    )
+    
+    training_time = time.time() - start_time
+    print(f"  - Training completed in {training_time:.2f}s")
+    
+    # Save model
+    print("\n[T7/T7] Saving model...")
+    save_dir = Path("outputs/mvp_test/models")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    model_path = save_dir / "best_model.pth"
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'best_val_loss': trainer.best_val_loss
+    }, model_path)
+    
+    # Save scaler
+    scaler_path = save_dir / "scaler.pkl"
+    with open(scaler_path, 'wb') as f:
+        pickle.dump(scaler, f)
+    
+    print(f"  - Model saved to: {model_path}")
+    print(f"  - Scaler saved to: {scaler_path}")
+    
+    return model, device, scaler, str(model_path)
 
+
+def main_prediction_only(config, model_path):
+    """Perform prediction using the trained model."""
+    print("\n" + "=" * 80)
+    print("PHASE 2: MAKING PREDICTIONS")
+    print("=" * 80)
+    
+    data_config = config.data
+    
     # -----------------------------------------------------------------------
     # 0. Resolve prediction horizon from config.inference so the time range
     #    can be adjusted easily without touching code.
@@ -1269,10 +1509,9 @@ def main():
         f"PREDICTION WINDOW: {prediction_start_date} to {prediction_end_date} "
         f"(loaded from config.inference)"
     )
-    print("=" * 80)
     
     # Load 2024 data to get category mapping and historical window
-    print("\n[2/7] Loading historical 2024 data...")
+    print("\n[2/3] Loading historical 2024 data...")
     data_reader = DataReader(
         data_dir=data_config['data_dir'],
         file_pattern=data_config['file_pattern']
@@ -1334,7 +1573,7 @@ def main():
     print(f"  - Categories to predict: {categories_to_predict}")
     
     # Load prediction data (e.g., 2025 file)
-    print("\n[4/7] Loading prediction data...")
+    print("\n[3/3] Loading prediction data...")
     data_2025_path = Path(prediction_data_path_cfg)
     
     if not data_2025_path.exists():
@@ -2340,5 +2579,42 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-
+    # Load configuration and setup
+    config = load_config()
+    
+    # Override to train on all 3 years (2023, 2024, 2025)
+    config.set('data.years', [2023, 2024, 2025])
+    config.set('training.loss', 'spike_aware_mse')
+    config.set('training.learning_rate', 0.001)
+    
+    print("=" * 80)
+    print("MDLZ PREDICTION SYSTEM - TRAINING + PREDICTING")
+    print("=" * 80)
+    
+    # PHASE 1: TRAIN MODEL
+    print("\n[1/2] Training model on 3 years of data (2023, 2024, 2025)...")
+    data_reader = DataReader(
+        data_dir=config.data['data_dir'],
+        file_pattern=config.data['file_pattern']
+    )
+    
+    try:
+        training_data = data_reader.load(years=[2023, 2024, 2025])
+    except FileNotFoundError:
+        print("[WARNING] Combined files not found, trying pattern-based loading...")
+        training_data = data_reader.load_by_file_pattern(
+            years=[2023, 2024, 2025],
+            file_prefix=config.data.get('file_prefix', 'Outboundreports')
+        )
+    
+    print(f"Loaded {len(training_data)} samples for training")
+    
+    model, device, scaler, model_path = train_model_for_prediction(training_data, config)
+    
+    # PHASE 2: MAKE PREDICTIONS
+    print("\n[2/2] Making predictions...")
+    main_prediction_only(config, model_path)
+    
+    print("\n" + "=" * 80)
+    print("COMPLETE! Training and prediction finished successfully.")
+    print("=" * 80)
