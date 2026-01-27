@@ -21,9 +21,9 @@ model:
 # Training Configuration - Optimized for sparse seasonal patterns with P90 Risk-Aware Safety Stock Model
 training:
   batch_size: 32
-  epochs: 40
-  learning_rate: 0.0008  # Slightly lower to handle the wider season (70+ days) and prevent overfitting to 2023 peaks
-  weight_decay: 1e-4  # Weight decay to prevent overfitting to 2023 outlier peaks (495 CBM vs 383 CBM in 2025)
+  epochs: 50  # Increased from 40 to better learn seasonal patterns
+  learning_rate: 0.001  # Increased from 0.0008 to help model learn peak magnitudes better
+  weight_decay: 5e-5  # Reduced from 1e-4 to allow model to fit peaks better (less regularization)
   scheduler:
     patience: 3
     factor: 0.5
@@ -40,21 +40,23 @@ training:
 # NEW: Gregorian-Anchored Peak Alignment - Anchor the primary spike signal to August (Gregorian)
 category_specific_params:
   MOONCAKE:
-    learning_rate: 0.0008  # Slightly lower to handle wider season and prevent overfitting
-    epochs: 15
-    loss_weight: 100  # High weight for entire active season (70+ days in 2025) - applies to all active days
-    golden_window_weight: 12.0  # High weight for Golden Window (Gregorian August 1-31) - peak buildup period
-    peak_loss_window_weight: 20.0  # EXTRA HIGH weight for Peak Loss Window (Lunar Months 7.15 to 8.15) - critical peak period
-    active_season_weight: 15.0  # Weight multiplier for entire active season (Lunar Months 7-9 AND Gregorian months 7-9, July-September)
-    august_boost_weight: 30.0  # CRITICAL: High weight for Gregorian August (month == 8) to anchor peak signal
+    learning_rate: 0.001  # Increased from 0.0008 to help model learn peak magnitudes
+    epochs: 50  # Increased from 15 to better capture seasonal patterns
+    loss_weight: 200  # Increased from 150 - even higher weight for entire active season
+    golden_window_weight: 20.0  # Increased from 12.0 - stronger signal for Golden Window (August)
+    peak_loss_window_weight: 35.0  # Increased from 20.0 - MUCH higher weight for Peak Loss Window (Lunar 7.15-8.15)
+    active_season_weight: 25.0  # Increased from 15.0 - stronger weight for entire active season
+    august_boost_weight: 100.0  # Increased from 50.0 - EXTREME weight to override lunar month 6 suppression
     primary_event: "lunar_08_01_countdown"  # Use countdown to Lunar 08-01 as primary temporal feature
-    weight_decay: 1e-4  # Prevent overfitting to 2023 outlier peaks
+    weight_decay: 5e-5  # Reduced from 1e-4 to allow model to fit peaks better
     use_smooth_l1: false  # Not used with quantile loss
+    # NOTE: august_boost_weight=100 teaches model that gregorian August → HIGH predictions
+    # regardless of lunar month. This fixes 2025 issue where August is mostly lunar month 6.
 
 # Seasonal configuration - MOONCAKE is highly seasonal
 # NEW: Gregorian-Anchored Peak Alignment - Anchor to August (Gregorian) to prevent phase shift
 data:
-  seasonal_active_window: "lunar_months_7_9_gregorian_july_september"  # Active between Lunar Months 7-9 AND Gregorian months 7-9 (July-September) - prevents early June and late October predictions
+  seasonal_active_window: "lunar_7_9_with_august_anchor"  # Active during Lunar 7-9 (within Jun-Oct buffer) OR August (prevents July/Oct false positives)
   peak_event: "mid_autumn"  # Peak event is Mid-Autumn Festival (Lunar Month 8, Day 15)
   apply_seasonal_mask: true  # Hard-zero constraint during off-season
   golden_window: "august_gregorian"  # Golden Window: Gregorian August 1-31 (anchored to prevent phase shift)

@@ -1266,7 +1266,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"  - Scaler fitted on training data (category-specific):")
     print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
     if category_filter:
-        print(f"  - ✓ Verified: Scaler is category-specific for '{category_filter}' (isolated scaling)")
+        print(f"  - [OK] Verified: Scaler is category-specific for '{category_filter}' (isolated scaling)")
     
     train_data = apply_scaling(train_data, scaler, target_col=target_col_for_model)
     val_data = apply_scaling(val_data, scaler, target_col=target_col_for_model)
@@ -1618,7 +1618,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             return criterion_fn
         
         criterion = create_quantile_criterion(quantile_loss_instance, is_active_season_idx, is_peak_loss_window_idx, is_august_idx)
-        print(f"  - ✓ Quantile Loss configured for {category_filter or 'all categories'}")
+        print(f"  - [OK] Quantile Loss configured for {category_filter or 'all categories'}")
         print(f"  - Target: At least {quantile_value*100:.0f}% of actual values should fall below P90 prediction")
     else:
         # Use spike_aware_mse loss (default behavior)
@@ -2157,7 +2157,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         
         # Success criterion: at least 90% coverage for P90
         if coverage_rate >= quantile_val:
-            print(f"    - ✓ SUCCESS: Coverage ({coverage_rate:.2%}) meets target ({quantile_val*100:.0f}%)")
+            print(f"    - [SUCCESS] Coverage ({coverage_rate:.2%}) meets target ({quantile_val*100:.0f}%)")
         else:
             print(f"    - ⚠ WARNING: Coverage ({coverage_rate:.2%}) below target ({quantile_val*100:.0f}%)")
         
@@ -2400,11 +2400,11 @@ def main():
             )
             results.append(result)
             
-            print(f"\n✓ Task {task_idx} ({category}) completed successfully")
+            print(f"\n[SUCCESS] Task {task_idx} ({category}) completed successfully")
             print(f"  - Results saved to: {result['output_dir']}")
             print(f"  - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
         except Exception as e:
-            print(f"\n✗ Task {task_idx} ({category}) failed: {str(e)}")
+            print(f"\n[FAILED] Task {task_idx} ({category}) failed: {str(e)}")
             import traceback
             traceback.print_exc()
             # Continue with other categories even if one fails
