@@ -172,9 +172,30 @@ def combine_yearly_data(
                 print(f"  Converting {time_col} to datetime...")
                 year_combined[time_col] = pd.to_datetime(year_combined[time_col])
             
+            # Convert UTC to Vietnam time (UTC+7): add 7 hours
+            print(f"  Converting {time_col} from UTC to Vietnam time (UTC+7): adding 7 hours...")
+            year_combined[time_col] = year_combined[time_col] + pd.Timedelta(hours=7)
+            
+            # Apply time-based date adjustment: if time >= 17:00 (5 PM), add 1 day
+            print(f"  Processing {time_col}: if time >= 17:00, date will be adjusted to next day...")
+            hour_mask = year_combined[time_col].dt.hour >= 17
+            if hour_mask.any():
+                count = hour_mask.sum()
+                print(f"  Adjusting {count} row(s) with time >= 17:00 to next day")
+                year_combined.loc[hour_mask, time_col] = year_combined.loc[hour_mask, time_col] + pd.Timedelta(days=1)
+            
             # Convert datetime to date only (remove time component)
             print(f"  Converting {time_col} to date (removing time component)...")
             year_combined[time_col] = year_combined[time_col].dt.date
+            
+            # Add Week column with day names (1.Monday, 2.Tuesday, etc.)
+            print(f"  Adding Week column with day names (1.Monday, 2.Tuesday, etc.)...")
+            date_dt = pd.to_datetime(year_combined[time_col])
+            year_combined['Week'] = (date_dt.dt.dayofweek + 1).astype(str) + '.' + date_dt.dt.day_name()
+            
+            # Add day of month column (1, 2, 3, ..., 31)
+            print(f"  Adding day of month column...")
+            year_combined['Day'] = date_dt.dt.day
             
             date_range = f"{year_combined[time_col].min()} to {year_combined[time_col].max()}"
             print(f"  Date range: {date_range}")
@@ -249,6 +270,12 @@ def combine_yearly_data(
                 rename_dict = {old_name: new_name for new_name, old_name in agg_dict.items()}
                 grouped = grouped.rename(columns=rename_dict)
                 
+                # Add Week column back after grouping (derived from date)
+                if time_col in grouped.columns:
+                    date_dt = pd.to_datetime(grouped[time_col])
+                    grouped['Week'] = (date_dt.dt.dayofweek + 1).astype(str) + '.' + date_dt.dt.day_name()
+                    grouped['Day'] = date_dt.dt.day
+                
                 year_combined = grouped
                 
                 print(f"  Rows after grouping: {len(year_combined):,}")
@@ -257,6 +284,61 @@ def combine_yearly_data(
                 if sort_by_time and time_col in available_cols:
                     print(f"  Sorting by {time_col}...")
                     year_combined = year_combined.sort_values(time_col).reset_index(drop=True)
+
+                # ------------------------------------------------------------------
+                # Full Calendar Reindexing (Date x Category x Other Keys)
+                #
+                # To prevent temporal discontinuities that could disrupt the recurrent
+                # hidden states of downstream sequence models (e.g., LSTMs), we enforce
+                # a full calendar over the observed date span. We take the Cartesian
+                # product of:
+                #   - all unique CATEGORY values (and, if available, TYPENAME, WHSEID)
+                #   - a complete daily date range between min(date) and max(date)
+                #
+                # Any missing intersections are synthesized as "zero-volume" rows. This
+                # allows models to learn explicit zero-demand / non-operational periods
+                # and mitigates hidden-state "memory snaps" caused by skipped timestamps.
+                # ------------------------------------------------------------------
+                if time_col in year_combined.columns and 'CATEGORY' in year_combined.columns:
+                    print("  Applying Full Calendar Reindexing (date x CATEGORY x TYPENAME x WHSEID)...")
+
+                    # Ensure datetime for date range construction
+                    date_dt = pd.to_datetime(year_combined[time_col])
+                    min_date = date_dt.min()
+                    max_date = date_dt.max()
+
+                    if pd.isna(min_date) or pd.isna(max_date):
+                        print("  [WARNING] Cannot apply calendar reindexing due to invalid date range")
+                    else:
+                        full_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+
+                        # Key dimensions for the Cartesian product
+                        key_cols = ['CATEGORY']
+                        for col in ['TYPENAME', 'WHSEID']:
+                            if col in year_combined.columns:
+                                key_cols.append(col)
+
+                        unique_keys = year_combined[key_cols].drop_duplicates()
+
+                        # Build full MultiIndex: Date x Keys
+                        index_arrays = [full_dates] + [unique_keys[col].unique() for col in key_cols]
+                        index_names = [time_col] + key_cols
+                        full_index = pd.MultiIndex.from_product(index_arrays, names=index_names)
+
+                        # Reindex to the full calendar, creating zero-volume rows where missing
+                        year_combined = year_combined.set_index(index_names)
+                        year_combined = year_combined.reindex(full_index)
+
+                        # Fill volume-like measures with zeros, keep other fields as-is/NaN
+                        for col in ['Total QTY', 'Total CBM']:
+                            if col in year_combined.columns:
+                                year_combined[col] = year_combined[col].fillna(0)
+
+                        # Restore columns and recompute calendar helpers
+                        year_combined = year_combined.reset_index()
+                        date_dt = pd.to_datetime(year_combined[time_col])
+                        year_combined['Week'] = (date_dt.dt.dayofweek + 1).astype(str) + '.' + date_dt.dt.day_name()
+                        year_combined['Day'] = date_dt.dt.day
             else:
                 print(f"  [WARNING] No aggregation columns found (QTY, CUBE_OUT). Available columns: {list(year_combined.columns)}")
         
@@ -484,8 +566,8 @@ def main():
         '--years',
         type=int,
         nargs='+',
-        default=[2023, 2024, 2025],
-        help='Years to combine (default: 2022 2023 2024 2025)'
+        default=[2023, 2024, 2025,2026],
+        help='Years to combine (default: 2022 2023 2024 2025 2026)'
     )
     parser.add_argument(
         '--file-prefix',

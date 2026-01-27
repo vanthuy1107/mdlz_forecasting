@@ -5,6 +5,15 @@ from typing import List, Optional, Tuple, Union
 from datetime import datetime, date, timedelta
 from sklearn.preprocessing import StandardScaler
 import pickle
+import sys
+from pathlib import Path
+
+# Add project root to path to import config
+project_root = Path(__file__).parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from config import load_holidays
 
 
 def slicing_window(
@@ -237,93 +246,8 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     holidays: List[date] = []
     
     # Canonical Vietnam holiday calendar (days off) aligned with business rules.
-    # NOTE: These dates must stay in sync with the prediction/training scripts.
-    vietnam_holidays = {
-        2023: {
-            "new_year": [
-                date(2023, 1, 1),
-                date(2023, 1, 2),
-            ],
-            "tet": [
-                date(2023, 1, 20),
-                date(2023, 1, 21),
-                date(2023, 1, 22),
-                date(2023, 1, 23),
-                date(2023, 1, 24),
-                date(2023, 1, 25),
-                date(2023, 1, 26),
-            ],
-            "hung_kings_reunification_labor": [
-                date(2023, 4, 29),
-                date(2023, 4, 30),
-                date(2023, 5, 1),
-                date(2023, 5, 2),
-                date(2023, 5, 3),
-            ],
-            "independence_day": [
-                date(2023, 9, 1),
-                date(2023, 9, 2),
-                date(2023, 9, 3),
-                date(2023, 9, 4),
-            ],
-        },
-        2024: {
-            "new_year": [
-                date(2024, 1, 1),
-            ],
-            "tet": [
-                date(2024, 2, 8),
-                date(2024, 2, 9),
-                date(2024, 2, 10),
-                date(2024, 2, 11),
-                date(2024, 2, 12),
-                date(2024, 2, 13),
-                date(2024, 2, 14),
-            ],
-            "hung_kings": [
-                date(2024, 4, 18),
-            ],
-            "reunification_labor": [
-                date(2024, 4, 30),
-                date(2024, 5, 1),
-            ],
-            "independence_day": [
-                date(2024, 8, 31),
-                date(2024, 9, 1),
-                date(2024, 9, 2),
-                date(2024, 9, 3),
-            ],
-        },
-        2025: {
-            "new_year": [
-                date(2025, 1, 1),
-            ],
-            "tet": [
-                date(2025, 1, 25),
-                date(2025, 1, 26),
-                date(2025, 1, 27),
-                date(2025, 1, 28),
-                date(2025, 1, 29),
-                date(2025, 1, 30),
-                date(2025, 1, 31),
-                date(2025, 2, 1),
-                date(2025, 2, 2),
-            ],
-            "hung_kings": [
-                date(2025, 4, 7),
-            ],
-            "reunification_labor": [
-                date(2025, 4, 30),
-                date(2025, 5, 1),
-            ],
-            "independence_day": [
-                date(2025, 8, 30),
-                date(2025, 8, 31),
-                date(2025, 9, 1),
-                date(2025, 9, 2),
-            ],
-        },
-    }
+    # NOTE: These dates are now loaded from config/holidays.yaml for easier maintenance.
+    vietnam_holidays = load_holidays(holiday_type="business")
     
     # Collect all holidays in the date range
     current = start_date
@@ -464,6 +388,162 @@ def add_temporal_features(
     return df
 
 
+def add_day_of_week_cyclical_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    day_of_week_sin_col: str = "day_of_week_sin",
+    day_of_week_cos_col: str = "day_of_week_cos"
+) -> pd.DataFrame:
+    """
+    Add cyclical day-of-week features using sine/cosine transformations.
+    
+    This encoding ensures the model understands that Sunday (6) is adjacent to Monday (0),
+    capturing the 7-day cyclicality of weekly demand patterns.
+    
+    Creates:
+    - day_of_week_sin: sin(2π × day_of_week / 7)
+    - day_of_week_cos: cos(2π × day_of_week / 7)
+    
+    Where day_of_week is 0=Monday, 1=Tuesday, ..., 6=Sunday.
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        day_of_week_sin_col: Name for day_of_week_sin column.
+        day_of_week_cos_col: Name for day_of_week_cos column.
+    
+    Returns:
+        DataFrame with added cyclical day-of-week features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    day_of_week = df[time_col].dt.dayofweek
+    
+    # Create cyclical encoding for day of week (0-6)
+    # Normalize to [0, 1] range, then apply sin/cos
+    # This ensures Sunday (6) and Monday (0) are close in the encoding space
+    df[day_of_week_sin_col] = np.sin(2 * np.pi * day_of_week / 7)
+    df[day_of_week_cos_col] = np.cos(2 * np.pi * day_of_week / 7)
+    
+    return df
+
+
+def add_weekday_volume_tier_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    weekday_volume_tier_col: str = "weekday_volume_tier",
+    is_high_volume_weekday_col: str = "is_high_volume_weekday"
+) -> pd.DataFrame:
+    """
+    Add weekday volume tier features to capture weekly demand patterns.
+    
+    Based on observed patterns:
+    - Wednesday (day_of_week=2) and Friday (day_of_week=4) have higher volume
+    - Tuesday (day_of_week=1) and Thursday (day_of_week=3) have lower volume
+    - Among high-volume days, Friday is lower than Wednesday
+    
+    Creates:
+    - weekday_volume_tier: Numeric tier (2=Wednesday highest, 1=Friday high, 
+      0=Tuesday/Thursday low, -1=Monday/Saturday/Sunday neutral)
+    - is_high_volume_weekday: Binary (1 for Wednesday/Friday, 0 otherwise)
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        weekday_volume_tier_col: Name for weekday_volume_tier column.
+        is_high_volume_weekday_col: Name for is_high_volume_weekday column.
+    
+    Returns:
+        DataFrame with added weekday volume tier features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    day_of_week = df[time_col].dt.dayofweek
+    
+    # Create weekday_volume_tier feature
+    # 2 = Wednesday (highest volume)
+    # 1 = Friday (high volume, but lower than Wednesday)
+    # 0 = Tuesday, Thursday (low volume)
+    # -1 = Saturday (lower than Tuesday/Thursday), Monday, Sunday (neutral/other)
+    df[weekday_volume_tier_col] = -1  # Default for Monday, Saturday, Sunday
+    df.loc[day_of_week == 2, weekday_volume_tier_col] = 2  # Wednesday (highest)
+    df.loc[day_of_week == 4, weekday_volume_tier_col] = 1  # Friday (high)
+    df.loc[day_of_week == 1, weekday_volume_tier_col] = 0  # Tuesday (low)
+    df.loc[day_of_week == 3, weekday_volume_tier_col] = 0  # Thursday (low)
+    
+    # Create binary indicator for high volume weekdays (Wednesday and Friday)
+    df[is_high_volume_weekday_col] = ((day_of_week == 2) | (day_of_week == 4)).astype(int)
+    
+    return df
+
+
+def add_eom_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    is_eom_col: str = "is_EOM",
+    days_until_month_end_col: str = "days_until_month_end",
+    eom_window_days: int = 3
+) -> pd.DataFrame:
+    """
+    Add End-of-Month (EOM) surge features to DataFrame.
+    
+    This captures the KPI-driven pattern where volume spikes in the last few days
+    of the month as distributors or sales teams try to hit monthly targets.
+    
+    Pattern: Average CBM in the last 3 days of the month is approximately 42% higher
+    than the rest of the month.
+    
+    Creates:
+    - is_EOM: Binary flag (1 if date is in last N days of month, 0 otherwise)
+    - days_until_month_end: Countdown feature (days until the end of the month)
+    
+    The countdown feature provides a smooth gradient that neural networks can learn
+    more easily than a sudden binary switch, helping the model anticipate EOM surges.
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        is_eom_col: Name for is_EOM binary flag column.
+        days_until_month_end_col: Name for days_until_month_end countdown column.
+        eom_window_days: Number of days at end of month to flag as EOM (default: 3).
+    
+    Returns:
+        DataFrame with added EOM features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Get the day of month and calculate days in the current month
+    day_of_month = df[time_col].dt.day
+    
+    # Calculate the last day of each month
+    # Using pandas offset to get the last day of the month
+    last_day_of_month = df[time_col] + pd.offsets.MonthEnd(0)
+    days_in_month = last_day_of_month.dt.day
+    
+    # Calculate days until month end (countdown)
+    # This gives a smooth gradient: 0 on the last day, 1 on second-to-last, etc.
+    df[days_until_month_end_col] = days_in_month - day_of_month
+    
+    # Binary flag: 1 if date is in last N days of month, 0 otherwise
+    df[is_eom_col] = (df[days_until_month_end_col] < eom_window_days).astype(int)
+    
+    return df
+
+
 def encode_categories(df: pd.DataFrame, cat_col: str = "CATEGORY") -> Tuple[pd.DataFrame, dict, int]:
     """
     Encode categorical column to integer IDs.
@@ -579,12 +659,15 @@ def aggregate_daily(
     feature_cols_to_keep = [
         'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
         'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
-        'is_weekend', 'day_of_week',
+        'is_weekend', 'day_of_week', 'day_of_week_sin', 'day_of_week_cos',
+        'weekday_volume_tier', 'is_high_volume_weekday',
         'lunar_month', 'lunar_day',
         # Lunar cyclical encodings and Tet countdown should also persist after aggregation
         'lunar_month_sin', 'lunar_month_cos',
         'lunar_day_sin', 'lunar_day_cos',
         'days_to_tet',
+        # EOM (End-of-Month) surge features
+        'is_EOM', 'days_until_month_end',
     ]
     
     for col in feature_cols_to_keep:
@@ -607,6 +690,121 @@ def aggregate_daily(
     grouped = grouped.sort_values([cat_col, time_col]).reset_index(drop=True)
     
     return grouped
+
+
+def add_operational_status_flags(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    target_col: str = "QTY",
+    status_col: str = "operational_status",
+    expected_zero_flag_col: str = "is_expected_zero",
+    anomaly_flag_col: str = "is_operational_anomaly",
+    holiday_label: str = "Holiday_OFF",
+    weekend_label: str = "Weekend_Downtime",
+    anomaly_label: str = "Operational_Anomaly",
+    normal_label: str = "Business_Day_Normal",
+) -> pd.DataFrame:
+    """
+    Context-aware data imputation and anomaly tracking for daily time-series.
+
+    This function processes each calendar date as follows:
+
+    1) Holiday-driven downtime (expected zero):
+       - Cross-references each date against the canonical Vietnam business
+         holiday calendar (from config/holidays.yaml via get_vietnam_holidays).
+       - If a date is a recognized public holiday or scheduled facility closure,
+         it is labeled as `holiday_label` (default: "Holiday_OFF").
+       - Volume on these days is treated as an *expected external constraint*.
+
+    2) Standard weekend downtime (Sunday low-volume):
+       - All Sundays (day_of_week == 6) are labeled as `weekend_label`
+         (default: "Weekend_Downtime").
+       - Given the historical pattern of zero/negligible volume on Sundays,
+         these are treated as *expected zeros* and decoupled from
+         business-day demand signals.
+
+    3) Unexpected operational gaps (critical tracking):
+       - For any date that is neither a holiday nor a Sunday but contains
+         missing or zero volume, the system:
+           * Imputes the volume to 0 to maintain time-series continuity
+             for downstream LSTM layers.
+           * Flags the date as `anomaly_label`
+             (default: "Operational_Anomaly").
+           * Marks it with a binary `anomaly_flag_col` so that baseline /
+             trend components can explicitly *exclude* it from their
+             reference windows.
+
+    In addition, a binary `expected_zero_flag_col` is provided to indicate
+    Holiday_OFF and Weekend_Downtime cases, which are structurally expected
+    zeros and should not be treated as demand collapse.
+
+    This logic improves:
+    - Model interpretability (clear separation of calendar-driven zeros vs
+      unexplained operational gaps).
+    - Statistical baselines (by excluding Operational_Anomalies from
+      standard trend estimation).
+    """
+    df = df.copy()
+
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+
+    # Ensure target column exists; if not, nothing to do
+    if target_col not in df.columns:
+        return df
+
+    # Normalize to date (drop time component)
+    dates = df[time_col].dt.date
+
+    # Build Vietnam business holiday calendar over the data range
+    if len(df) > 0:
+        min_date = dates.min()
+        max_date = dates.max()
+        holiday_list = get_vietnam_holidays(min_date, max_date)
+        holiday_set = set(holiday_list)
+    else:
+        holiday_set = set()
+
+    # Day-of-week (0=Mon, 6=Sun)
+    day_of_week = df[time_col].dt.dayofweek
+
+    # Treat missing values in the target as zero for classification/imputation
+    vol = pd.to_numeric(df[target_col], errors="coerce")
+    is_missing_or_zero = vol.isna() | (vol == 0)
+
+    # Initialize status labels
+    status = np.full(len(df), normal_label, dtype=object)
+
+    is_holiday = dates.isin(holiday_set)
+    is_weekend_sun = day_of_week == 6
+
+    # 1) Holidays
+    status[is_holiday] = holiday_label
+
+    # 2) Sunday downtime
+    # Do not override holidays that also fall on Sunday
+    weekend_only = (~is_holiday) & is_weekend_sun
+    status[weekend_only] = weekend_label
+
+    # 3) Operational anomalies:
+    #    Non-holiday, non-Sunday business days with missing/zero volume.
+    anomaly_mask = (~is_holiday) & (~is_weekend_sun) & is_missing_or_zero
+
+    # Impute to 0 to maintain continuity
+    vol_imputed = vol.copy()
+    vol_imputed[anomaly_mask] = 0.0
+    df[target_col] = vol_imputed.fillna(0.0)
+
+    # Label anomalies
+    status[anomaly_mask] = anomaly_label
+
+    # Write status + flags back to dataframe
+    df[status_col] = status
+    df[expected_zero_flag_col] = ((status == holiday_label) | (status == weekend_label)).astype(int)
+    df[anomaly_flag_col] = (status == anomaly_label).astype(int)
+
+    return df
 
 
 def add_cbm_density_features(
@@ -703,7 +901,12 @@ def fit_scaler(
         Fitted StandardScaler.
     """
     scaler = StandardScaler()
-    scaler.fit(train_data[[target_col]])
+    # Fit on a NumPy array rather than a pandas DataFrame so that the
+    # scaler does not store feature_names_in_. This avoids sklearn
+    # warnings when we later call transform/inverse_transform with
+    # plain NumPy arrays (which is what we do throughout the pipeline).
+    values = train_data[[target_col]].to_numpy()
+    scaler.fit(values)
     return scaler
 
 
@@ -811,6 +1014,100 @@ def prepare_data(
     }
 
 
+def apply_sunday_to_monday_carryover(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    cat_col: str = "CATEGORY",
+    target_col: str = "Total CBM",
+    actual_col: Optional[str] = None
+) -> pd.DataFrame:
+    """
+    Apply Sunday-to-Monday demand carryover to capture backlog accumulation.
+    
+    Logic: Sundays are non-operational (Total CBM = 0). This function implements
+    Sunday-to-Monday demand carryover where Monday's Target = (Actual Monday + Actual Sunday).
+    
+    Purpose: Capture backlog accumulation and eliminate misleading zero-demand
+    patterns in the time-series that occur when Sunday demand is deferred to Monday.
+    
+    Args:
+        df: DataFrame with daily aggregated data (one row per date per category).
+        time_col: Name of time column (should be datetime or date).
+        cat_col: Name of category column.
+        target_col: Name of target column to adjust (e.g., "Total CBM").
+        actual_col: Optional name of actual column to use for carryover calculation.
+                   If None, uses target_col for both Sunday and Monday values.
+    
+    Returns:
+        DataFrame with adjusted target values where Monday's target includes Sunday's demand.
+    
+    Note:
+        - This function modifies the target_col in-place for Monday rows.
+        - Sunday rows remain unchanged (they keep their original values, typically 0).
+        - The adjustment is applied per category independently.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Use target_col for actual values if actual_col not specified
+    if actual_col is None:
+        actual_col = target_col
+    
+    # Ensure both columns exist
+    if target_col not in df.columns:
+        raise ValueError(f"Target column '{target_col}' not found in DataFrame.")
+    if actual_col not in df.columns:
+        raise ValueError(f"Actual column '{actual_col}' not found in DataFrame.")
+    
+    # Extract day of week (0=Monday, 6=Sunday)
+    df['_day_of_week'] = df[time_col].dt.dayofweek
+    
+    # Sort by category and date to ensure proper ordering
+    df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
+    
+    # For each category, apply carryover logic
+    def apply_carryover_per_category(group):
+        """Apply Sunday-to-Monday carryover for a single category."""
+        group[cat_col] = group.name
+        group = group.copy()
+        
+        # Identify Mondays (day_of_week == 0)
+        monday_mask = group['_day_of_week'] == 0
+        monday_indices = group.index[monday_mask]
+        
+        # For each Monday, find the previous Sunday and add its value
+        for monday_idx in monday_indices:
+            # Find position of Monday in the group
+            monday_pos = group.index.get_loc(monday_idx)
+            
+            # Look backwards for the previous Sunday (day_of_week == 6)
+            if monday_pos > 0:
+                prev_days = group.iloc[:monday_pos]
+                sunday_in_prev = prev_days[prev_days['_day_of_week'] == 6]
+                
+                if len(sunday_in_prev) > 0:
+                    # Get the most recent Sunday before this Monday
+                    sunday_idx = sunday_in_prev.index[-1]
+                    sunday_value = group.loc[sunday_idx, actual_col]
+                    
+                    # Apply carryover: Monday's target = Monday actual + Sunday actual
+                    if pd.notna(sunday_value):
+                        monday_actual = group.loc[monday_idx, actual_col]
+                        group.loc[monday_idx, target_col] = monday_actual + sunday_value
+        
+        return group
+    
+    # Apply carryover per category
+    df = df.groupby(cat_col, group_keys=False).apply(apply_carryover_per_category).reset_index(drop=False)
+    # Clean up temporary columns
+    df = df.drop(columns=['_day_of_week'])
+    
+    return df
+
+
 def moving_average_forecast_by_category(
     df: pd.DataFrame,
     cat_col: str = "CATEGORY",
@@ -837,10 +1134,33 @@ def moving_average_forecast_by_category(
     df = df.sort_values([cat_col, time_col])
     ma_col = f"{target_col}_MA{window}"
 
-    df[ma_col] = (
-        df.groupby(cat_col)[target_col]
-        .transform(lambda s: s.rolling(window=window, min_periods=1).mean())
-    )
+    # If operational anomaly flags are available, exclude those days from the
+    # baseline trend calculation. This prevents unexplained zero-volume gaps
+    # from biasing the moving-average forecast for minor categories.
+    anomaly_flag_col = "is_operational_anomaly"
+
+    if anomaly_flag_col in df.columns:
+        def masked_ma(group: pd.Series, mask: pd.Series) -> pd.Series:
+            # Compute rolling mean over non-anomalous days only.
+            # We use a masked series where anomalies are dropped from the
+            # rolling window rather than set to zero.
+            values = group.copy()
+            values_masked = values.where(~mask, np.nan)
+            return values_masked.rolling(window=window, min_periods=1).mean()
+
+        df[ma_col] = (
+            df.groupby(cat_col, group_keys=False).apply(
+                lambda g: masked_ma(
+                    g[target_col],
+                    g[anomaly_flag_col].astype(bool)
+                )
+            )
+        )
+    else:
+        df[ma_col] = (
+            df.groupby(cat_col)[target_col]
+            .transform(lambda s: s.rolling(window=window, min_periods=1).mean())
+        )
 
     return df
 

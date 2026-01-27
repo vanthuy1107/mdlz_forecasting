@@ -1,0 +1,177 @@
+# Vietnam Holiday Calendar Configuration
+# This file serves as the single source of truth for Vietnamese holidays
+# used across the forecasting system.
+
+# Model Feature Holidays (VIETNAM_HOLIDAYS_BY_YEAR)
+# Used for:
+# - Lunar calendar alignment and "days-to-tet" features
+# - Discrete holiday indicators in model training/prediction
+# Structure: Organized by holiday type for feature engineering
+model_holidays:
+  2023:
+    tet:
+      - [2023, 1, 20]
+      - [2023, 1, 21]
+      - [2023, 1, 22]
+      - [2023, 1, 23]
+      - [2023, 1, 24]
+      - [2023, 1, 25]
+      - [2023, 1, 26]
+    mid_autumn:
+      - [2023, 9, 29]
+    independence:
+      - [2023, 9, 2]
+    labor:
+      - [2023, 4, 30]
+      - [2023, 5, 1]
+  2024:
+    tet:
+      - [2024, 2, 8]
+      - [2024, 2, 9]
+      - [2024, 2, 10]
+      - [2024, 2, 11]
+      - [2024, 2, 12]
+      - [2024, 2, 13]
+      - [2024, 2, 14]
+    mid_autumn:
+      - [2024, 9, 17]
+    independence:
+      - [2024, 9, 2]
+    labor:
+      - [2024, 4, 30]
+      - [2024, 5, 1]
+  2025:
+    tet:
+      - [2025, 1, 27]
+      - [2025, 1, 28]
+      - [2025, 1, 29]
+      - [2025, 1, 30]
+      - [2025, 1, 31]
+      - [2025, 2, 1]
+      - [2025, 2, 2]
+    mid_autumn:
+      - [2025, 10, 6]
+    independence:
+      - [2025, 9, 2]
+    labor:
+      - [2025, 4, 30]
+      - [2025, 5, 1]
+  2026:
+    tet:
+      - [2026, 2, 14]  # Saturday - Pre-Tet
+      - [2026, 2, 15]  # Sunday - Pre-Tet
+      - [2026, 2, 16]  # Monday - 29th of Lunar December
+      - [2026, 2, 17]  # Tuesday - 1st Day of Lunar New Year
+      - [2026, 2, 18]  # Wednesday - 2nd Day
+      - [2026, 2, 19]  # Thursday - 3rd Day
+      - [2026, 2, 20]  # Friday - 4th Day
+      - [2026, 2, 21]  # Saturday - 5th Day
+      - [2026, 2, 22]  # Sunday - Weekend wrap-up
+    mid_autumn:
+      - [2026, 9, 25]  # Full Moon (15/08 Lunar)
+    independence:
+      - [2026, 9, 1]
+      - [2026, 9, 2]
+    labor:
+      - [2026, 4, 30]
+      - [2026, 5, 1]
+    hung_kings:
+      - [2026, 4, 26]  # Observed
+      - [2026, 4, 27]  # Observed
+
+# Canonical Business Holiday Calendar (days off)
+# Used for:
+# - Business rules and actual days off
+# - Preprocessing holiday feature generation
+# Structure: Organized by official holiday names as business recognizes them
+# Canonical Business Holiday Calendar (days off) - ADJUSTED (Minus 1 Day)
+business_holidays:
+  2023:
+    new_year:
+      - [2022, 12, 31]
+      - [2023, 1, 1]
+    tet:
+      - [2023, 1, 19]
+      - [2023, 1, 20]
+      - [2023, 1, 21]
+      - [2023, 1, 22]
+      - [2023, 1, 23]
+      - [2023, 1, 24]
+      - [2023, 1, 25]
+    hung_kings_reunification_labor:
+      - [2023, 4, 28]
+      - [2023, 4, 29]
+      - [2023, 4, 30]
+      - [2023, 5, 1]
+      - [2023, 5, 2]
+    independence_day:
+      - [2023, 8, 31]
+      - [2023, 9, 1]
+      - [2023, 9, 2]
+      - [2023, 9, 3]
+  2024:
+    new_year:
+      - [2023, 12, 31]
+    tet:
+      - [2024, 2, 7]
+      - [2024, 2, 8]
+      - [2024, 2, 9]
+      - [2024, 2, 10]
+      - [2024, 2, 11]
+      - [2024, 2, 12]
+      - [2024, 2, 13]
+    hung_kings:
+      - [2024, 4, 17]
+    reunification_labor:
+      - [2024, 4, 29]
+      - [2024, 4, 30]
+    independence_day:
+      - [2024, 8, 30]
+      - [2024, 8, 31]
+      - [2024, 9, 1]
+      - [2024, 9, 2]
+  2025:
+    new_year:
+      - [2024, 12, 31]
+    tet:
+      - [2025, 1, 24]
+      - [2025, 1, 25]
+      - [2025, 1, 26]
+      - [2025, 1, 27]
+      - [2025, 1, 28]
+      - [2025, 1, 29]
+      - [2025, 1, 30]
+      - [2025, 1, 31]
+      - [2025, 2, 1]
+    hung_kings:
+      - [2025, 4, 6]
+    reunification_labor:
+      - [2024, 4, 29]
+      - [2025, 4, 30]
+    independence_day:
+      - [2025, 8, 29]
+      - [2025, 8, 30]
+      - [2025, 8, 31]
+      - [2025, 9, 1]
+  2026:
+    # new_year:
+    #   - [2025, 12, 31]
+    tet:
+      - [2026, 2, 13]
+      - [2026, 2, 14]
+      - [2026, 2, 15]
+      - [2026, 2, 16]
+      - [2026, 2, 17]
+      - [2026, 2, 18]
+      - [2026, 2, 19]
+      - [2026, 2, 20]
+      - [2026, 2, 21]
+    hung_kings:
+      - [2026, 4, 25]
+      - [2026, 4, 26]
+    reunification_labor:
+      - [2026, 4, 29]
+      - [2026, 4, 30]
+    independence_day:
+      - [2026, 8, 31]
+      - [2026, 9, 1]

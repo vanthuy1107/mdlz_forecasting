@@ -3,8 +3,8 @@
 This document describes the **current end‑to‑end logic** of the MDLZ warehouse
 forecasting MVP as implemented in:
 
-- **Training**: `mvp_test.py` — trains models on historical data
-- **Prediction**: `mvp_predict_2025.py` — generates forecasts using trained models
+- **Training**: `mvp_train.py` — trains models on historical data
+- **Prediction**: `mvp_predict.py` — generates forecasts using trained models
 - **Core modules**: `src/data/preprocessing.py`, `src/models.py`, and
   `src/training/trainer.py`
 
@@ -24,7 +24,7 @@ replaced by the MVP scripts described here.
   - Handling high‑ and low‑volume categories differently
 - **Type**: Multivariate time‑series forecasting with:
   - Temporal and calendar features (solar + lunar)
-  - Holiday countdown and “days‑since‑holiday” features
+  - Holiday countdown and "days‑since‑holiday" features
   - Category embeddings and category‑aware LSTM
   - Optional **residual target** (model learns deviations from a causal baseline)
 
@@ -34,16 +34,17 @@ configuration.
 
 ---
 
-## 2. End‑to‑End MVP Test Pipeline (`mvp_test.py`)
+## 2. End‑to‑End MVP Test Pipeline (`mvp_train.py`)
 
-The main entrypoint is `mvp_test.py`. Its `main()` function runs a complete
+The main entrypoint is `mvp_train.py`. Its `main()` function runs a complete
 experiment with fixed, reproducible overrides:
 
 1. **Configuration**
    - Loads `config/config.yaml` via `load_config()`.
    - Overrides for MVP test:
-     - `data.years = [2023, 2024]`
-     - `training.epochs = 20`
+     - `data.years` from config (typically `[2023, 2024, 2025]`)
+     - `training.epochs` from config (typically `30`)
+     - `training.learning_rate = 0.001`
      - `training.loss = "spike_aware_mse"` (forced in code)
      - `output.output_dir = "outputs/mvp_test"`
      - `output.model_dir = "outputs/mvp_test/models"`
@@ -87,7 +88,7 @@ experiment with fixed, reproducible overrides:
 ## 3. Feature Engineering in the MVP Pipeline
 
 Most of the feature engineering happens inside `train_single_model` in
-`mvp_test.py`, using utilities from `src/data/preprocessing.py` plus some
+`mvp_train.py`, using utilities from `src/data/preprocessing.py` plus some
 additional MVP‑specific logic.
 
 ### 3.1 Base Configuration of Features
@@ -100,7 +101,10 @@ is:
 - `holiday_indicator`
 - `days_until_next_holiday`
 - `days_since_holiday`
-- `is_weekend`, `day_of_week`
+- `is_weekend`
+- `day_of_week_sin`, `day_of_week_cos` (cyclical encoding)
+- `weekday_volume_tier`, `is_high_volume_weekday` (weekday volume tier features)
+- `is_EOM`, `days_until_month_end` (End-of-Month surge features)
 - `lunar_month`, `lunar_day`
 - `rolling_mean_7d`, `rolling_mean_30d`
 - `momentum_3d_vs_14d`
@@ -115,7 +119,7 @@ At runtime, `train_single_model` **extends** this list with:
 - `cbm_per_qty_last_year`
 
 The combined list is written back into the config at
-`data.feature_cols` and the model’s `input_dim` is updated dynamically to match
+`data.feature_cols` and the model's `input_dim` is updated dynamically to match
 the final feature count.
 
 ### 3.2 Temporal Features (`add_temporal_features`)
@@ -132,19 +136,47 @@ Given the time column `ACTUALSHIPDATE`, it creates:
 These encodings capture **yearly** and **monthly** periodicity while treating
 the calendar as cyclic rather than linear.
 
-### 3.3 Weekend and Day‑of‑Week Features (`add_weekend_features`)
+### 3.3 Weekend and Day‑of‑Week Features
 
-Defined in `mvp_test.py`:
+Defined in `mvp_train.py`:
 
 - `day_of_week`: integer \(0 = Monday, ..., 6 = Sunday\).
 - `is_weekend`: 1 if `day_of_week ∈ {5, 6}` (Saturday or Sunday), else 0.
 
-This lets the model distinguish weekday vs weekend behavior and capture
-weekly seasonality.
+Additionally, `add_day_of_week_cyclical_features` (from `src/data/preprocessing.py`) creates:
+- `day_of_week_sin = sin(2π × day_of_week / 7)`
+- `day_of_week_cos = cos(2π × day_of_week / 7)`
 
-### 3.4 Vietnamese Holiday Features
+The cyclical encoding ensures the model understands that Sunday (6) is adjacent to Monday (0), capturing weekly periodicity more effectively than a linear encoding.
 
-`mvp_test.py` defines:
+### 3.3.1 Weekday Volume Tier Features
+
+Function: `add_weekday_volume_tier_features` in `src/data/preprocessing.py`.
+
+Captures observed weekly demand patterns where certain weekdays consistently show higher or lower volumes:
+
+- `weekday_volume_tier`: Numeric tier indicating volume level:
+  - `2` = Wednesday (highest volume)
+  - `1` = Friday (high volume, but lower than Wednesday)
+  - `0` = Tuesday, Thursday (low volume)
+  - `-1` = Saturday (lower than Tuesday/Thursday), Monday, Sunday (neutral/other)
+- `is_high_volume_weekday`: Binary indicator (1 for Wednesday or Friday, 0 otherwise)
+
+This feature helps the model learn that Wednesday and Friday tend to have higher demand than Tuesday and Thursday, with Wednesday being the peak weekday.
+
+### 3.4 End-of-Month (EOM) Surge Features
+
+Function: `add_eom_features` in `src/data/preprocessing.py`.
+
+Captures the KPI-driven pattern where volume spikes in the last few days of the month:
+- `is_EOM`: Binary flag (1 if date is in last 3 days of month, 0 otherwise)
+- `days_until_month_end`: Countdown feature (days until the end of the month)
+
+The countdown provides a smooth gradient that helps the model anticipate EOM surges.
+
+### 3.5 Vietnamese Holiday Features
+
+`mvp_train.py` defines:
 
 - `VIETNAM_HOLIDAYS_BY_YEAR`: a map of years → Tet window,
   Mid‑Autumn, Independence Day (2 Sep) and Labor Day (30 Apr–1 May).
@@ -157,13 +189,13 @@ weekly seasonality.
     up to an extended horizon.
   - `days_since_holiday`: days since the **last** Vietnamese holiday.
 - `add_days_since_holiday(df, ...)`: an additional helper (not always used by
-  the MVP pipeline) that separately computes “days since holiday” using an
+  the MVP pipeline) that separately computes "days since holiday" using an
   extended look‑back window.
 
 Compared to the older US‑holiday version, the MVP now uses **Vietnam‑specific
 holidays** throughout the pipeline, which is critical for Tet‑driven demand.
 
-### 3.5 Lunar Calendar and Cyclical Lunar Features
+### 3.6 Lunar Calendar and Cyclical Lunar Features
 
 MVP logic approximates the Vietnamese lunar calendar:
 
@@ -179,9 +211,9 @@ MVP logic approximates the Vietnamese lunar calendar:
 These features allow the model to see **lunar periodicity** (e.g. Tet timing)
 without hardcoding specific Gregorian dates beyond the holiday table.
 
-### 3.6 Tet Countdown Feature (`add_days_to_tet_feature`)
+### 3.7 Tet Countdown Feature (`add_days_to_tet_feature`)
 
-`add_days_to_tet_feature(df, ...)` in `mvp_test.py`:
+`add_days_to_tet_feature(df, ...)` in `mvp_train.py`:
 
 - Uses the **start dates** of Tet windows (first day in each Tet period) across
   years 2023–2025.
@@ -190,7 +222,7 @@ without hardcoding specific Gregorian dates beyond the holiday table.
 - Provides a **smooth countdown signal** that allows the model to ramp up
   expectations before the actual spike.
 
-### 3.7 Daily Aggregation (`aggregate_daily`)
+### 3.8 Daily Aggregation (`aggregate_daily`)
 
 Function: `aggregate_daily` in `src/data/preprocessing.py`.
 
@@ -210,7 +242,7 @@ preserving temporal / holiday features.
 
 The result is **one row per date per category**, which is what the LSTM sees.
 
-### 3.8 CBM Density and Last‑Year Density Prior (`add_cbm_density_features`)
+### 3.9 CBM Density and Last‑Year Density Prior (`add_cbm_density_features`)
 
 Function: `add_cbm_density_features` in `src/data/preprocessing.py`.
 
@@ -229,12 +261,12 @@ Creates:
   - If no exact match exists (e.g. first year of history), falls back to a
     **category‑level median density**.
 
-This functions as a **structural prior** for how “bulky” shipments are expected
+This functions as a **structural prior** for how "bulky" shipments are expected
 to be around the same lunar/seasonal period.
 
-### 3.9 Rolling Means and Momentum
+### 3.10 Rolling Means and Momentum
 
-Function: `add_rolling_and_momentum_features` in `mvp_test.py`.
+Function: `add_rolling_and_momentum_features` in `mvp_train.py`.
 
 Per category and date (after daily aggregation), it computes:
 
@@ -247,16 +279,16 @@ These features:
 - Provide a **short‑ and medium‑term pace signal**.
 - Reduce the need for the LSTM to re‑learn simple local averages.
 
-### 3.10 Residual Target and Causal Baseline
+### 3.11 Residual Target and Causal Baseline
 
 Configured in `config.yaml` under `data`:
 
-- `use_residual_target: true`
+- `use_residual_target: false` (default: disabled)
 - `baseline_source_col: "rolling_mean_30d"`
 - `baseline_col: "baseline_for_target"`
 - `residual_col: "target_residual"`
 
-When `use_residual_target` is true:
+When `use_residual_target` is `true`:
 
 1. For each `(CATEGORY, date)` row, build a **causal baseline**:
    - Start from `baseline_source_col` (e.g. `rolling_mean_30d`).
@@ -327,15 +359,17 @@ Function: `slicing_window_category` in `src/data/preprocessing.py`.
 
 Per category group:
 
-- Input window length: `input_size = 30` timesteps.
-- Horizon: `horizon = 1` step ahead.
+- Input window length: `input_size = 60` timesteps (increased from 30 to provide more context).
+- Horizon: `horizon = 30` steps ahead (direct multi-step forecasting).
+
+**Direct Multi-step Forecasting**: The model outputs the entire forecast horizon (30 days) at once in a single forward pass. This prevents **exposure bias** from recursive forecasting where errors compound step-by-step.
 
 Shapes:
 
-- `X`: \((N_\text{samples}, 30, n_\text{features})\) with
+- `X`: \((N_\text{samples}, 60, n_\text{features})\) with
   `n_features = len(data.feature_cols)` after all dynamic extensions.
-- `y`: \((N_\text{samples}, 1)\) containing the (scaled) supervised target
-  (residual or absolute).
+- `y`: \((N_\text{samples}, 30)\) containing the (scaled) supervised target
+  (residual or absolute) for all 30 days ahead.
 - `cats`: \((N_\text{samples},)\) with integer `CATEGORY_ID`s.
 
 These are wrapped into PyTorch datasets (`ForecastDataset`) and then into
@@ -378,10 +412,13 @@ Location: `src/models.py`.
 6. **Output Layer**
    - Takes `last_out = out[:, -1, :]`.
    - Passes through a linear layer `fc(last_out)` → prediction of shape
-     \((B, output_dim)\).
+     \((B, output_dim)`.
+   - **Note**: For direct multi-step forecasting, `output_dim = horizon` (e.g., 30),
+     so the model outputs all 30 days at once in a single forward pass.
 
 This architecture injects category information both into the **initial hidden
-state** and into every timestep’s input.
+state** and into every timestep's input. The direct multi-step output prevents
+error accumulation from recursive forecasting.
 
 ### 6.2 `RNNForecastor` (Baseline Without Category Embedding)
 
@@ -399,7 +436,7 @@ Also in `src/models.py`:
 
 ### 7.1 Trainer (`src/training/trainer.py`)
 
-`mvp_test.py` builds a `Trainer` instance with:
+`mvp_train.py` builds a `Trainer` instance with:
 
 - `model`: `RNNWithCategory` (or `RNNForecastor`).
 - `criterion`: **always** `spike_aware_mse` for the MVP test, even if
@@ -466,12 +503,12 @@ After training:
 From the project root:
 
 ```bash
-python mvp_test.py
+python mvp_train.py
 ```
 
 This will:
 
-- Load years 2023–2024.
+- Load years from config (typically `[2023, 2024, 2025]`).
 - Apply Vietnam‑specific calendar and holiday features.
 - Train one or more models according to `data.category_mode`.
 - Save checkpoints, scalers, plots and metadata into
@@ -492,13 +529,13 @@ Typical changes are made in `config/config.yaml`, for example:
 - Adjust model size:
   - `model.hidden_size`, `model.n_layers`, `model.cat_emb_dim`.
 
-Note: `mvp_test.py` may still override some defaults (e.g. years, epochs,
-loss) to keep the MVP experiment reproducible; check the top of `main()` if you
+Note: `mvp_train.py` may still override some defaults (e.g. learning rate, loss)
+to keep the MVP experiment reproducible; check the top of `main()` if you
 need to change those behaviors.
 
-### 9.3 Prediction Workflow (`mvp_predict_2025.py`)
+### 9.3 Prediction Workflow (`mvp_predict.py`)
 
-After training models with `mvp_test.py`, use `mvp_predict_2025.py` to generate
+After training models with `mvp_train.py`, use `mvp_predict.py` to generate
 forecasts for future dates. This script supports two prediction modes:
 
 **1. Teacher Forcing (Test Evaluation)**
@@ -507,11 +544,14 @@ forecasts for future dates. This script supports two prediction modes:
 - Suitable for model evaluation when historical data is available.
 - Not suitable for true production forecasting (requires future values).
 
-**2. Recursive (Production Forecast)**
-- Uses the model's own predictions as inputs for subsequent time steps.
-- Simulates true production forecasting where future values are unknown.
-- Starts from a historical window (e.g., last 30 days of 2024) and recursively
-  generates predictions day-by-day.
+**2. Direct Multi-step (Production Forecast)**
+- Uses the model's direct multi-step output capability to predict the entire
+  forecast horizon (e.g., 30 days) in a single forward pass.
+- Prevents exposure bias from recursive forecasting where errors compound.
+- Starts from a historical window (e.g., last 60 days) and outputs all
+  predictions at once.
+- The deprecated `predict_recursive()` function is kept for backward compatibility
+  but should not be used for new predictions.
 
 #### 9.3.1 Prediction Configuration
 
@@ -519,9 +559,9 @@ The prediction window and data path are configured in `config/config.yaml`
 under the `inference` section:
 
 - `inference.prediction_data_path`: Path to CSV file containing prediction
-  period data (e.g., `"dataset/test/data_2025.csv"`).
-- `inference.prediction_start`: Start date for predictions (e.g., `"2025-01-01"`).
-- `inference.prediction_end`: End date for predictions (e.g., `"2025-01-31"`).
+  period data (e.g., `"dataset/test/data_2026.csv"`).
+- `inference.prediction_start`: Start date for predictions (e.g., `"2026-01-01"`).
+- `inference.prediction_end`: End date for predictions (e.g., `"2026-01-21"`).
 
 The script respects the same `data.category_mode` setting as training:
 - `"single"`: Predicts one category (uses model from `outputs/mvp_test_{category}/`).
@@ -569,15 +609,13 @@ The prediction workflow mirrors the training pipeline:
    - Runs model inference on these windows.
    - Computes evaluation metrics (MSE, MAE, RMSE, accuracy).
 
-8. **Recursive Mode**:
-   - Extracts the last `input_size` days from historical data as the initial
+8. **Direct Multi-step Mode**:
+   - Extracts the last `input_size` (60) days from historical data as the initial
      window.
-   - For each prediction date:
-     - Creates an input window from the most recent `input_size` days.
-     - Runs model inference to predict the next day.
-     - Updates rolling features (rolling_mean_7d, rolling_mean_30d, momentum)
-       using the predicted value.
-     - Appends the prediction to the window for the next iteration.
+   - Creates a single input window from the most recent 60 days.
+   - Runs model inference once to predict the entire forecast horizon (30 days)
+     in a single forward pass.
+   - Applies holiday masking: forces predictions to 0 on Vietnamese holidays.
    - Handles residual targets by reconstructing absolute values from residuals
      + baseline.
 
@@ -595,15 +633,16 @@ The prediction workflow mirrors the training pipeline:
 From the project root:
 
 ```bash
-python mvp_predict_2025.py
+python mvp_predict.py
 ```
 
 The script will:
 - Load the prediction window from `config.inference`.
 - Load the appropriate trained model(s) based on `data.category_mode`.
-- Generate predictions in both Teacher Forcing and Recursive modes.
-- Save results to `outputs/predictions/` with timestamps.
-- Generate comparison tables and accuracy metrics.
+- Generate predictions in both Teacher Forcing and Direct Multi-step modes.
+- Save results to `outputs/mvp_test*/predictions/` with timestamps.
+- Generate comparison tables and accuracy metrics (MAE, RMSE, MSE, accuracy).
+- Compare current run with previous runs to track improvements.
 
 ---
 
@@ -614,9 +653,14 @@ Compared with the earlier version of this project (US‑holiday, `QTY`‑only,
 
 - Switches to **Vietnamese holidays** and adds a **Tet countdown** feature.
 - Incorporates **lunar calendar + cyclical lunar features**.
+- Adds **End-of-Month (EOM) surge features** to capture monthly KPI-driven spikes.
 - Predicts `Total CBM` and adds **CBM/QTY density + last‑year density prior**.
-- Uses **residual learning** against a causal rolling‑mean baseline.
+- Uses **direct multi-step forecasting** (60-day input, 30-day output) to prevent
+  exposure bias from recursive prediction.
+- Supports **optional residual learning** against a causal rolling‑mean baseline
+  (disabled by default).
 - Applies **spike‑aware MSE** by default to focus on Tet and other spikes.
 - Supports **multi‑task category configurations** and separates major from
   minor categories for more stable shared representations.
-
+- Uses **cyclical day-of-week encoding** (sin/cos) for better weekly periodicity
+  modeling.

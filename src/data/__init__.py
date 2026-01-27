@@ -1,6 +1,7 @@
 """Data loading, preprocessing, and dataset utilities."""
 from .loader import DataReader
 from .dataset import ForecastDataset
+from .scaler import RollingGroupScaler
 from .preprocessing import (
     slicing_window,
     slicing_window_multivariate,
@@ -10,7 +11,9 @@ from .preprocessing import (
     prepare_data,
     add_holiday_features,
     add_temporal_features,
+    add_day_of_week_cyclical_features,
     aggregate_daily,
+    apply_sunday_to_monday_carryover,
     add_cbm_density_features,
     fit_scaler,
     apply_scaling,
@@ -28,7 +31,9 @@ __all__ = [
     'prepare_data',
     'add_holiday_features',
     'add_temporal_features',
+    'add_day_of_week_cyclical_features',
     'aggregate_daily',
+    'apply_sunday_to_monday_carryover',
     'add_cbm_density_features',
     'fit_scaler',
     'apply_scaling',

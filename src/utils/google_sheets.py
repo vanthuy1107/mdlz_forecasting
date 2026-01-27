@@ -2,7 +2,9 @@
 import time
 from pathlib import Path
 from typing import Dict, Optional
+from datetime import datetime
 import pandas as pd
+import numpy as np
 
 try:
     import gspread
@@ -163,16 +165,46 @@ def upload_to_google_sheets(
                 elif sheet_name == "Result":
                     # Daily results: one row per (date, CATEGORY)
                     merge_keys = ['date', 'CATEGORY']
+                elif sheet_name == "History_prediction":
+                    # History_prediction: simple append mode (no merge keys)
+                    merge_keys = None  # Will trigger append-only behavior
                 else:
                     print(f"[Google Sheets] Warning: update_mode=True but no merge_keys provided and no default for sheet '{sheet_name}'")
                     print(f"[Google Sheets] Falling back to overwrite mode")
                     update_mode = False
             
-            if update_mode and merge_keys:
+            if update_mode:
                 # Read existing data from sheet
                 try:
                     existing_data = worksheet.get_all_values()
-                    if existing_data and len(existing_data) > 1:
+                    
+                    # For History_prediction and SummaryByMonth, always append (even if sheet is empty)
+                    if sheet_name == "History_prediction" or sheet_name == "SummaryByMonth":
+                        if existing_data and len(existing_data) > 1:
+                            # Convert to DataFrame
+                            existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
+                            print(f"[Google Sheets] Found {len(existing_df):,} existing rows in sheet")
+                            
+                            # Align columns between existing and new data
+                            for col in existing_df.columns:
+                                if col not in new_df.columns:
+                                    new_df[col] = np.nan
+                            for col in new_df.columns:
+                                if col not in existing_df.columns:
+                                    existing_df[col] = np.nan
+                            # Reorder new_df columns to match existing sheet
+                            new_df = new_df[existing_df.columns]
+                            # Append new rows
+                            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                            sheet_display_name = "History_prediction" if sheet_name == "History_prediction" else "SummaryByMonth"
+                            print(f"[Google Sheets] Appended {len(new_df):,} rows to '{sheet_display_name}' (total {len(combined_df):,})")
+                        else:
+                            # Sheet is empty or only has headers - use new data only (will create header row)
+                            print(f"[Google Sheets] Sheet is empty or only has headers, using new data")
+                            combined_df = new_df
+                        # Disable update_mode-based merge for this case (we've already handled append)
+                        update_mode = False
+                    elif existing_data and len(existing_data) > 1:
                         # Convert to DataFrame
                         existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
                         print(f"[Google Sheets] Found {len(existing_df):,} existing rows in sheet")
@@ -187,24 +219,7 @@ def upload_to_google_sheets(
                             if after_drop != before_drop:
                                 print(f"[Google Sheets] Removed {before_drop - after_drop} rows with empty Year from existing sheet data")
                         
-                        # For SummaryByMonth we want simple APPEND behavior (no merge on keys),
-                        # and we must preserve the existing column format.
-                        if sheet_name == "SummaryByMonth":
-                            # Align columns between existing and new data
-                            for col in existing_df.columns:
-                                if col not in new_df.columns:
-                                    new_df[col] = np.nan
-                            for col in new_df.columns:
-                                if col not in existing_df.columns:
-                                    existing_df[col] = np.nan
-                            # Reorder new_df columns to match existing sheet
-                            new_df = new_df[existing_df.columns]
-                            # Append new rows
-                            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                            print(f"[Google Sheets] Appended {len(new_df):,} rows to 'SummaryByMonth' (total {len(combined_df):,})")
-                            # Disable update_mode-based merge for this case
-                            update_mode = False
-                        else:
+                        if merge_keys:
                             # Ensure merge keys exist in both DataFrames
                             missing_keys_new = [k for k in merge_keys if k not in new_df.columns]
                             missing_keys_existing = [k for k in merge_keys if k not in existing_df.columns]
@@ -247,8 +262,13 @@ def upload_to_google_sheets(
                                 combined_df = combined_df[[col for col in col_order if col in combined_df.columns]]
                                 
                                 print(f"[Google Sheets] Merged data: {len(existing_df):,} existing + {len(new_df):,} new = {len(combined_df):,} total rows")
+                        else:
+                            # No merge keys specified and not a special sheet - use new data only
+                            print(f"[Google Sheets] No merge keys specified, using new data only")
+                            combined_df = new_df
+                            update_mode = False
                     else:
-                        # Sheet is empty or only has headers
+                        # Sheet is empty or only has headers (for non-append sheets)
                         print(f"[Google Sheets] Sheet is empty, using new data only")
                         combined_df = new_df
                 except Exception as e:
@@ -345,6 +365,103 @@ def upload_to_google_sheets(
         
     except Exception as e:
         print(f"\n[Google Sheets] ✗ Error uploading to Google Sheets: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def upload_history_prediction(
+    spreadsheet_id: str,
+    category: str,
+    prediction_year: int,
+    num_months: int,
+    tf_mse: Optional[float] = None,
+    tf_mae: Optional[float] = None,
+    tf_rmse: Optional[float] = None,
+    tf_accuracy_abs: Optional[float] = None,
+    tf_accuracy_sum: Optional[float] = None,
+    rec_mse: Optional[float] = None,
+    rec_mae: Optional[float] = None,
+    rec_rmse: Optional[float] = None,
+    rec_accuracy_abs: Optional[float] = None,
+    rec_accuracy_sum: Optional[float] = None,
+    mae_error_increase_pct: Optional[float] = None,
+    rmse_error_increase_pct: Optional[float] = None,
+    credentials_path: str = "key.json",
+    sheet_name: str = "History_prediction"
+) -> bool:
+    """
+    Upload history prediction results to Google Sheets.
+    
+    Args:
+        spreadsheet_id: Google Sheets spreadsheet ID.
+        category: Category name (e.g., "ALL", "DRY", "FRESH").
+        prediction_year: Year for prediction (e.g., 2025).
+        num_months: Number of months for prediction.
+        tf_mse: Teacher Forcing MSE.
+        tf_mae: Teacher Forcing MAE.
+        tf_rmse: Teacher Forcing RMSE.
+        tf_accuracy_abs: Teacher Forcing Accuracy (Σ|err|).
+        tf_accuracy_sum: Teacher Forcing Accuracy (|Σ err|).
+        rec_mse: Recursive MSE.
+        rec_mae: Recursive MAE.
+        rec_rmse: Recursive RMSE.
+        rec_accuracy_abs: Recursive Accuracy (Σ|err|).
+        rec_accuracy_sum: Recursive Accuracy (|Σ err|).
+        mae_error_increase_pct: Error increase percentage for MAE.
+        rmse_error_increase_pct: Error increase percentage for RMSE.
+        credentials_path: Path to service account credentials JSON file.
+        sheet_name: Name of the sheet to upload to.
+    
+    Returns:
+        True if successful, False otherwise.
+    """
+    if not GSPREAD_AVAILABLE:
+        print("\n[WARNING] gspread not available. Install with: pip install gspread google-auth")
+        return False
+    
+    try:
+        # Create DataFrame with the prediction results
+        data = {
+            'Timestamp': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            'Category': [category],
+            'Year': [prediction_year],
+            'Months': [num_months],
+            'TF_MSE': [tf_mse if tf_mse is not None and not np.isnan(tf_mse) else None],
+            'TF_MAE': [tf_mae if tf_mae is not None and not np.isnan(tf_mae) else None],
+            'TF_RMSE': [tf_rmse if tf_rmse is not None and not np.isnan(tf_rmse) else None],
+            'TF_Accuracy_SumAbs': [tf_accuracy_abs if tf_accuracy_abs is not None and not np.isnan(tf_accuracy_abs) else None],
+            'TF_Accuracy_SumBeforeAbs': [tf_accuracy_sum if tf_accuracy_sum is not None and not np.isnan(tf_accuracy_sum) else None],
+            'REC_MSE': [rec_mse if rec_mse is not None and not np.isnan(rec_mse) else None],
+            'REC_MAE': [rec_mae if rec_mae is not None and not np.isnan(rec_mae) else None],
+            'REC_RMSE': [rec_rmse if rec_rmse is not None and not np.isnan(rec_rmse) else None],
+            'REC_Accuracy_SumAbs': [rec_accuracy_abs if rec_accuracy_abs is not None and not np.isnan(rec_accuracy_abs) else None],
+            'REC_Accuracy_SumBeforeAbs': [rec_accuracy_sum if rec_accuracy_sum is not None and not np.isnan(rec_accuracy_sum) else None],
+            'Error_Increase_MAE_Pct': [mae_error_increase_pct if mae_error_increase_pct is not None and not np.isnan(mae_error_increase_pct) else None],
+            'Error_Increase_RMSE_Pct': [rmse_error_increase_pct if rmse_error_increase_pct is not None and not np.isnan(rmse_error_increase_pct) else None],
+        }
+        
+        df = pd.DataFrame(data)
+        
+        # Use the existing upload function with update_mode=True to append
+        print(f"\n[Google Sheets] Uploading history prediction results to '{sheet_name}'...")
+        print(f"  - Category: {category}")
+        print(f"  - Year: {prediction_year}")
+        print(f"  - Months: {num_months}")
+        
+        # Upload using the existing function with update_mode to append
+        return upload_to_google_sheets(
+            saved_files={},
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,
+            credentials_path=credentials_path,
+            data_df=df,
+            update_mode=True,
+            merge_keys=None  # Append mode - no merging, just append
+        )
+        
+    except Exception as e:
+        print(f"\n[Google Sheets] ✗ Error uploading history prediction: {e}")
         import traceback
         traceback.print_exc()
         return False

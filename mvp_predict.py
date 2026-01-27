@@ -22,10 +22,11 @@ from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import List
 
-from config import load_config
+from config import load_config, load_holidays
 from src.data import (
     DataReader,
     ForecastDataset,
+    RollingGroupScaler,
     slicing_window_category,
     encode_categories,
     split_data,
@@ -37,10 +38,19 @@ from src.data import (
     apply_scaling,
     inverse_transform_scaling
 )
-from src.data.preprocessing import get_us_holidays, get_vietnam_holidays
+from src.data.preprocessing import (
+    get_us_holidays,
+    get_vietnam_holidays,
+    add_day_of_week_cyclical_features,
+    add_eom_features,
+    add_weekday_volume_tier_features,
+    apply_sunday_to_monday_carryover,
+    add_operational_status_flags,
+)
 from src.models import RNNWithCategory
 from src.training import Trainer
 from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE
+from src.utils.google_sheets import upload_history_prediction
 
 
 ###############################################################################
@@ -51,50 +61,8 @@ from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABL
 # We keep a single source of truth for Vietnamese holidays (including Tet)
 # so that both the discrete holiday indicators and the continuous
 # "days-to-lunar-event" features stay perfectly aligned.
-VIETNAM_HOLIDAYS_BY_YEAR = {
-    2023: {
-        "tet": [
-            date(2023, 1, 20),
-            date(2023, 1, 21),
-            date(2023, 1, 22),
-            date(2023, 1, 23),
-            date(2023, 1, 24),
-            date(2023, 1, 25),
-            date(2023, 1, 26),
-        ],
-        "mid_autumn": [date(2023, 9, 29)],
-        "independence": [date(2023, 9, 2)],
-        "labor": [date(2023, 4, 30), date(2023, 5, 1)],
-    },
-    2024: {
-        "tet": [
-            date(2024, 2, 8),
-            date(2024, 2, 9),
-            date(2024, 2, 10),
-            date(2024, 2, 11),
-            date(2024, 2, 12),
-            date(2024, 2, 13),
-            date(2024, 2, 14),
-        ],
-        "mid_autumn": [date(2024, 9, 17)],
-        "independence": [date(2024, 9, 2)],
-        "labor": [date(2024, 4, 30), date(2024, 5, 1)],
-    },
-    2025: {
-        "tet": [
-            date(2025, 1, 27),
-            date(2025, 1, 28),
-            date(2025, 1, 29),
-            date(2025, 1, 30),
-            date(2025, 1, 31),
-            date(2025, 2, 1),
-            date(2025, 2, 2),
-        ],
-        "mid_autumn": [date(2025, 10, 6)],
-        "independence": [date(2025, 9, 2)],
-        "labor": [date(2025, 4, 30), date(2025, 5, 1)],
-    },
-}
+# Holidays are now loaded from config/holidays.yaml for easier maintenance.
+VIETNAM_HOLIDAYS_BY_YEAR = load_holidays(holiday_type="model")
 
 
 def solar_to_lunar_date(solar_date: date) -> tuple:
@@ -146,7 +114,7 @@ def add_weekend_features(
     """Add weekend and day-of-week features."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
     df[day_of_week_col] = df[time_col].dt.dayofweek
     df[is_weekend_col] = (df[day_of_week_col] >= 5).astype(int)
     return df
@@ -161,7 +129,7 @@ def add_lunar_calendar_features(
     """Add lunar calendar features for Vietnamese holiday prediction."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
     lunar_dates = df[time_col].dt.date.apply(solar_to_lunar_date)
     df[lunar_month_col] = [ld[0] for ld in lunar_dates]
     df[lunar_day_col] = [ld[1] for ld in lunar_dates]
@@ -214,9 +182,22 @@ def add_holiday_features_vietnam(
     """Add Vietnamese holiday-related features to DataFrame."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
+    
+    # Filter out rows with NaT dates before processing
+    valid_mask = df[time_col].notna()
+    df_valid = df[valid_mask].copy()
+    df_invalid = df[~valid_mask].copy()
+    
+    if len(df_valid) == 0:
+        # If no valid dates, set all features to default values and return
+        df[holiday_indicator_col] = 0
+        df[days_until_holiday_col] = 365
+        df[days_since_holiday_col] = 365
+        return df
+    
+    min_date = df_valid[time_col].min().date()
+    max_date = df_valid[time_col].max().date()
     extended_max = max_date + timedelta(days=365)
     holidays = get_vietnam_holidays(min_date, extended_max)
     holiday_set = set(holidays)
@@ -224,23 +205,36 @@ def add_holiday_features_vietnam(
     df[days_until_holiday_col] = np.nan
     df[days_since_holiday_col] = np.nan
     
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
+    for idx, row in df_valid.iterrows():
+        try:
+            current_date = row[time_col].date()
+        except (AttributeError, ValueError):
+            # Skip if date conversion fails
+            continue
+        
         if current_date in holiday_set:
             df.at[idx, holiday_indicator_col] = 1
         
         next_holiday = None
         for holiday in holidays:
-            if holiday > current_date:
-                next_holiday = holiday
-                break
+            try:
+                if holiday > current_date:
+                    next_holiday = holiday
+                    break
+            except (TypeError, ValueError):
+                # Skip if comparison fails (e.g., NaT)
+                continue
         df.at[idx, days_until_holiday_col] = (next_holiday - current_date).days if next_holiday else 365
         
         last_holiday = None
         for holiday in sorted(holidays, reverse=True):
-            if holiday <= current_date:
-                last_holiday = holiday
-                break
+            try:
+                if holiday <= current_date:
+                    last_holiday = holiday
+                    break
+            except (TypeError, ValueError):
+                # Skip if comparison fails (e.g., NaT)
+                continue
         df.at[idx, days_since_holiday_col] = (current_date - last_holiday).days if last_holiday else 365
     
     df[days_until_holiday_col] = df[days_until_holiday_col].fillna(365)
@@ -287,10 +281,22 @@ def add_days_to_tet_feature(
 
     # Ensure time column is datetime
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
 
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
+    # Filter out rows with NaT dates before processing
+    valid_mask = df[time_col].notna()
+    df_valid = df[valid_mask].copy()
+    df_invalid = df[~valid_mask].copy()
+    
+    # Initialize the column with default value
+    df[days_to_tet_col] = 365
+    
+    if len(df_valid) == 0:
+        # If no valid dates, set all to default and return
+        return df
+
+    min_date = df_valid[time_col].min().date()
+    max_date = df_valid[time_col].max().date()
 
     # Extend a bit so all dates have a "next Tet"
     extended_max = max_date + timedelta(days=365)
@@ -298,28 +304,37 @@ def add_days_to_tet_feature(
 
     if not tet_start_dates:
         # Fallback: no Tet dates configured, set large constant
-        df[days_to_tet_col] = 365
         return df
 
     tet_start_dates = sorted(tet_start_dates)
 
-    df[days_to_tet_col] = np.nan
-
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
+    for idx, row in df_valid.iterrows():
+        try:
+            current_date = row[time_col].date()
+        except (AttributeError, ValueError):
+            # Skip if date conversion fails
+            continue
 
         # Find the next Tet start on or after current_date
         next_tet = None
         for tet_date in tet_start_dates:
-            if tet_date >= current_date:
-                next_tet = tet_date
-                break
+            try:
+                if tet_date >= current_date:
+                    next_tet = tet_date
+                    break
+            except (TypeError, ValueError):
+                # Skip if comparison fails (e.g., NaT)
+                continue
 
         if next_tet is None:
             # If we're beyond the last configured Tet, use a large value
             df.at[idx, days_to_tet_col] = 365
         else:
-            df.at[idx, days_to_tet_col] = (next_tet - current_date).days
+            try:
+                df.at[idx, days_to_tet_col] = (next_tet - current_date).days
+            except (TypeError, ValueError):
+                # Fallback to default if calculation fails
+                df.at[idx, days_to_tet_col] = 365
 
     df[days_to_tet_col] = df[days_to_tet_col].fillna(365)
     return df
@@ -337,7 +352,7 @@ def add_rolling_and_momentum_features(
     """Add rolling mean and momentum features to reduce model inertia."""
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
     df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
     df[rolling_7_col] = np.nan
     df[rolling_30_col] = np.nan
@@ -774,14 +789,14 @@ def load_model_for_prediction(model_path: str, config):
         with open(scaler_path, 'rb') as f:
             scaler = pickle.load(f)
         print(f"  - Scaler loaded from: {scaler_path}")
-        print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
+        # print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
     else:
         print(f"  [WARNING] Scaler not found at {scaler_path}, predictions will be in scaled space")
     
     return model, device, scaler, trained_category_filter, trained_cat2id
 
 
-def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=None):
+def prepare_prediction_data(data, config, cat2id, scaler : RollingGroupScaler, trained_cat2id=None):
     """
     Prepare data for prediction using the same preprocessing as training.
     
@@ -802,7 +817,7 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     
     # Ensure time column is datetime and sort
     if not pd.api.types.is_datetime64_any_dtype(data[time_col]):
-        data[time_col] = pd.to_datetime(data[time_col])
+        data[time_col] = pd.to_datetime(data[time_col], dayfirst=True, errors='coerce')
     data = data.sort_values(time_col).reset_index(drop=True)
     
     # Add temporal features (before aggregation)
@@ -823,6 +838,34 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
         time_col=time_col,
         is_weekend_col="is_weekend",
         day_of_week_col="day_of_week"
+    )
+    
+    # Add cyclical day-of-week encoding (sin/cos)
+    print("  - Adding cyclical day-of-week features (day_of_week_sin, day_of_week_cos)...")
+    data = add_day_of_week_cyclical_features(
+        data,
+        time_col=time_col,
+        day_of_week_sin_col="day_of_week_sin",
+        day_of_week_cos_col="day_of_week_cos"
+    )
+    
+    # Add weekday volume tier features
+    print("  - Adding weekday volume tier features (weekday_volume_tier, is_high_volume_weekday)...")
+    data = add_weekday_volume_tier_features(
+        data,
+        time_col=time_col,
+        weekday_volume_tier_col="weekday_volume_tier",
+        is_high_volume_weekday_col="is_high_volume_weekday"
+    )
+    
+    # Add End-of-Month (EOM) surge features
+    print("  - Adding EOM features (is_EOM, days_until_month_end)...")
+    data = add_eom_features(
+        data,
+        time_col=time_col,
+        is_eom_col="is_EOM",
+        days_until_month_end_col="days_until_month_end",
+        eom_window_days=3
     )
     
     # Add lunar calendar features (before aggregation)
@@ -876,6 +919,31 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     )
     samples_after = len(data)
     print(f"    Samples: {samples_before} -> {samples_after} (one row per date per category)")
+
+    # Context-aware operational status flags on the daily series.
+    # As in training, if full calendar reindexing is desired, perform the
+    # reindex step before this call and then rely on these flags +
+    # anomaly-aware baselines to preserve interpretability.
+    print("  - Tagging Holiday_OFF, Weekend_Downtime, and Operational_Anomalies...")
+    data = add_operational_status_flags(
+        data,
+        time_col=time_col,
+        target_col=data_config['target_col'],
+        status_col="operational_status",
+        expected_zero_flag_col="is_expected_zero",
+        anomaly_flag_col="is_operational_anomaly",
+    )
+
+    # Apply Sunday-to-Monday demand carryover (same as training)
+    print("  - Applying Sunday-to-Monday demand carryover...")
+    data = apply_sunday_to_monday_carryover(
+        data,
+        time_col=time_col,
+        cat_col=cat_col,
+        target_col=data_config['target_col'],
+        actual_col=data_config['target_col']
+    )
+    print("    - Monday's target now includes Sunday's demand (captures backlog accumulation)")
 
     # CBM/QTY density features (including last-year prior), same as training
     print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")
@@ -932,7 +1000,8 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     # Apply scaling if scaler is provided (matches training pipeline)
     if scaler is not None:
         print(f"  - Applying scaling to {data_config['target_col']} values...")
-        data = apply_scaling(data, scaler, target_col=data_config['target_col'])
+        data = scaler.transform(data)
+        #data = apply_scaling(data, scaler, target_col=data_config['target_col'])
     
     return data
 
@@ -993,6 +1062,430 @@ def create_prediction_windows(data, config):
     return X_pred, y_pred, cat_pred, dates
 
 
+def apply_sunday_to_monday_carryover_predictions(
+    predictions_df: pd.DataFrame,
+    date_col: str = 'date',
+    pred_col: str = 'predicted'
+) -> pd.DataFrame:
+    """
+    Apply Sunday-to-Monday carryover rule to predictions.
+    
+    This post-processing step ensures predictions follow the same rule as training data:
+    - Sunday predictions are forced to 0 (non-operational day)
+    - Sunday's prediction value is added to the following Monday's prediction
+    
+    This maintains consistency between training target transformation and inference outputs.
+    
+    Args:
+        predictions_df: DataFrame with 'date' and prediction column (e.g., 'predicted' or 'predicted_unscaled')
+        date_col: Name of date column
+        pred_col: Name of prediction column to adjust
+    
+    Returns:
+        DataFrame with adjusted predictions where Sunday=0 and Monday includes Sunday's value
+        (date column type is preserved)
+    """
+    df = predictions_df.copy()
+    
+    # Helper function to extract date object from various types
+    def get_date_obj(d):
+        if isinstance(d, date):
+            return d
+        elif isinstance(d, pd.Timestamp):
+            return d.date()
+        elif pd.api.types.is_datetime64_any_dtype(pd.Series([d])):
+            return pd.to_datetime(d).date()
+        else:
+            return pd.to_datetime(d).date()
+    
+    # Extract date objects for processing (preserve original column)
+    df['_date_obj'] = df[date_col].apply(get_date_obj)
+    
+    # Sort by date to ensure proper ordering
+    df = df.sort_values('_date_obj').reset_index(drop=True)
+    
+    # Process each row to apply carryover
+    for i in range(len(df)):
+        current_date = df.loc[i, '_date_obj']
+        
+        # Check if current date is Sunday (weekday == 6)
+        if current_date.weekday() == 6:  # Sunday
+            sunday_value = df.loc[i, pred_col]
+            
+            # Find the next Monday (must be exactly 1 day later)
+            if i + 1 < len(df):
+                next_date = df.loc[i + 1, '_date_obj']
+                days_diff = (next_date - current_date).days
+                
+                # Only apply if next day is Monday and exactly 1 day later
+                if next_date.weekday() == 0 and days_diff == 1:  # Next day is Monday
+                    # Add Sunday's value to Monday
+                    df.loc[i + 1, pred_col] = df.loc[i + 1, pred_col] + sunday_value
+            
+            # Set Sunday to 0
+            df.loc[i, pred_col] = 0.0
+    
+    # Clean up temporary column (original date_col is preserved)
+    df = df.drop(columns=['_date_obj'])
+    
+    return df
+
+
+def predict_direct_multistep(
+    model,
+    device,
+    initial_window_data: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    config,
+    cat_id: int
+):
+    """
+    Direct multi-step prediction mode: predicts entire forecast horizon at once.
+    
+    This function addresses "Exposure Bias" by outputting the entire forecast
+    window (e.g., 30 days) in a single forward pass, preventing error accumulation
+    from recursive forecasting where errors compound step-by-step.
+    
+    Args:
+        model: Trained PyTorch model (already on device and in eval mode)
+        device: PyTorch device
+        initial_window_data: DataFrame with last input_size days of historical data
+                            Must have all feature columns and be sorted by time
+        start_date: First date to predict (e.g., date(2025, 1, 1))
+        end_date: Last date to predict (e.g., date(2025, 1, 30))
+        config: Configuration object
+        cat_id: Category ID (integer)
+    
+    Returns:
+        DataFrame with columns: date, predicted, actual (if available)
+    """
+    window_config = config.window
+    data_config = config.data
+    
+    input_size = window_config['input_size']
+    horizon = window_config['horizon']
+    feature_cols = data_config['feature_cols']
+    target_col = data_config['target_col']
+    time_col = data_config['time_col']
+    
+    # Validate initial window has enough data
+    if len(initial_window_data) < input_size:
+        raise ValueError(
+            f"Initial window must have at least {input_size} samples, "
+            f"got {len(initial_window_data)}"
+        )
+    
+    # Validate prediction range matches horizon
+    num_days_to_predict = (end_date - start_date).days + 1
+    if num_days_to_predict != horizon:
+        print(f"  [WARNING] Prediction range ({num_days_to_predict} days) doesn't match horizon ({horizon}). "
+              f"Will predict {horizon} days starting from {start_date}")
+    
+    # Get last input_size rows as the initial window
+    window = initial_window_data.tail(input_size).copy()
+    window = window.sort_values(time_col).reset_index(drop=True)
+    
+    print(f"  - Starting direct multi-step prediction from {start_date} to {end_date}")
+    print(f"  - Initial window: {window[time_col].min()} to {window[time_col].max()}")
+    print(f"  - Model will output {horizon} predictions at once (direct multi-step)")
+    
+    # Create input tensor from current window
+    window_features = window[feature_cols].values  # Shape: (input_size, n_features)
+    X_window = torch.tensor(
+        window_features,
+        dtype=torch.float32
+    ).unsqueeze(0).to(device)  # Shape: (1, input_size, n_features)
+    
+    cat_tensor = torch.tensor([cat_id], dtype=torch.long).to(device)
+    
+    # Make prediction: model outputs entire horizon at once
+    with torch.no_grad():
+        pred_scaled = model(X_window, cat_tensor).cpu().numpy()  # Shape: (1, output_dim)
+    
+    # Check if model supports direct multi-step (output_dim == horizon)
+    # or if we need to handle single-step model (output_dim == 1)
+    pred_scaled = pred_scaled.squeeze(0) if pred_scaled.ndim > 1 else pred_scaled
+    model_output_dim = pred_scaled.shape[0] if pred_scaled.ndim > 0 else 1
+    
+    if model_output_dim == 1 and horizon > 1:
+        # Model was trained for single-step prediction, but we need multi-step
+        # Repeat the single prediction for all days in horizon
+        print(f"  [INFO] Model outputs single value (output_dim=1), but horizon={horizon}.")
+        print(f"         Repeating prediction for all {horizon} days.")
+        single_pred = float(pred_scaled[0] if pred_scaled.ndim > 0 else pred_scaled)
+        pred_scaled = np.repeat(single_pred, horizon)
+    elif model_output_dim < horizon:
+        # Model outputs fewer values than needed
+        print(f"  [WARNING] Model output_dim ({model_output_dim}) < horizon ({horizon}).")
+        print(f"           Repeating last prediction for remaining days.")
+        # Repeat the last prediction for remaining days
+        if pred_scaled.ndim == 0:
+            pred_scaled = np.array([pred_scaled])
+        pred_scaled = np.concatenate([
+            pred_scaled,
+            np.repeat(pred_scaled[-1], horizon - model_output_dim)
+        ])
+    elif model_output_dim > horizon:
+        # Take only the first horizon predictions
+        pred_scaled = pred_scaled[:horizon]
+    
+    # Ensure pred_scaled is 1D array with horizon elements
+    if pred_scaled.ndim == 0:
+        pred_scaled = np.repeat(pred_scaled, horizon)
+    elif len(pred_scaled) != horizon:
+        # Safety check: if still not matching, repeat or truncate
+        if len(pred_scaled) < horizon:
+            pred_scaled = np.concatenate([pred_scaled, np.repeat(pred_scaled[-1], horizon - len(pred_scaled))])
+        else:
+            pred_scaled = pred_scaled[:horizon]
+    
+    # Generate dates for the forecast horizon
+    prediction_dates = [start_date + timedelta(days=i) for i in range(horizon)]
+    
+    # Apply holiday masking: force predictions to 0 on Vietnamese holidays
+    extended_end = end_date + timedelta(days=365)
+    holidays = get_vietnam_holidays(start_date, extended_end)
+    holiday_set = set(holidays)
+    
+    predictions = []
+    for i, pred_date in enumerate(prediction_dates):
+        is_holiday = pred_date in holiday_set
+        is_sunday = pred_date.weekday() == 6  # 0=Monday, 6=Sunday
+        
+        # Force to 0 on holidays or Sundays (Sunday will be handled by carryover post-processing)
+        pred_value = 0.0 if (is_holiday or is_sunday) else float(pred_scaled[i])
+        
+        predictions.append({
+            'date': pred_date,
+            'predicted': pred_value
+        })
+    
+    predictions_df = pd.DataFrame(predictions)
+    
+    # Apply Sunday-to-Monday carryover: Sunday's value moves to Monday, Sunday becomes 0
+    predictions_df = apply_sunday_to_monday_carryover_predictions(
+        predictions_df,
+        date_col='date',
+        pred_col='predicted'
+    )
+    
+    return predictions_df
+
+
+def predict_direct_multistep_rolling(
+    model,
+    device,
+    initial_window_data: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    config,
+    cat_id: int
+):
+    """
+    Predict for a long date range by looping through chunks of horizon days.
+    
+    This function extends predict_direct_multistep() to handle date ranges longer
+    than the model's horizon (e.g., predicting a full year when horizon=30 days).
+    It predicts in rolling chunks, updating the window with predictions from each
+    chunk to use as input for the next chunk.
+    
+    Args:
+        model: Trained PyTorch model (already on device and in eval mode)
+        device: PyTorch device
+        initial_window_data: DataFrame with last input_size days of historical data
+                            Must have all feature columns and be sorted by time
+        start_date: First date to predict (e.g., date(2025, 1, 1))
+        end_date: Last date to predict (e.g., date(2025, 12, 31))
+        config: Configuration object
+        cat_id: Category ID (integer)
+    
+    Returns:
+        DataFrame with columns: date, predicted
+    """
+    window_config = config.window
+    data_config = config.data
+    
+    input_size = window_config['input_size']
+    horizon = window_config['horizon']
+    feature_cols = data_config['feature_cols']
+    target_col = data_config['target_col']
+    time_col = data_config['time_col']
+    
+    # Validate initial window has enough data
+    if len(initial_window_data) < input_size:
+        raise ValueError(
+            f"Initial window must have at least {input_size} samples, "
+            f"got {len(initial_window_data)}"
+        )
+    
+    # Initialize window with historical data
+    window = initial_window_data.tail(input_size).copy()
+    window = window.sort_values(time_col).reset_index(drop=True)
+    
+    all_predictions = []
+    current_start = start_date
+    chunk_num = 0
+    
+    total_days = (end_date - start_date).days + 1
+    print(f"  - Starting rolling prediction for {total_days} days (horizon={horizon} days per chunk)")
+    print(f"  - Date range: {start_date} to {end_date}")
+    print(f"  - Initial window: {window[time_col].min()} to {window[time_col].max()}")
+    
+    while current_start <= end_date:
+        chunk_num += 1
+        # Calculate end date for this chunk (min of horizon days or remaining days)
+        chunk_end = min(
+            current_start + timedelta(days=horizon - 1),
+            end_date
+        )
+        chunk_days = (chunk_end - current_start).days + 1
+        
+        print(f"\n  [Chunk {chunk_num}] Predicting {current_start} to {chunk_end} ({chunk_days} days)...")
+        
+        # Predict this chunk using direct multi-step
+        chunk_predictions = predict_direct_multistep(
+            model=model,
+            device=device,
+            initial_window_data=window,
+            start_date=current_start,
+            end_date=chunk_end,
+            config=config,
+            cat_id=cat_id
+        )
+        
+        all_predictions.append(chunk_predictions)
+        
+        # Update window with predictions from this chunk
+        # We need to convert predictions to feature rows and append to window
+        print(f"  - Updating window with {len(chunk_predictions)} predictions...")
+        
+        # Get the last row from window as a template
+        last_row_template = window.iloc[-1:].copy()
+        
+        # For each predicted date, create a feature row
+        new_rows = []
+        for _, pred_row in chunk_predictions.iterrows():
+            pred_date = pred_row['date']
+            pred_value = pred_row['predicted']  # Already in scaled space
+            
+            # Create new row based on template
+            new_row = last_row_template.copy()
+            new_row[time_col] = pd.Timestamp(pred_date)
+            new_row[target_col] = pred_value  # Use predicted value
+            
+            # Compute temporal features for this date
+            pred_datetime = pd.Timestamp(pred_date)
+            month = pred_datetime.month
+            dayofmonth = pred_datetime.day
+            new_row['month_sin'] = np.sin(2 * np.pi * (month - 1) / 12)
+            new_row['month_cos'] = np.cos(2 * np.pi * (month - 1) / 12)
+            new_row['dayofmonth_sin'] = np.sin(2 * np.pi * (dayofmonth - 1) / 31)
+            new_row['dayofmonth_cos'] = np.cos(2 * np.pi * (dayofmonth - 1) / 31)
+            
+            # Compute weekend features
+            day_of_week = pred_datetime.dayofweek
+            new_row['is_weekend'] = 1 if day_of_week >= 5 else 0
+            new_row['day_of_week_sin'] = np.sin(2 * np.pi * day_of_week / 7)
+            new_row['day_of_week_cos'] = np.cos(2 * np.pi * day_of_week / 7)
+            
+            # Compute weekday volume tier
+            if day_of_week == 2:  # Wednesday
+                weekday_volume_tier = 2
+            elif day_of_week == 4:  # Friday
+                weekday_volume_tier = 1
+            elif day_of_week in [1, 3]:  # Tuesday, Thursday
+                weekday_volume_tier = 0
+            else:
+                weekday_volume_tier = -1
+            new_row['weekday_volume_tier'] = weekday_volume_tier
+            new_row['is_high_volume_weekday'] = 1 if day_of_week in [2, 4] else 0
+            
+            # Compute lunar calendar features
+            lunar_month, lunar_day = solar_to_lunar_date(pred_date)
+            new_row['lunar_month'] = lunar_month
+            new_row['lunar_day'] = lunar_day
+            
+            # Compute holiday features
+            extended_end = end_date + timedelta(days=365)
+            holidays = get_vietnam_holidays(pred_date, extended_end)
+            holiday_set = set(holidays)
+            new_row['holiday_indicator'] = 1 if pred_date in holiday_set else 0
+            
+            # Days until next holiday
+            next_holiday = None
+            for holiday in holidays:
+                if holiday > pred_date:
+                    next_holiday = holiday
+                    break
+            new_row['days_until_next_holiday'] = (next_holiday - pred_date).days if next_holiday else 365
+            
+            # Days since last holiday
+            last_holiday = None
+            for holiday in sorted(holidays, reverse=True):
+                if holiday <= pred_date:
+                    last_holiday = holiday
+                    break
+            new_row['days_since_holiday'] = (pred_date - last_holiday).days if last_holiday else 365
+            
+            # EOM features
+            is_eom = pred_datetime.day >= 28  # Approximate end of month
+            new_row['is_EOM'] = 1 if is_eom else 0
+            days_in_month = (pred_datetime.replace(day=28) + timedelta(days=4)).day
+            days_until_month_end = days_in_month - pred_datetime.day
+            new_row['days_until_month_end'] = max(0, days_until_month_end)
+            
+            new_rows.append(new_row)
+        
+        # Append new rows to window
+        if new_rows:
+            new_rows_df = pd.concat(new_rows, ignore_index=True)
+            window = pd.concat([window, new_rows_df], ignore_index=True)
+            window = window.sort_values(time_col).reset_index(drop=True)
+            
+            # Recompute rolling features for the updated window
+            # This ensures rolling_mean_7d, rolling_mean_30d, and momentum are correct
+            qty_values = window[target_col].values
+            
+            for i in range(len(window)):
+                # Rolling mean 7d: last 7 values
+                start_idx_7d = max(0, i - 6)
+                rolling_mean_7d = np.mean(qty_values[start_idx_7d:i+1])
+                
+                # Rolling mean 30d: last 30 values (or all available if less)
+                start_idx_30d = max(0, i - 29)
+                rolling_mean_30d = np.mean(qty_values[start_idx_30d:i+1])
+                
+                # Momentum: 3d vs 14d
+                start_idx_3d = max(0, i - 2)
+                start_idx_14d = max(0, i - 13)
+                rolling_mean_3d = np.mean(qty_values[start_idx_3d:i+1]) if i >= 2 else np.mean(qty_values[:i+1])
+                rolling_mean_14d = np.mean(qty_values[start_idx_14d:i+1]) if i >= 13 else np.mean(qty_values[:i+1])
+                momentum_3d_vs_14d = rolling_mean_3d - rolling_mean_14d
+                
+                window.loc[i, 'rolling_mean_7d'] = rolling_mean_7d
+                window.loc[i, 'rolling_mean_30d'] = rolling_mean_30d
+                window.loc[i, 'momentum_3d_vs_14d'] = momentum_3d_vs_14d
+            
+            # Keep only the last input_size rows for next iteration
+            window = window.tail(input_size).copy()
+            window = window.sort_values(time_col).reset_index(drop=True)
+        
+        # Move to next chunk
+        current_start = chunk_end + timedelta(days=1)
+    
+    # Combine all predictions
+    if all_predictions:
+        final_predictions = pd.concat(all_predictions, ignore_index=True)
+        # Remove duplicates (in case of overlap) by keeping first occurrence
+        final_predictions = final_predictions.drop_duplicates(subset=['date'], keep='first')
+        final_predictions = final_predictions.sort_values('date').reset_index(drop=True)
+        print(f"\n  - Completed rolling prediction: {len(final_predictions)} total predictions")
+        return final_predictions
+    else:
+        return pd.DataFrame(columns=['date', 'predicted'])
+
+
 def predict_recursive(
     model,
     device,
@@ -1003,6 +1496,11 @@ def predict_recursive(
     cat_id: int
 ):
     """
+    DEPRECATED: Recursive prediction mode (replaced by direct multi-step).
+    
+    This function is kept for backward compatibility but should not be used.
+    Use predict_direct_multistep() instead to avoid exposure bias.
+    
     Recursive prediction mode: uses model's own predictions as inputs.
     
     This function simulates a true production forecast where future QTY values
@@ -1022,6 +1520,8 @@ def predict_recursive(
     Returns:
         DataFrame with columns: date, predicted, actual (if available)
     """
+    print("  [WARNING] Using deprecated recursive prediction. Consider using direct multi-step instead.")
+    
     window_config = config.window
     data_config = config.data
     
@@ -1074,6 +1574,23 @@ def predict_recursive(
         # Compute weekend features for current_date
         day_of_week = current_datetime.dayofweek  # 0=Monday, 6=Sunday
         is_weekend = 1 if day_of_week >= 5 else 0
+        
+        # Compute cyclical day-of-week encoding (sin/cos)
+        day_of_week_sin = np.sin(2 * np.pi * day_of_week / 7)
+        day_of_week_cos = np.cos(2 * np.pi * day_of_week / 7)
+        
+        # Compute weekday volume tier features
+        # 2 = Wednesday (highest), 1 = Friday (high), 0 = Tuesday/Thursday (low), -1 = Monday/Saturday/Sunday (neutral)
+        if day_of_week == 2:  # Wednesday
+            weekday_volume_tier = 2
+        elif day_of_week == 4:  # Friday
+            weekday_volume_tier = 1
+        elif day_of_week in [1, 3]:  # Tuesday, Thursday
+            weekday_volume_tier = 0
+        else:  # Monday, Saturday, Sunday
+            weekday_volume_tier = -1
+        
+        is_high_volume_weekday = 1 if day_of_week in [2, 4] else 0  # Wednesday or Friday
         
         # Compute lunar calendar features for current_date
         lunar_month, lunar_day = solar_to_lunar_date(current_date)
@@ -1162,6 +1679,10 @@ def predict_recursive(
         new_row['dayofmonth_cos'] = dayofmonth_cos
         new_row['is_weekend'] = is_weekend
         new_row['day_of_week'] = day_of_week
+        new_row['day_of_week_sin'] = day_of_week_sin
+        new_row['day_of_week_cos'] = day_of_week_cos
+        new_row['weekday_volume_tier'] = weekday_volume_tier
+        new_row['is_high_volume_weekday'] = is_high_volume_weekday
         new_row['lunar_month'] = lunar_month
         new_row['lunar_day'] = lunar_day
         new_row['holiday_indicator'] = holiday_indicator
@@ -1339,145 +1860,8 @@ def train_model_for_prediction(data, config):
         momentum_col="momentum_3d_vs_14d"
     )
     
-    # Encode categories
-    print("\n[T4/T7] Encoding categories and splitting data...")
-    filtered_data, cat2id, num_categories = encode_categories(filtered_data, cat_col)
-    config.set('model.num_categories', num_categories)
-    
-    # Split data
-    train_data, val_data, test_data = split_data(
-        filtered_data, train_size=0.7, val_size=0.1, test_size=0.2, temporal=True
-    )
-    print(f"  - Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
-    
-    # Scaling
-    scaler = fit_scaler(train_data, target_col=target_col_name)
-    train_data = apply_scaling(train_data, scaler, target_col=target_col_name)
-    val_data = apply_scaling(val_data, scaler, target_col=target_col_name)
-    test_data = apply_scaling(test_data, scaler, target_col=target_col_name)
-    
-    # Create windows
-    print("\n[T5/T7] Creating windows...")
-    feature_cols = data_config['feature_cols']
-    target_col = [target_col_name]
-    cat_col_list = [cat_id_col]
-    time_col_list = [time_col]
-    input_size = window_config['input_size']
-    horizon = window_config['horizon']
-    
-    num_features = len(feature_cols)
-    config.set("model.input_dim", num_features)
-    model_config = config.model
-    
-    X_train, y_train, cat_train = slicing_window_category(
-        train_data, input_size, horizon,
-        feature_cols=feature_cols, target_col=target_col, cat_col=cat_col_list, time_col=time_col_list
-    )
-    X_val, y_val, cat_val = slicing_window_category(
-        val_data, input_size, horizon,
-        feature_cols=feature_cols, target_col=target_col, cat_col=cat_col_list, time_col=time_col_list
-    )
-    X_test, y_test, cat_test = slicing_window_category(
-        test_data, input_size, horizon,
-        feature_cols=feature_cols, target_col=target_col, cat_col=cat_col_list, time_col=time_col_list
-    )
-    
-    print(f"  - X_train: {X_train.shape}, X_val: {X_val.shape}, X_test: {X_test.shape}")
-    
-    # Build datasets and loaders
-    from src.data import ForecastDataset
-    train_dataset = ForecastDataset(X_train, y_train, cat_train)
-    val_dataset = ForecastDataset(X_val, y_val, cat_val)
-    test_dataset = ForecastDataset(X_test, y_test, cat_test)
-    
-    train_loader = DataLoader(
-        train_dataset, batch_size=training_config['batch_size'], shuffle=True
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=training_config['val_batch_size'], shuffle=False
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=training_config['test_batch_size'], shuffle=False
-    )
-    
-    # Build model
-    print("\n[T6/T7] Building and training model...")
-    device = torch.device(training_config['device'])
-    model = RNNWithCategory(
-        num_categories=num_categories,
-        cat_emb_dim=model_config['cat_emb_dim'],
-        input_dim=model_config['input_dim'],
-        hidden_size=model_config['hidden_size'],
-        n_layers=model_config['n_layers'],
-        output_dim=model_config['output_dim'],
-        use_layer_norm=model_config.get('use_layer_norm', True),
-    ).to(device)
-    
-    # Training
-    from torch import optim
-    
-    # Create optimizer
-    if training_config['optimizer'].lower() == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=training_config['learning_rate'])
-    else:
-        optimizer = optim.Adam(model.parameters(), lr=training_config['learning_rate'])
-    
-    # Create loss function
-    if training_config['loss'] == 'spike_aware_mse':
-        from src.utils import spike_aware_mse
-        criterion = spike_aware_mse
-    else:
-        criterion = nn.MSELoss()
-    
-    trainer = Trainer(
-        model=model,
-        criterion=criterion,
-        optimizer=optimizer,
-        device=device,
-        scheduler=None,
-    )
-    
-    print(f"  - Training for {training_config['epochs']} epochs...")
-    start_time = time.time()
-    
-    train_losses, val_losses = trainer.fit(
-        train_loader, val_loader,
-        epochs=training_config['epochs'],
-        save_best=True,
-        verbose=True
-    )
-    
-    training_time = time.time() - start_time
-    print(f"  - Training completed in {training_time:.2f}s")
-    
-    # Save model
-    print("\n[T7/T7] Saving model...")
-    save_dir = Path("outputs/mvp_test/models")
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    model_path = save_dir / "best_model.pth"
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'best_val_loss': trainer.best_val_loss
-    }, model_path)
-    
-    # Save scaler
-    scaler_path = save_dir / "scaler.pkl"
-    with open(scaler_path, 'wb') as f:
-        pickle.dump(scaler, f)
-    
-    print(f"  - Model saved to: {model_path}")
-    print(f"  - Scaler saved to: {scaler_path}")
-    
-    return model, device, scaler, str(model_path)
-
-
-def main_prediction_only(config, model_path):
-    """Perform prediction using the trained model."""
-    print("\n" + "=" * 80)
-    print("PHASE 2: MAKING PREDICTIONS")
-    print("=" * 80)
-    
+    # Note: We'll determine historical_year after parsing prediction dates
+    # This config setting is not critical as we load historical data directly
     data_config = config.data
     
     # -----------------------------------------------------------------------
@@ -1501,6 +1885,10 @@ def main_prediction_only(config, model_path):
             f"must be on or after inference.prediction_start ({prediction_start_str})"
         )
 
+    # Determine historical year: use the year before prediction start year
+    # (e.g., if predicting 2026, use 2025 as historical reference)
+    historical_year = prediction_start_date.year - 1
+
     # For pandas filtering we use an exclusive upper bound (end + 1 day)
     prediction_filter_start = prediction_start_date.isoformat()
     prediction_filter_end = (prediction_end_date + timedelta(days=1)).isoformat()
@@ -1509,20 +1897,27 @@ def main_prediction_only(config, model_path):
         f"PREDICTION WINDOW: {prediction_start_date} to {prediction_end_date} "
         f"(loaded from config.inference)"
     )
-    
-    # Load 2024 data to get category mapping and historical window
-    print("\n[2/3] Loading historical 2024 data...")
+    horizon_days = (config.window or {}).get("horizon", 30)
+    requested_days = (prediction_end_date - prediction_start_date).days + 1
+    if requested_days > horizon_days:
+        print(
+            f"[INFO] Requested {requested_days} days exceeds horizon ({horizon_days} days). "
+            f"Will use rolling prediction to cover the full date range from "
+            f"{prediction_start_date} to {prediction_end_date}."
+        )
+    print("=" * 80)
+    print(f"\n[2/7] Loading historical {historical_year} data...")
     data_reader = DataReader(
         data_dir=data_config['data_dir'],
         file_pattern=data_config['file_pattern']
     )
     
     try:
-        ref_data = data_reader.load(years=[2024])
+        ref_data = data_reader.load(years=[historical_year])
     except FileNotFoundError:
         print("[WARNING] Trying pattern-based loading...")
         ref_data = data_reader.load_by_file_pattern(
-            years=[2024],
+            years=[historical_year],
             file_prefix=data_config.get('file_prefix', 'Outboundreports')
         )
     
@@ -1606,6 +2001,9 @@ def main_prediction_only(config, model_path):
             dayfirst=True,
         )
     
+    # Store original data to check date range if filtering returns empty
+    data_2025_original = data_2025.copy()
+    
     data_2025 = data_2025[
         (data_2025[time_col] >= prediction_filter_start)
         & (data_2025[time_col] < prediction_filter_end)
@@ -1614,6 +2012,23 @@ def main_prediction_only(config, model_path):
         f"  - After date filter [{prediction_filter_start} .. {prediction_filter_end}): "
         f"{len(data_2025)} samples"
     )
+    
+    # If no data after filtering, provide helpful error message with available date range
+    if len(data_2025) == 0:
+        if len(data_2025_original) > 0:
+            min_date = data_2025_original[time_col].min()
+            max_date = data_2025_original[time_col].max()
+            raise ValueError(
+                f"No data found in prediction file for the specified date range "
+                f"[{prediction_filter_start} .. {prediction_filter_end}).\n"
+                f"Available date range in file: {min_date.date()} to {max_date.date()}\n"
+                f"Please update config.inference.prediction_start and prediction_end to "
+                f"match the available date range, or use a different prediction data file."
+            )
+        else:
+            raise ValueError(
+                f"Prediction data file is empty or contains no valid data."
+            )
     
     # Check which categories are available in 2025 data
     # Filter out NaN values and convert to string to handle mixed types
@@ -1766,10 +2181,10 @@ def main_prediction_only(config, model_path):
         historical_data_prepared = prepare_prediction_data(ref_data.copy(), config, cat2id, scaler, trained_cat2id)
         data_2025_prepared = prepare_prediction_data(data_2025, config, cat2id, scaler, trained_cat2id)
         
-        # Get last 30 days of December 2024 for initial window (after aggregation/scaling)
+        # Get last N days of historical year for initial window (after aggregation/scaling)
         historical_window = get_historical_window_data(
             historical_data_prepared,
-            end_date=date(2024, 12, 31),
+            end_date=date(historical_year, 12, 31),
             config=config,
             num_days=config.window['input_size']
         )
@@ -1873,33 +2288,67 @@ def main_prediction_only(config, model_path):
                 print("  - Prediction date range: N/A (no prediction windows)")
 
         # Inverse transform predictions and actuals if scaler is available
-        if scaler is not None:
-            print("  - Inverse transforming scaled predictions to original scale...")
-            y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
-            y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
-            # Clip negative predictions to 0 (QTY cannot be negative)
-            negative_count = np.sum(y_pred_tf_unscaled < 0)
-            if negative_count > 0:
-                print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-                y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
-        else:
-            y_true_tf_unscaled = y_true_tf.flatten()
-            y_pred_tf_unscaled = y_pred_tf.flatten()
-            # Clip negative predictions to 0 even if no scaler
-            negative_count = np.sum(y_pred_tf_unscaled < 0)
-            if negative_count > 0:
-                print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-                y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+        # Only do this if we have actual predictions (arrays are not empty)
+        if len(y_true_tf) > 0 and len(y_pred_tf) > 0:
+            if scaler is not None:
+                print("  - Inverse transforming scaled predictions to original scale...")
+                # y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
+                # y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+                y_true_tf_unscaled = scaler.inverse_transform_y(y_true_tf, cat_pred)
+                y_pred_tf_unscaled = scaler.inverse_transform_y(y_pred_tf, cat_pred)
+                # Clip negative predictions to 0 (QTY cannot be negative)
+                negative_count = np.sum(y_pred_tf_unscaled < 0)
+                if negative_count > 0:
+                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+            else:
+                y_true_tf_unscaled = y_true_tf.flatten()
+                y_pred_tf_unscaled = y_pred_tf.flatten()
+                # Clip negative predictions to 0 even if no scaler
+                negative_count = np.sum(y_pred_tf_unscaled < 0)
+                if negative_count > 0:
+                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+            
+            # Apply Sunday-to-Monday carryover rule to teacher-forcing predictions
+            if len(pred_dates) > 0 and len(y_pred_tf_unscaled) == len(pred_dates):
+                print("  - Applying Sunday-to-Monday demand carryover to teacher-forcing predictions...")
+                # Create temporary DataFrame for processing
+                tf_pred_df = pd.DataFrame({
+                    'date': pred_dates,
+                    'predicted': y_pred_tf_unscaled
+                })
+                # Apply carryover (grouped by category if cat_pred is available)
+                if len(cat_pred) == len(tf_pred_df):
+                    tf_pred_df['category_id'] = cat_pred
+                    def apply_carryover_per_cat_tf(group):
+                        return apply_sunday_to_monday_carryover_predictions(
+                            group,
+                            date_col='date',
+                            pred_col='predicted'
+                        )
+                    tf_pred_df = tf_pred_df.groupby('category_id', group_keys=False).apply(
+                        apply_carryover_per_cat_tf
+                    ).reset_index(drop=True)
+                else:
+                    tf_pred_df = apply_sunday_to_monday_carryover_predictions(
+                        tf_pred_df,
+                        date_col='date',
+                        pred_col='predicted'
+                    )
+                y_pred_tf_unscaled = tf_pred_df['predicted'].values
+                print("    - Sunday predictions set to 0, Sunday values added to following Monday")
 
-        # Calculate metrics on unscaled values
-        mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
-        mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
-        rmse_tf = np.sqrt(mse_tf)
-        # Two accuracy views:
-        #  - accuracy_tf_abs: Σ|error| / Σ|actual|  (daily abs before sum)
-        #  - accuracy_tf_sum: |Σ error| / Σ|actual| (sum before abs)
-        accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
-        accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
+            # Calculate metrics on unscaled values
+            mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
+            mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
+            rmse_tf = np.sqrt(mse_tf)
+            # Two accuracy views:
+            #  - accuracy_tf_abs: Σ|error| / Σ|actual|  (daily abs before sum)
+            #  - accuracy_tf_sum: |Σ error| / Σ|actual| (sum before abs)
+            accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
+            accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
+        # If arrays are empty, metrics are already set to np.nan above
         # Preserve existing variable name for downstream compatibility
         accuracy_tf = accuracy_tf_abs
         
@@ -1983,7 +2432,7 @@ def main_prediction_only(config, model_path):
             # Get historical window for this category
             historical_window_cat = get_historical_window_data(
                 historical_data_prepared_cat,
-                end_date=date(2024, 12, 31),
+                end_date=date(historical_year, 12, 31),
                 config=config,
                 num_days=config.window['input_size']
             )
@@ -2051,18 +2500,43 @@ def main_prediction_only(config, model_path):
             time_col
         ).reset_index(drop=True)
 
-        # Run recursive prediction over configured prediction window
-        recursive_preds = predict_recursive(
-            model=model,
-            device=device,
-            initial_window_data=historical_window_filtered,
-            start_date=prediction_start_date,
-            end_date=prediction_end_date,
-            config=config,
-            cat_id=cat_id
-        )
+        # Run direct multi-step prediction over configured prediction window
+        # This addresses exposure bias by predicting entire horizon at once
+        # If date range is longer than horizon, use rolling prediction
+        horizon_days = config.window.get('horizon', 30)
+        requested_days = (prediction_end_date - prediction_start_date).days + 1
+        
+        if requested_days > horizon_days:
+            # Use rolling prediction for long date ranges
+            print(f"  - Date range ({requested_days} days) exceeds horizon ({horizon_days} days)")
+            print(f"  - Using rolling prediction to cover full date range")
+            recursive_preds = predict_direct_multistep_rolling(
+                model=model,
+                device=device,
+                initial_window_data=historical_window_filtered,
+                start_date=prediction_start_date,
+                end_date=prediction_end_date,
+                config=config,
+                cat_id=cat_id
+            )
+        else:
+            # Use single-shot prediction for short date ranges
+            recursive_preds = predict_direct_multistep(
+                model=model,
+                device=device,
+                initial_window_data=historical_window_filtered,
+                start_date=prediction_start_date,
+                end_date=prediction_end_date,
+                config=config,
+                cat_id=cat_id
+            )
         # Attach category label so downstream metrics/CSVs can group by category
         recursive_preds[data_config['cat_col']] = current_category
+
+        # Ensure date columns have compatible types for merging
+        # Convert both to date objects to avoid type mismatch
+        recursive_preds['date'] = pd.to_datetime(recursive_preds['date']).dt.date
+        actuals_by_date_cat['date'] = pd.to_datetime(actuals_by_date_cat['date']).dt.date
 
         # Merge with actuals for this (date, category) pair
         recursive_results_cat = recursive_preds.merge(
@@ -2086,9 +2560,10 @@ def main_prediction_only(config, model_path):
     # Inverse transform predictions if scaler is available
     if scaler is not None and len(recursive_results) > 0:
         print("  - Inverse transforming recursive predictions to original scale...")
-        recursive_results['predicted_unscaled'] = inverse_transform_scaling(
-            recursive_results['predicted'].values, scaler
-        )
+        # recursive_results['predicted_unscaled'] = inverse_transform_scaling(
+        #     recursive_results['predicted'].values, scaler
+        # )
+        recursive_results['predicted_unscaled'] = scaler.inverse_transform_y(recursive_results['predicted'].values,)
     else:
         recursive_results['predicted_unscaled'] = recursive_results['predicted'] if len(recursive_results) > 0 else []
 
@@ -2111,6 +2586,23 @@ def main_prediction_only(config, model_path):
         if holiday_count > 0:
             print(f"  - Applying zero‑volume holiday mask to {holiday_count} recursive prediction day(s).")
             recursive_results.loc[holiday_mask_rec, 'predicted_unscaled'] = 0.0
+    
+    # Apply Sunday-to-Monday carryover rule to predictions (same as training data processing)
+    # This ensures Sunday predictions = 0 and Sunday's value is added to following Monday
+    if len(recursive_results) > 0:
+        print("  - Applying Sunday-to-Monday demand carryover to predictions...")
+        # Group by category to apply carryover per category independently
+        def apply_carryover_per_cat(group):
+            return apply_sunday_to_monday_carryover_predictions(
+                group,
+                date_col='date',
+                pred_col='predicted_unscaled'
+            )
+        
+        recursive_results = recursive_results.groupby(
+            data_config['cat_col'], group_keys=False
+        ).apply(apply_carryover_per_cat).reset_index(drop=True)
+        print("    - Sunday predictions set to 0, Sunday values added to following Monday")
 
     # Calculate metrics using unscaled values (include all dates;
     # actuals that were originally missing are treated as 0).
@@ -2286,14 +2778,60 @@ def main_prediction_only(config, model_path):
     print("=" * 80)
     
     # Prepare teacher forcing results for comparison
-    # Normalize pred_dates to plain Python date objects
-    tf_dates = pd.to_datetime(pred_dates).date
+    # Ensure all arrays have the same length
+    len_pred = len(y_pred_tf_unscaled) if hasattr(y_pred_tf_unscaled, '__len__') and len(y_pred_tf_unscaled) > 0 else 0
+    len_actual = len(y_true_tf_unscaled) if hasattr(y_true_tf_unscaled, '__len__') and len(y_true_tf_unscaled) > 0 else 0
+    len_dates = len(pred_dates) if hasattr(pred_dates, '__len__') and len(pred_dates) > 0 else 0
     
-    tf_results = pd.DataFrame({
-        'date': tf_dates,
-        'actual': y_true_tf_unscaled,
-        'predicted': y_pred_tf_unscaled
-    })
+    # Find the minimum length to ensure all arrays match
+    if len_pred > 0 and len_actual > 0 and len_dates > 0:
+        min_len = min(len_pred, len_actual, len_dates)
+        if len_pred != len_actual or len_pred != len_dates or len_actual != len_dates:
+            print(f"  [WARNING] Array length mismatch detected: predictions={len_pred}, actuals={len_actual}, dates={len_dates}")
+            print(f"  [WARNING] Trimming all arrays to minimum length: {min_len}")
+    else:
+        min_len = 0
+    
+    if min_len == 0:
+        # If any array is empty, create empty DataFrame
+        print("  [WARNING] One or more arrays are empty. Creating empty DataFrame for teacher forcing results.")
+        tf_results = pd.DataFrame(columns=['date', 'actual', 'predicted'])
+    else:
+        # Trim all arrays to the same length
+        y_pred_tf_trimmed = y_pred_tf_unscaled[:min_len] if hasattr(y_pred_tf_unscaled, '__getitem__') else y_pred_tf_unscaled
+        y_true_tf_trimmed = y_true_tf_unscaled[:min_len] if hasattr(y_true_tf_unscaled, '__getitem__') else y_true_tf_unscaled
+        
+        # Handle pred_dates - could be list, array, Series, or Index
+        if hasattr(pred_dates, '__getitem__'):
+            pred_dates_trimmed = pred_dates[:min_len]
+        else:
+            pred_dates_trimmed = pred_dates
+        
+        # Normalize pred_dates to plain Python date objects
+        if len(pred_dates_trimmed) > 0:
+            # Convert to pandas Series first, then extract date
+            try:
+                tf_dates_series = pd.to_datetime(pred_dates_trimmed)
+                tf_dates = [d.date() for d in tf_dates_series]
+            except Exception as e:
+                print(f"  [WARNING] Error converting dates: {e}. Using original dates.")
+                tf_dates = pred_dates_trimmed if isinstance(pred_dates_trimmed, list) else list(pred_dates_trimmed)
+        else:
+            tf_dates = []
+        
+        # Ensure all arrays have exactly the same length
+        if len(tf_dates) != min_len:
+            tf_dates = tf_dates[:min_len] if len(tf_dates) > min_len else tf_dates
+        if len(y_pred_tf_trimmed) != min_len:
+            y_pred_tf_trimmed = y_pred_tf_trimmed[:min_len] if hasattr(y_pred_tf_trimmed, '__getitem__') else y_pred_tf_trimmed
+        if len(y_true_tf_trimmed) != min_len:
+            y_true_tf_trimmed = y_true_tf_trimmed[:min_len] if hasattr(y_true_tf_trimmed, '__getitem__') else y_true_tf_trimmed
+        
+        tf_results = pd.DataFrame({
+            'date': tf_dates,
+            'actual': y_true_tf_trimmed,
+            'predicted': y_pred_tf_trimmed
+        })
     # Holiday Zero‑Constraint for Teacher Forcing as well:
     # mask predicted volume to 0 on Vietnam warehouse day‑off dates so that
     # evaluation and exported CSVs reflect the operational constraint.
@@ -2322,11 +2860,66 @@ def main_prediction_only(config, model_path):
             print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {accuracy_rec:<19.2f}% {accuracy_diff:<19.2f}%")
         print(f"\nError increase: {(mae_rec / mae_tf - 1) * 100:.2f}% (MAE)")
         print(f"Error increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}% (RMSE)")
+        
+        # Calculate error increase percentages for upload
+        mae_error_increase_pct = (mae_rec / mae_tf - 1) * 100 if not np.isnan(mae_tf) and mae_tf != 0 else None
+        rmse_error_increase_pct = (rmse_rec / rmse_tf - 1) * 100 if not np.isnan(rmse_tf) and rmse_tf != 0 else None
     else:
         print(f"{'MAE':<15} {mae_tf:<20.4f} {'N/A':<20}")
         print(f"{'RMSE':<15} {rmse_tf:<20.4f} {'N/A':<20}")
         if not np.isnan(accuracy_tf):
             print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {'N/A':<20}")
+        
+        # Set error increase to None if recursive metrics are not available
+        mae_error_increase_pct = None
+        rmse_error_increase_pct = None
+    
+    # Upload history prediction results to Google Sheets
+    if GSPREAD_AVAILABLE:
+        # Calculate number of months for prediction
+        # Calculate the difference in months between start and end dates
+        months_diff = (prediction_end_date.year - prediction_start_date.year) * 12 + \
+                      (prediction_end_date.month - prediction_start_date.month) + 1
+        # Add 1 to include both start and end months
+        
+        # Determine category label
+        if len(categories_to_predict) == 1:
+            category_label = categories_to_predict[0]
+        elif len(categories_to_predict) == len(available_categories):
+            category_label = "ALL"
+        else:
+            # Multiple but not all categories - join them
+            category_label = ", ".join(sorted(categories_to_predict))
+        
+        spreadsheet_id = os.getenv(
+            "GOOGLE_SHEET_ID",
+            "1I8JEqZbWGZNOsebzOBfeHKJ7Z7jA1zcfX8JhjqGSowE",  # same default as combine_data.py
+        )
+        credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "key.json")
+        
+        print(f"\n[Google Sheets] Uploading history prediction results...")
+        upload_history_prediction(
+            spreadsheet_id=spreadsheet_id,
+            category=category_label,
+            prediction_year=prediction_start_date.year,
+            num_months=months_diff,
+            tf_mse=mse_tf if not np.isnan(mse_tf) else None,
+            tf_mae=mae_tf if not np.isnan(mae_tf) else None,
+            tf_rmse=rmse_tf if not np.isnan(rmse_tf) else None,
+            tf_accuracy_abs=accuracy_tf_abs if not np.isnan(accuracy_tf_abs) else None,
+            tf_accuracy_sum=accuracy_tf_sum if not np.isnan(accuracy_tf_sum) else None,
+            rec_mse=mse_rec if not np.isnan(mse_rec) else None,
+            rec_mae=mae_rec if not np.isnan(mae_rec) else None,
+            rec_rmse=rmse_rec if not np.isnan(rmse_rec) else None,
+            rec_accuracy_abs=accuracy_rec_total_abs if not np.isnan(accuracy_rec_total_abs) else None,
+            rec_accuracy_sum=accuracy_rec_total_sum if not np.isnan(accuracy_rec_total_sum) else None,
+            mae_error_increase_pct=mae_error_increase_pct,
+            rmse_error_increase_pct=rmse_error_increase_pct,
+            credentials_path=credentials_path,
+            sheet_name="History_prediction"
+        )
+    else:
+        print("\n[Google Sheets] gspread not available; skipping history prediction upload.")
     
     # Save results
     print("\n" + "=" * 80)

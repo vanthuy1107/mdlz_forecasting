@@ -5,6 +5,27 @@ This module provides:
  - RNNForecastor: baseline RNN/LSTM model without explicit category conditioning
 
 The implementations follow the architecture described in MODEL_LOGIC.md.
+
+Day-of-Week Encoding:
+The model currently uses cyclical encoding (sin/cos) for day-of-week features
+(day_of_week_sin, day_of_week_cos) which ensures the model understands that
+Sunday (6) is adjacent to Monday (0). This is the recommended approach.
+
+Alternative: Day-of-Week Embedding
+For an embedding-based approach, you would:
+1. Extract day_of_week (0-6) from features before passing to LSTM
+2. Create an Embedding layer: nn.Embedding(7, day_emb_dim)
+3. Embed the day_of_week and concatenate with other features
+4. This allows the model to learn a multi-dimensional representation of each day
+
+Example implementation:
+    # In __init__:
+    self.day_embedding = nn.Embedding(7, day_emb_dim)  # 7 days
+    
+    # In forward:
+    day_of_week = x_seq[:, :, day_of_week_idx].long()  # Extract from features
+    day_emb = self.day_embedding(day_of_week)  # (B, T, day_emb_dim)
+    # Remove day_of_week from x_seq and concatenate day_emb instead
 """
 
 import torch
@@ -58,7 +79,8 @@ class RNNWithCategory(nn.Module):
             batch_first=True,
         )
 
-        # Final prediction layer (sequence-to-one)
+        # Final prediction layer: outputs entire forecast horizon at once (direct multi-step)
+        # This prevents exposure bias from recursive forecasting
         self.fc = nn.Linear(hidden_size, output_dim)
 
         # Optional Layer Normalization on the final hidden state to
@@ -73,7 +95,8 @@ class RNNWithCategory(nn.Module):
             x_cat: Category IDs of shape (B,) or (B, 1).
 
         Returns:
-            Tensor of shape (B, output_dim) with predictions.
+            Tensor of shape (B, output_dim) with predictions for entire forecast horizon.
+            For direct multi-step forecasting, output_dim = horizon (e.g., 30 days).
         """
         # Ensure category IDs are 1D long tensors
         if x_cat.dim() > 1:
@@ -115,7 +138,8 @@ class RNNWithCategory(nn.Module):
         if self.layer_norm is not None:
             last_out = self.layer_norm(last_out)
 
-        # Final prediction
+        # Final prediction: outputs entire forecast horizon at once
+        # Shape: (B, output_dim) where output_dim = horizon (e.g., 30)
         pred = self.fc(last_out)
         return pred
 

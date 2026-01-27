@@ -2,7 +2,7 @@
 
 # Data Configuration
 data:
-  data_dir: "./dataset/data_cat"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
+  data_dir: "./dataset"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
   years: [2023, 2024]
   
@@ -12,7 +12,7 @@ data:
   #   "single" - Train on one specific category (specify in category_filter)
   #   "both" - Train on all categories AND each category separately
   #   "each" - Train on each category separately (uses major_categories if specified)
-  category_mode: "single"  # "all", "single", "both", or "each"
+  category_mode: "all"  # "all", "single", "both", or "each"
   category_filter: "DRY"  # Only used when category_mode is "single". Specify category name or null for all
   # Category behavior rules for multi-target decomposition:
   #   - major_categories: High-volume, structurally stable categories that should be modeled with the LSTM
@@ -23,6 +23,10 @@ data:
   major_categories:
     - "DRY"
     - "FRESH"
+    - "TET"
+    - "MOONCAKE"
+    - "POSM"
+    - "OTHER"
   minor_categories:
     - "POSM"
     - "OTHER"
@@ -45,7 +49,12 @@ data:
     - "days_until_next_holiday"
     - "days_since_holiday"
     - "is_weekend"
-    - "day_of_week"
+    - "day_of_week_sin"
+    - "day_of_week_cos"
+    - "weekday_volume_tier"
+    - "is_high_volume_weekday"
+    - "is_EOM"
+    - "days_until_month_end"
     - "lunar_month"
     - "lunar_day"
     - "rolling_mean_7d"
@@ -67,9 +76,11 @@ data:
   test_size: 0.2
 
 # Window configuration
+# Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
+# This prevents exposure bias from recursive forecasting where errors compound
 window:
-  input_size: 30
-  horizon: 1
+  input_size: 7  # Increased from 30 to provide more context
+  horizon: 2     # Changed from 1 to 30 for direct multi-step prediction
 
 # Model Configuration
 model:
@@ -79,7 +90,7 @@ model:
   input_dim: 15  # Updated dynamically in code to match feature_cols length
   hidden_size: 128
   n_layers: 2
-  output_dim: 1
+  output_dim: 30  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
   dropout_prob: 0.2  # Only for RNNForecastor
   use_layer_norm: true  # Apply LayerNorm on final hidden state before output
 
@@ -88,7 +99,7 @@ training:
   batch_size: 64
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 100
+  epochs: 20
   learning_rate: 0.001
   optimizer: "Adam"
   
@@ -129,9 +140,15 @@ inference:
   # data.category_filter so train & prediction share one setting.
 
   # Prediction horizon (time range and data file for inference script)
-  # These values are used by mvp_predict_2025.py so you can easily change
+  # These values are used by mvp_predict.py so you can easily change
   # which period to forecast without editing code.
-  prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
+  #
+  # The script automatically uses rolling prediction when the date range exceeds
+  # window.horizon (e.g., 30 days). For example, setting prediction_start to
+  # "2025-01-01" and prediction_end to "2025-12-31" will automatically predict
+  # the full year by looping through chunks of horizon days, updating the window
+  # with predictions from each chunk for the next chunk.
+  prediction_data_path: "dataset/data_2025.csv"  # CSV with future period to predict
   prediction_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
-  prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD)
+  prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
 
