@@ -713,6 +713,9 @@ def aggregate_daily(
         'is_EOM', 'days_until_month_end',
         # Seasonal active-window features
         'is_active_season', 'days_until_peak',
+        # NEW: Gregorian-Anchored Peak Alignment features for MOONCAKE
+        'days_until_lunar_08_01',  # Countdown to Lunar 08-01
+        'is_august',  # Binary feature for Gregorian August (month == 8)
     ]
     
     for col in feature_cols_to_keep:
@@ -867,7 +870,7 @@ def add_seasonal_active_window_features(
     
     Creates:
     - is_active_season: Binary feature (1 if date is in active season, 0 otherwise)
-      - For MOONCAKE: Active only between Lunar Months 6 and 9
+      - For MOONCAKE: Active only between Lunar Months 7-9 AND Gregorian months 7-9 (July-September)
       - For TET: Active only 45 days prior to the Lunar New Year
     - days_until_peak: Continuous countdown feature to the peak event
       - For MOONCAKE: Days until Mid-Autumn Festival (lunar month 8, day 15)
@@ -908,28 +911,50 @@ def add_seasonal_active_window_features(
         cat_mask = df[cat_col] == category
         
         if category == "MOONCAKE":
-            # MOONCAKE: Active between Lunar Months 6 and 9
+            # MOONCAKE: Active between Lunar Months 7 and 9 (narrowed from 6-9 to prevent early predictions)
             # Peak is Mid-Autumn Festival (Lunar Month 8, Day 15)
+            # CRITICAL: Start at Lunar Month 7 to prevent predictions in June (Lunar Month 6 starts too early)
             if lunar_month_col not in df.columns:
                 raise ValueError(f"Lunar month column '{lunar_month_col}' not found. Call add_lunar_calendar_features first.")
             
-            # Active season: Lunar months 6-9
+            # Ensure time column is datetime for Gregorian month check
+            if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+                df[time_col] = pd.to_datetime(df[time_col])
+            
+            # Active season: Lunar months 7-9 AND Gregorian months 7-9 (July-September)
+            # This prevents early predictions in June and late predictions in October
             lunar_month = df.loc[cat_mask, lunar_month_col]
             lunar_day = df.loc[cat_mask, "lunar_day"] if "lunar_day" in df.columns else None
+            gregorian_month = df.loc[cat_mask, time_col].dt.month
             
-            is_active = (lunar_month >= 6) & (lunar_month <= 9)
+            # Narrow active season: Lunar months 7-9 AND Gregorian months 7-9 (July-September only)
+            is_active = ((lunar_month >= 7) & (lunar_month <= 9)) & ((gregorian_month >= 7) & (gregorian_month <= 9))
             df.loc[cat_mask & is_active, is_active_season_col] = 1
             
-            # Golden Window: Lunar Months 6.15 to 8.01 (peak buildup period)
-            # This is the critical period where the model must recognize peak occurs 30-45 days before Day 15 of Month 8
+            # Golden Window: GREGORIAN AUGUST (August 1-31) - Anchored to Gregorian calendar
+            # This overrides the lunar-based window to prevent phase shift errors.
+            # The model must treat Gregorian Month == 8 as a high-probability trigger,
+            # regardless of the corresponding Lunar month.
+            # Ensure time column is datetime
+            if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+                df[time_col] = pd.to_datetime(df[time_col])
+            
+            # Golden Window: Gregorian August (month == 8)
+            gregorian_month = df.loc[cat_mask, time_col].dt.month
+            is_golden = (gregorian_month == 8)
+            df.loc[cat_mask & is_golden, is_golden_window_col] = 1
+            
+            # Peak Loss Window: Lunar Months 7.15 to 8.15 (for loss weighting - more focused than golden window)
+            # This is the critical peak period where errors must be heavily penalized
             if lunar_day is not None:
-                # Golden Window: (lunar_month == 6 and lunar_day >= 15) OR (lunar_month == 7) OR (lunar_month == 8 and lunar_day <= 1)
-                is_golden = (
-                    ((lunar_month == 6) & (lunar_day >= 15)) |
-                    (lunar_month == 7) |
-                    ((lunar_month == 8) & (lunar_day <= 1))
+                is_peak_loss_window = (
+                    ((lunar_month == 7) & (lunar_day >= 15)) |
+                    ((lunar_month == 8) & (lunar_day <= 15))
                 )
-                df.loc[cat_mask & is_golden, is_golden_window_col] = 1
+                # Store as a separate feature for loss weighting
+                if 'is_peak_loss_window' not in df.columns:
+                    df['is_peak_loss_window'] = 0
+                df.loc[cat_mask & is_peak_loss_window, 'is_peak_loss_window'] = 1
             
             # Calculate days until peak (Mid-Autumn Festival: Lunar Month 8, Day 15)
             mooncake_mask = cat_mask
@@ -977,6 +1002,113 @@ def add_seasonal_active_window_features(
     # Ensure is_golden_window exists for all rows (should already be initialized, but double-check)
     if is_golden_window_col not in df.columns:
         df[is_golden_window_col] = 0
+    
+    return df
+
+
+def add_days_until_lunar_08_01_feature(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    lunar_month_col: str = "lunar_month",
+    lunar_day_col: str = "lunar_day",
+    days_until_lunar_08_01_col: str = "days_until_lunar_08_01"
+) -> pd.DataFrame:
+    """
+    Add countdown feature to Lunar 08-01 (the 1st day of the 8th Lunar Month).
+    
+    This feature replaces the raw lunar_month dependency with a consistent,
+    non-drifting countdown signal. Lunar 08-01 is the "Golden Deadline" where
+    warehouses must be near-empty of Mooncake stock to ensure it reaches store
+    shelves for the month of August (Lunar).
+    
+    ENHANCED: Now uses lunar_utils for precise countdown computation.
+    
+    Creates:
+    - days_until_lunar_08_01: Number of days until the next occurrence of
+      Lunar Month 8, Day 1. This provides a smooth countdown gradient that
+      helps the model anticipate the peak period.
+    
+    Args:
+        df: DataFrame with time, lunar_month, and lunar_day columns.
+        time_col: Name of time column.
+        lunar_month_col: Name of lunar month column.
+        lunar_day_col: Name of lunar day column.
+        days_until_lunar_08_01_col: Name for days_until_lunar_08_01 column.
+    
+    Returns:
+        DataFrame with added days_until_lunar_08_01 feature.
+    """
+    from src.utils.lunar_utils import compute_days_until_lunar_08_01
+    
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Initialize column
+    df[days_until_lunar_08_01_col] = 365  # Default fallback
+    
+    # Compute for each row using enhanced lunar_utils
+    for idx in df.index:
+        row_date = df.loc[idx, time_col]
+        
+        # Skip NaN/None dates
+        if pd.isna(row_date):
+            continue
+        
+        try:
+            if hasattr(row_date, 'date'):
+                row_date = row_date.date()
+            else:
+                row_date = pd.to_datetime(row_date).date()
+            
+            # Use enhanced lunar_utils function
+            days_until = compute_days_until_lunar_08_01(row_date)
+            df.loc[idx, days_until_lunar_08_01_col] = days_until
+        except (ValueError, TypeError, AttributeError) as e:
+            # If date conversion fails, keep default value (365)
+            continue
+    
+    return df
+
+
+def add_is_august_feature(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    is_august_col: str = "is_august"
+) -> pd.DataFrame:
+    """
+    Add binary is_august feature to reinforce August (Gregorian month 8) as a strong signal.
+    
+    For MOONCAKE category, August is the "Sell-in" month for retail distribution.
+    Even if the Mid-Autumn Festival is late (October), the warehouse must clear stock
+    in August to fill the distribution channels. This feature anchors the model to
+    treat Gregorian Month == 8 as a high-probability trigger for MOONCAKE volume,
+    regardless of the corresponding Lunar month.
+    
+    Creates:
+    - is_august: Binary feature (1 if Gregorian month == 8, 0 otherwise)
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        is_august_col: Name for is_august column.
+    
+    Returns:
+        DataFrame with added is_august feature.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract Gregorian month (1-12)
+    month = df[time_col].dt.month
+    
+    # Create binary is_august feature (1 for August, 0 otherwise)
+    df[is_august_col] = (month == 8).astype(int)
     
     return df
 
@@ -1067,19 +1199,29 @@ def add_year_over_year_volume_features(
     cat_col: str = "CATEGORY",
     yoy_1y_col: str = "cbm_last_year",
     yoy_2y_col: str = "cbm_2_years_ago",
+    use_lunar_matching: bool = False,
+    lunar_month_col: str = "lunar_month",
+    lunar_day_col: str = "lunar_day",
 ) -> pd.DataFrame:
     """
     Add year-over-year volume features for seasonal products like MOONCAKE.
     
     For highly seasonal products that follow annual patterns (e.g., Mid-Autumn Festival),
-    the same calendar period from previous years is more predictive than recent days.
+    the same period from previous years is more predictive than recent days.
+    
+    CRITICAL FOR MOONCAKE: When use_lunar_matching=True, matches by LUNAR date instead of
+    calendar date. This is essential because Mid-Autumn Festival shifts 10-20 days every year
+    on the solar calendar. For example:
+    - 2025-08-15 (solar) might be Lunar 07-15, which should match 2024-08-XX (solar) that is also Lunar 07-15
+    - NOT 2024-08-15 (solar), which would be a different lunar date
     
     Creates:
-    - cbm_last_year: Total CBM from the same calendar date one year earlier (same category)
-    - cbm_2_years_ago: Total CBM from the same calendar date two years earlier (same category)
+    - cbm_last_year: Total CBM from the same LUNAR date one year earlier (if use_lunar_matching=True)
+                     OR same calendar date one year earlier (if use_lunar_matching=False)
+    - cbm_2_years_ago: Total CBM from the same LUNAR date two years earlier (if use_lunar_matching=True)
+                      OR same calendar date two years earlier (if use_lunar_matching=False)
     
-    This gives the model explicit year-over-year patterns, which is critical for seasonal
-    products that have strong annual periodicity (like MOONCAKE around Mid-Autumn Festival).
+    ENHANCED: Now uses the lunar_utils module for precise Lunar-to-Lunar date mapping.
     
     Args:
         df: DataFrame with daily aggregated data (one row per date per category).
@@ -1088,6 +1230,9 @@ def add_year_over_year_volume_features(
         cat_col: Name of category column.
         yoy_1y_col: Name for 1-year-ago volume feature.
         yoy_2y_col: Name for 2-years-ago volume feature.
+        use_lunar_matching: If True, match by lunar date instead of calendar date (for MOONCAKE).
+        lunar_month_col: Name of lunar month column (required if use_lunar_matching=True).
+        lunar_day_col: Name of lunar day column (required if use_lunar_matching=True).
     
     Returns:
         DataFrame with added year-over-year volume features.
@@ -1098,47 +1243,111 @@ def add_year_over_year_volume_features(
     if target_col not in df.columns:
         return df
     
-    # Ensure time column is datetime for DateOffset operations
+    # Ensure time column is datetime
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
         df[time_col] = pd.to_datetime(df[time_col])
     
     # Coerce target to numeric
     target_numeric = pd.to_numeric(df[target_col], errors="coerce").fillna(0.0)
     
-    # Build mapping for 1 year ago: (category, date+1year) -> volume
-    aux_1y = df[[time_col, cat_col, target_col]].copy()
-    aux_1y[time_col] = aux_1y[time_col] + pd.DateOffset(years=1)
-    aux_1y = aux_1y.rename(columns={target_col: yoy_1y_col})
-    
-    # Merge back to align each row with volume from exactly one year before
-    df = df.merge(
-        aux_1y[[time_col, cat_col, yoy_1y_col]],
-        on=[time_col, cat_col],
-        how="left",
-    )
-    
-    # Build mapping for 2 years ago: (category, date+2years) -> volume
-    aux_2y = df[[time_col, cat_col, target_col]].copy()
-    aux_2y[time_col] = aux_2y[time_col] + pd.DateOffset(years=2)
-    aux_2y = aux_2y.rename(columns={target_col: yoy_2y_col})
-    
-    # Merge back to align each row with volume from exactly two years before
-    df = df.merge(
-        aux_2y[[time_col, cat_col, yoy_2y_col]],
-        on=[time_col, cat_col],
-        how="left",
-    )
+    if use_lunar_matching:
+        # ENHANCED: Use lunar_utils for precise Lunar-to-Lunar date mapping
+        from src.utils.lunar_utils import find_lunar_aligned_date_from_previous_year
+        
+        if lunar_month_col not in df.columns or lunar_day_col not in df.columns:
+            raise ValueError(
+                f"Lunar columns '{lunar_month_col}' and '{lunar_day_col}' must exist "
+                "when use_lunar_matching=True. Call add_lunar_calendar_features first."
+            )
+        
+        # Initialize YoY columns
+        df[yoy_1y_col] = 0.0
+        df[yoy_2y_col] = 0.0
+        
+        # Process each category separately
+        for category in df[cat_col].unique():
+            cat_mask = df[cat_col] == category
+            cat_data = df[cat_mask].copy()
+            
+            # For each row in this category, find lunar-aligned historical dates
+            for idx in cat_data.index:
+                current_date = cat_data.loc[idx, time_col]
+                
+                # Skip NaN/None dates
+                if pd.isna(current_date):
+                    continue
+                
+                try:
+                    if hasattr(current_date, 'date'):
+                        current_date = current_date.date()
+                    else:
+                        current_date = pd.to_datetime(current_date).date()
+                except (ValueError, TypeError, AttributeError):
+                    # If date conversion fails, skip this row
+                    continue
+                
+                # Find lunar-aligned date from 1 year ago
+                date_1y_ago = find_lunar_aligned_date_from_previous_year(
+                    current_date,
+                    cat_data,
+                    time_col=time_col,
+                    years_back=1
+                )
+                
+                if date_1y_ago is not None:
+                    # Fetch CBM value from that date
+                    mask_1y = cat_data[time_col].dt.date == date_1y_ago
+                    if mask_1y.any():
+                        cbm_val = cat_data.loc[mask_1y, target_col].iloc[0]
+                        if pd.notna(cbm_val):
+                            df.at[idx, yoy_1y_col] = cbm_val
+                
+                # Find lunar-aligned date from 2 years ago
+                date_2y_ago = find_lunar_aligned_date_from_previous_year(
+                    current_date,
+                    cat_data,
+                    time_col=time_col,
+                    years_back=2
+                )
+                
+                if date_2y_ago is not None:
+                    # Fetch CBM value from that date
+                    mask_2y = cat_data[time_col].dt.date == date_2y_ago
+                    if mask_2y.any():
+                        cbm_val = cat_data.loc[mask_2y, target_col].iloc[0]
+                        if pd.notna(cbm_val):
+                            df.at[idx, yoy_2y_col] = cbm_val
+        
+    else:
+        # Original calendar date matching
+        # Build mapping for 1 year ago: (category, date+1year) -> volume
+        aux_1y = df[[time_col, cat_col, target_col]].copy()
+        aux_1y[time_col] = aux_1y[time_col] + pd.DateOffset(years=1)
+        aux_1y = aux_1y.rename(columns={target_col: yoy_1y_col})
+        
+        # Merge back to align each row with volume from exactly one year before
+        df = df.merge(
+            aux_1y[[time_col, cat_col, yoy_1y_col]],
+            on=[time_col, cat_col],
+            how="left",
+        )
+        
+        # Build mapping for 2 years ago: (category, date+2years) -> volume
+        aux_2y = df[[time_col, cat_col, target_col]].copy()
+        aux_2y[time_col] = aux_2y[time_col] + pd.DateOffset(years=2)
+        aux_2y = aux_2y.rename(columns={target_col: yoy_2y_col})
+        
+        # Merge back to align each row with volume from exactly two years before
+        df = df.merge(
+            aux_2y[[time_col, cat_col, yoy_2y_col]],
+            on=[time_col, cat_col],
+            how="left",
+        )
     
     # For dates where we don't have data from prior years, fall back to 0.0
     # (off-season periods should be 0, which is correct for MOONCAKE)
     df[yoy_1y_col] = df[yoy_1y_col].fillna(0.0)
     df[yoy_2y_col] = df[yoy_2y_col].fillna(0.0)
-    
-    # CRITICAL: Add trend deviation feature - compares recent trend vs year-over-year baseline
-    # This allows the model to adjust the year-over-year baseline based on recent patterns
-    # For example: if last year was 100 CBM but recent 21 days average is 120 CBM,
-    # the model should predict closer to 120 (trend-adjusted) rather than blindly using 100
-    # We'll compute this after rolling features are added (in training pipeline)
     
     return df
 

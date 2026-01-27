@@ -21,6 +21,8 @@ from src.data.preprocessing import (
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
     add_seasonal_active_window_features,
+    add_days_until_lunar_08_01_feature,
+    add_is_august_feature,
 )
 
 
@@ -180,8 +182,23 @@ def prepare_prediction_data(
         if "days_to_mid_autumn" not in data.columns:
             data["days_to_mid_autumn"] = 365  # Default: far from Mid-Autumn Festival
     
+    # Gregorian-anchored peak alignment features (MOONCAKE): match training when in feature_cols
+    feature_cols = data_config.get("feature_cols", [])
+    if "days_until_lunar_08_01" in feature_cols and "lunar_month" in data.columns and "lunar_day" in data.columns:
+        print("  - Adding days_until_lunar_08_01 (countdown to Lunar 08-01)...")
+        data = add_days_until_lunar_08_01_feature(
+            data,
+            time_col=time_col,
+            lunar_month_col="lunar_month",
+            lunar_day_col="lunar_day",
+            days_until_lunar_08_01_col="days_until_lunar_08_01",
+        )
+    if "is_august" in feature_cols:
+        print("  - Adding is_august (Gregorian month == 8)...")
+        data = add_is_august_feature(data, time_col=time_col, is_august_col="is_august")
+    
     # Feature engineering: Seasonal active-window masking for seasonal categories
-    print("  - Adding seasonal active-window features (is_active_season, days_until_peak, is_golden_window)...")
+    print("  - Adding seasonal active-window features (is_active_season, days_until_peak, is_golden_window, is_peak_loss_window)...")
     data = add_seasonal_active_window_features(
         data,
         time_col=time_col,
@@ -192,6 +209,21 @@ def prepare_prediction_data(
         days_until_peak_col="days_until_peak",
         is_golden_window_col="is_golden_window",
     )
+    
+    # Ensure is_peak_loss_window exists (created by add_seasonal_active_window_features for MOONCAKE)
+    if "is_peak_loss_window" not in data.columns:
+        print("  - Adding is_peak_loss_window feature (Lunar Months 7.15 to 8.15)...")
+        data["is_peak_loss_window"] = 0
+        # Re-run the function to create is_peak_loss_window if it wasn't created
+        if current_category == "MOONCAKE" and "lunar_month" in data.columns and "lunar_day" in data.columns:
+            lunar_month = data["lunar_month"]
+            lunar_day = data["lunar_day"]
+            # Peak Loss Window: Lunar Months 7.15 to 8.15
+            is_peak_loss_window = (
+                ((lunar_month == 7) & (lunar_day >= 15)) |
+                ((lunar_month == 8) & (lunar_day <= 15))
+            )
+            data.loc[is_peak_loss_window, "is_peak_loss_window"] = 1
     
     # Daily aggregation: Group by date and category, sum target
     # This matches the training pipeline
@@ -273,15 +305,35 @@ def prepare_prediction_data(
                         historical_prepared[cat_col] = current_category
                 
                 # Combine historical + prediction data for YoY calculation
-                # Only keep essential columns to avoid merge issues
+                # Include lunar columns for lunar-aligned matching
                 essential_cols = [time_col, cat_col, data_config['target_col']]
-                historical_for_merge = historical_prepared[essential_cols].copy()
-                data_for_merge = data[essential_cols].copy()
+                # Add lunar columns if they exist (required for lunar matching)
+                if 'lunar_month' in data.columns and 'lunar_day' in data.columns:
+                    essential_cols.extend(['lunar_month', 'lunar_day'])
+                
+                # Filter columns that exist in both dataframes
+                hist_cols = [col for col in essential_cols if col in historical_prepared.columns]
+                data_cols = [col for col in essential_cols if col in data.columns]
+                
+                historical_for_merge = historical_prepared[hist_cols].copy()
+                data_for_merge = data[data_cols].copy()
                 
                 combined_for_yoy = pd.concat([historical_for_merge, data_for_merge], ignore_index=True)
                 combined_for_yoy = combined_for_yoy.sort_values(time_col).reset_index(drop=True)
                 
+                # If lunar columns missing, add them now (compute from date)
+                if 'lunar_month' not in combined_for_yoy.columns or 'lunar_day' not in combined_for_yoy.columns:
+                    print("    - Adding lunar calendar features to combined data for lunar matching...")
+                    from src.data import add_lunar_calendar_features
+                    combined_for_yoy = add_lunar_calendar_features(
+                        combined_for_yoy,
+                        time_col=time_col,
+                        lunar_month_col="lunar_month",
+                        lunar_day_col="lunar_day"
+                    )
+                
                 # Calculate YoY features on combined data
+                # CRITICAL: Use lunar matching for MOONCAKE to align with lunar calendar
                 combined_with_yoy = add_year_over_year_volume_features(
                     combined_for_yoy,
                     target_col=data_config['target_col'],
@@ -289,7 +341,11 @@ def prepare_prediction_data(
                     cat_col=cat_col,
                     yoy_1y_col="cbm_last_year",
                     yoy_2y_col="cbm_2_years_ago",
+                    use_lunar_matching=True,  # CRITICAL: Use lunar-aligned YoY for MOONCAKE
+                    lunar_month_col="lunar_month",
+                    lunar_day_col="lunar_day",
                 )
+                print("    - Using LUNAR-ALIGNED YoY matching (same lunar date from previous years)")
                 
                 # Extract only prediction data rows (with YoY features populated)
                 # Filter to dates that are in the original prediction data
@@ -340,6 +396,9 @@ def prepare_prediction_data(
                     cat_col=cat_col,
                     yoy_1y_col="cbm_last_year",
                     yoy_2y_col="cbm_2_years_ago",
+                    use_lunar_matching=True,  # Use lunar matching even without historical data
+                    lunar_month_col="lunar_month",
+                    lunar_day_col="lunar_day",
                 )
         else:
             print("    - WARNING: No historical data provided! YoY features will be 0.0 for all dates.")
@@ -351,6 +410,9 @@ def prepare_prediction_data(
                 cat_col=cat_col,
                 yoy_1y_col="cbm_last_year",
                 yoy_2y_col="cbm_2_years_ago",
+                use_lunar_matching=True,  # Use lunar matching
+                lunar_month_col="lunar_month",
+                lunar_day_col="lunar_day",
             )
         
         print(f"    - Added year-over-year features: cbm_last_year, cbm_2_years_ago")
@@ -394,6 +456,35 @@ def prepare_prediction_data(
         
         print(f"    - Added trend deviation features: rolling_mean_21d, trend_vs_yoy_ratio, trend_vs_yoy_diff")
         print(f"    - Model will learn to adjust year-over-year baseline based on recent 21-day trend")
+    
+    # Ensure is_peak_loss_window exists after aggregation (might be lost during aggregation)
+    if current_category == "MOONCAKE" and "is_peak_loss_window" not in data.columns:
+        print("  - Re-adding is_peak_loss_window feature after aggregation...")
+        data["is_peak_loss_window"] = 0
+        if "lunar_month" in data.columns and "lunar_day" in data.columns:
+            lunar_month = data["lunar_month"]
+            lunar_day = data["lunar_day"]
+            # Peak Loss Window: Lunar Months 7.15 to 8.15
+            is_peak_loss_window = (
+                ((lunar_month == 7) & (lunar_day >= 15)) |
+                ((lunar_month == 8) & (lunar_day <= 15))
+            )
+            data.loc[is_peak_loss_window, "is_peak_loss_window"] = 1
+    
+    # Ensure is_peak_loss_window is in feature_cols for MOONCAKE
+    # This is critical because the model expects this feature during prediction
+    if current_category == "MOONCAKE":
+        feature_cols_list = data_config.get("feature_cols", [])
+        if "is_peak_loss_window" not in feature_cols_list:
+            # Update the config's feature_cols list
+            feature_cols_list = list(feature_cols_list) if feature_cols_list else []
+            feature_cols_list.append("is_peak_loss_window")
+            # Try to update config using set method if available, otherwise update dict directly
+            try:
+                config.set("data.feature_cols", feature_cols_list)
+            except:
+                data_config["feature_cols"] = feature_cols_list
+            print("  - Added is_peak_loss_window to feature_cols for MOONCAKE")
     
     # CRITICAL: Encode categories using training-time mapping
     # This ensures consistency regardless of which categories are processed together
@@ -462,21 +553,84 @@ def _add_weekend_features(
 
 
 def _solar_to_lunar_date(solar_date) -> tuple:
-    """Convert solar (Gregorian) date to lunar (Vietnamese) date approximation."""
+    """
+    Convert solar (Gregorian) date to lunar (Vietnamese) date using anchor points.
+    
+    Uses known Mid-Autumn Festival dates (Lunar Month 8, Day 15) as anchor points.
+    """
     from datetime import date
-    if solar_date.month == 1 and solar_date.day >= 20:
-        lunar_month = 1
-        lunar_day = solar_date.day - 19
-    elif solar_date.month == 2:
-        if solar_date.day <= 10:
-            lunar_month = 1
-            lunar_day = solar_date.day + 12
+    import pandas as pd
+    import numpy as np
+    
+    # Handle pandas Timestamp or NaT
+    if pd.isna(solar_date):
+        # Return default lunar date for invalid dates
+        return 8, 15
+    
+    # Convert to date object if it's a pandas Timestamp
+    if isinstance(solar_date, pd.Timestamp):
+        solar_date = solar_date.date()
+    elif not isinstance(solar_date, date):
+        # Try to convert to date
+        try:
+            if hasattr(solar_date, 'date'):
+                solar_date = solar_date.date()
+            else:
+                solar_date = pd.to_datetime(solar_date).date()
+        except:
+            # If conversion fails, return default
+            return 8, 15
+    
+    # Anchor points: Mid-Autumn Festival dates (Lunar Month 8, Day 15)
+    mid_autumn_anchors = {
+        2023: date(2023, 9, 29),   # Lunar 08-15
+        2024: date(2024, 9, 17),   # Lunar 08-15
+        2025: date(2025, 10, 6),   # Lunar 08-15
+        2026: date(2026, 9, 25),   # Lunar 08-15
+    }
+    
+    # Find the closest Mid-Autumn anchor
+    try:
+        year = solar_date.year
+        # Check if year is valid (not nan)
+        if pd.isna(year) or np.isnan(year) if isinstance(year, (int, float)) else False:
+            # Default to 2025 if year is invalid
+            anchor_year = 2025
+        elif year not in mid_autumn_anchors:
+            if year < 2023:
+                anchor_year = 2023
+            elif year > 2026:
+                anchor_year = 2026
+            else:
+                anchor_year = 2025  # Default for years between anchors
         else:
-            lunar_month = 2
-            lunar_day = solar_date.day - 10
+            anchor_year = year
+    except (AttributeError, ValueError):
+        # If year extraction fails, default to 2025
+        anchor_year = 2025
+    
+    anchor_date = mid_autumn_anchors[anchor_year]
+    days_diff = (solar_date - anchor_date).days
+    
+    # Start from Lunar Month 8, Day 15
+    lunar_month = 8
+    lunar_day = 15
+    
+    # Adjust by days difference
+    if days_diff > 0:
+        lunar_day += days_diff
+        while lunar_day > 30:
+            lunar_day -= 30
+            lunar_month += 1
+            if lunar_month > 12:
+                lunar_month = 1
     else:
-        lunar_month = solar_date.month
-        lunar_day = solar_date.day
+        lunar_day += days_diff
+        while lunar_day < 1:
+            lunar_day += 30
+            lunar_month -= 1
+            if lunar_month < 1:
+                lunar_month = 12
     
     lunar_month = max(1, min(12, lunar_month))
     lunar_day = max(1, min(30, lunar_day))
@@ -493,7 +647,22 @@ def _add_lunar_calendar_features(
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
         df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
-    lunar_dates = df[time_col].dt.date.apply(_solar_to_lunar_date)
+    # Convert to date objects, handling NaT values
+    # Filter out NaT values before applying the conversion
+    valid_mask = pd.notna(df[time_col])
+    lunar_dates = pd.Series(index=df.index, dtype=object)
+    
+    if valid_mask.any():
+        # Only convert valid dates
+        valid_dates = df.loc[valid_mask, time_col].dt.date
+        lunar_dates.loc[valid_mask] = valid_dates.apply(_solar_to_lunar_date)
+    
+    # Fill invalid dates with default lunar date (8, 15)
+    # Need to create a list of tuples for each invalid date
+    num_invalid = (~valid_mask).sum()
+    if num_invalid > 0:
+        default_lunar = [(8, 15)] * num_invalid
+        lunar_dates.loc[~valid_mask] = default_lunar
     df[lunar_month_col] = [ld[0] for ld in lunar_dates]
     df[lunar_day_col] = [ld[1] for ld in lunar_dates]
     return df

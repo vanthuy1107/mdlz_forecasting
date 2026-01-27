@@ -46,7 +46,7 @@ from src.data.preprocessing import (
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
-from src.utils import plot_difference, spike_aware_mse
+from src.utils import plot_difference, spike_aware_mse, quantile_loss, QuantileLoss, quantile_coverage, calculate_forecast_metrics
 
 
 ###############################################################################
@@ -260,10 +260,15 @@ def add_holiday_features_vietnam(
 
 def solar_to_lunar_date(solar_date: date) -> Tuple[int, int]:
     """
-    Convert solar (Gregorian) date to lunar (Vietnamese) date approximation.
+    Convert solar (Gregorian) date to lunar (Vietnamese) date using anchor points.
     
-    This is a simplified approximation. For production, use a proper lunar calendar library.
-    Tet (Lunar New Year) typically falls between Jan 20 - Feb 20 in solar calendar.
+    Uses known Mid-Autumn Festival dates (Lunar Month 8, Day 15) as anchor points:
+    - 2023: Sep 29 = Lunar 08-15
+    - 2024: Sep 17 = Lunar 08-15
+    - 2025: Oct 6 = Lunar 08-15
+    - 2026: Sep 25 = Lunar 08-15
+    
+    This provides accurate lunar date conversion for MOONCAKE forecasting.
     
     Args:
         solar_date: Gregorian date.
@@ -271,29 +276,64 @@ def solar_to_lunar_date(solar_date: date) -> Tuple[int, int]:
     Returns:
         Tuple of (lunar_month, lunar_day) where lunar_month is 1-12.
     """
-    # Simplified conversion: use solar month/day as approximation
-    # This will be refined with actual lunar calendar data
-    # For now, Tet is typically in late Jan / early Feb
-    if solar_date.month == 1 and solar_date.day >= 20:
-        # Late January = start of lunar year (month 1)
-        lunar_month = 1
-        lunar_day = solar_date.day - 19  # Approximate offset
-    elif solar_date.month == 2:
-        # February continues lunar month 1 or moves to month 2
-        if solar_date.day <= 10:
-            lunar_month = 1
-            lunar_day = solar_date.day + 12  # Continue from Jan
+    # Anchor points: Mid-Autumn Festival dates (Lunar Month 8, Day 15)
+    mid_autumn_anchors = {
+        2023: date(2023, 9, 29),   # Lunar 08-15
+        2024: date(2024, 9, 17),   # Lunar 08-15
+        2025: date(2025, 10, 6),   # Lunar 08-15
+        2026: date(2026, 9, 25),   # Lunar 08-15
+    }
+    
+    # Find the closest Mid-Autumn anchor (before or after)
+    year = solar_date.year
+    if year not in mid_autumn_anchors:
+        # For years outside our anchor range, use the closest year
+        if year < 2023:
+            anchor_year = 2023
+        elif year > 2026:
+            anchor_year = 2026
         else:
-            lunar_month = 2
-            lunar_day = solar_date.day - 10
+            anchor_year = year
     else:
-        # Approximate: lunar months are roughly aligned with solar months
-        lunar_month = solar_date.month
-        lunar_day = solar_date.day
+        anchor_year = year
+    
+    anchor_date = mid_autumn_anchors[anchor_year]
+    days_diff = (solar_date - anchor_date).days
+    
+    # Calculate lunar date relative to anchor (Lunar Month 8, Day 15)
+    # Approximate: 1 lunar month ≈ 29.5 solar days
+    # Lunar months: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+    # We're at Month 8, Day 15 when days_diff = 0
+    
+    # Convert days difference to lunar month/day offset
+    # Positive days_diff = after Mid-Autumn (moving forward in lunar calendar)
+    # Negative days_diff = before Mid-Autumn (moving backward in lunar calendar)
+    
+    # Start from Lunar Month 8, Day 15
+    lunar_month = 8
+    lunar_day = 15
+    
+    # Adjust by days difference (approximate: 29.5 days per lunar month)
+    if days_diff > 0:
+        # After Mid-Autumn: move forward
+        lunar_day += days_diff
+        while lunar_day > 30:
+            lunar_day -= 30
+            lunar_month += 1
+            if lunar_month > 12:
+                lunar_month = 1
+    else:
+        # Before Mid-Autumn: move backward
+        lunar_day += days_diff
+        while lunar_day < 1:
+            lunar_day += 30
+            lunar_month -= 1
+            if lunar_month < 1:
+                lunar_month = 12
     
     # Clamp to valid ranges
     lunar_month = max(1, min(12, lunar_month))
-    lunar_day = max(1, min(30, lunar_day))  # Lunar months have 29-30 days
+    lunar_day = max(1, min(30, lunar_day))
     
     return lunar_month, lunar_day
 
@@ -744,6 +784,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         "is_active_season",  # Seasonal active-window masking
         "days_until_peak",  # Countdown to peak event
         "is_golden_window",  # Golden Window indicator (Lunar Months 6.15 to 8.01 for MOONCAKE)
+        "is_peak_loss_window",  # Peak Loss Window indicator (Lunar Months 7.15 to 8.15 for MOONCAKE - critical peak period)
         # Structural prior on payload density (CBM per QTY)
         "cbm_per_qty",
         "cbm_per_qty_last_year",
@@ -929,6 +970,27 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         is_golden_window_col="is_golden_window",
     )
     
+    # NEW: Add Gregorian-Anchored Peak Alignment features for MOONCAKE
+    if category_filter == "MOONCAKE":
+        print("  - Adding Gregorian-Anchored Peak Alignment features (days_until_lunar_08_01, is_august)...")
+        from src.data.preprocessing import add_days_until_lunar_08_01_feature, add_is_august_feature
+        
+        # Add countdown to Lunar 08-01 (replaces raw lunar_month dependency)
+        filtered_data = add_days_until_lunar_08_01_feature(
+            filtered_data,
+            time_col=time_col,
+            lunar_month_col="lunar_month",
+            lunar_day_col="lunar_day",
+            days_until_lunar_08_01_col="days_until_lunar_08_01"
+        )
+        
+        # Add is_august feature (Gregorian month == 8) to reinforce August as strong signal
+        filtered_data = add_is_august_feature(
+            filtered_data,
+            time_col=time_col,
+            is_august_col="is_august"
+        )
+    
     # Daily aggregation: Group by date and category, sum QTY
     # This ensures the model learns daily demand patterns, not individual transaction sizes
     print("\n[5.5/8] Aggregating to daily totals by category...")
@@ -967,9 +1029,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         else:
             filtered_data["days_to_mid_autumn"] = 365  # Default for non-MOONCAKE
     
-    # Ensure is_golden_window exists after aggregation
-    if "is_golden_window" not in filtered_data.columns:
-        print("  - Re-adding is_golden_window feature after aggregation...")
+    # Ensure is_golden_window and is_peak_loss_window exist after aggregation
+    if "is_golden_window" not in filtered_data.columns or "is_peak_loss_window" not in filtered_data.columns:
+        print("  - Re-adding is_golden_window and is_peak_loss_window features after aggregation...")
         filtered_data = add_seasonal_active_window_features(
             filtered_data,
             time_col=time_col,
@@ -980,6 +1042,28 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             days_until_peak_col="days_until_peak",
             is_golden_window_col="is_golden_window",
         )
+        # is_peak_loss_window is created inside add_seasonal_active_window_features
+    
+    # Ensure new Gregorian-Anchored Peak Alignment features exist after aggregation (for MOONCAKE)
+    if category_filter == "MOONCAKE":
+        if "days_until_lunar_08_01" not in filtered_data.columns:
+            print("  - Re-adding days_until_lunar_08_01 feature after aggregation...")
+            from src.data.preprocessing import add_days_until_lunar_08_01_feature
+            filtered_data = add_days_until_lunar_08_01_feature(
+                filtered_data,
+                time_col=time_col,
+                lunar_month_col="lunar_month",
+                lunar_day_col="lunar_day",
+                days_until_lunar_08_01_col="days_until_lunar_08_01"
+            )
+        if "is_august" not in filtered_data.columns:
+            print("  - Re-adding is_august feature after aggregation...")
+            from src.data.preprocessing import add_is_august_feature
+            filtered_data = add_is_august_feature(
+                filtered_data,
+                time_col=time_col,
+                is_august_col="is_august"
+            )
     
     # Context-aware operational status flags (holiday/off, Sunday downtime, anomalies)
     # NOTE: This runs on the daily aggregated series. If you need strict calendar
@@ -1022,7 +1106,8 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     # For highly seasonal products, same period from previous years is more predictive than recent days
     if category_filter == "MOONCAKE":
         print("  - Adding year-over-year volume features for MOONCAKE (cbm_last_year, cbm_2_years_ago)...")
-        print("    - MOONCAKE is highly seasonal - same period from previous years is more predictive")
+        print("    - MOONCAKE is highly seasonal - same LUNAR period from previous years is more predictive")
+        print("    - Using LUNAR date matching (not calendar date) to handle Mid-Autumn Festival shift")
         filtered_data = add_year_over_year_volume_features(
             filtered_data,
             target_col=target_col_name,
@@ -1030,6 +1115,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             cat_col=cat_col,
             yoy_1y_col="cbm_last_year",
             yoy_2y_col="cbm_2_years_ago",
+            use_lunar_matching=True,  # CRITICAL: Match by lunar date, not calendar date
+            lunar_month_col="lunar_month",
+            lunar_day_col="lunar_day",
         )
         # Add these features to feature_cols
         if "cbm_last_year" not in data_config["feature_cols"]:
@@ -1088,6 +1176,12 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         config.set("data.feature_cols", data_config["feature_cols"])
         print(f"    - Added trend deviation features: rolling_mean_21d, trend_vs_yoy_ratio, trend_vs_yoy_diff")
         print(f"    - Model will learn to adjust year-over-year baseline based on recent 21-day trend")
+    
+    # Ensure is_peak_loss_window is in feature_cols for MOONCAKE
+    if category_filter == "MOONCAKE" and "is_peak_loss_window" not in data_config["feature_cols"]:
+        data_config["feature_cols"].append("is_peak_loss_window")
+        config.set("data.feature_cols", data_config["feature_cols"])
+        print(f"  - Added is_peak_loss_window to feature_cols (Lunar Months 7.15 to 8.15)")
     
     # Residual learning: define causal baseline and residual target (optional)
     use_residual = data_config.get("use_residual_target", False)
@@ -1408,202 +1502,379 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         else:
             print(f"  - Transfer Learning: Source model not found at {source_model_path}, using random initialization")
     
-    # Build loss function with category-specific weights
-    print("  - Configuring spike_aware_mse loss with category-specific weights...")
+    # Build loss function - check if quantile loss is requested
+    loss_function_name = training_config.get('loss', 'spike_aware_mse')
+    quantile_value = training_config.get('quantile', 0.9)  # Default to 0.9 for P90
     
-    # Build category loss weights mapping (category_id -> loss_weight)
-    category_loss_weights = {}
-    cat_params = get_category_params(category_specific_params, category_filter)
-    if 'loss_weight' in cat_params:
-        # Map category name to category_id
-        if category_filter and category_filter in cat2id:
-            category_loss_weights[cat2id[category_filter]] = cat_params['loss_weight']
-            print(f"  - Loss weight for {category_filter}: {cat_params['loss_weight']}")
-    
-    # Get Monday loss weight from config (for FRESH category)
-    monday_loss_weight = 3.0  # Default
-    cat_params = get_category_params(category_specific_params, category_filter)
-    if 'monday_loss_weight' in cat_params:
-        monday_loss_weight = float(cat_params['monday_loss_weight'])
-        print(f"  - Monday loss weight: {monday_loss_weight}x (for {category_filter or 'default'})")
-    
-    # Get Golden Window loss weight from config (for MOONCAKE category)
-    golden_window_weight = 1.0  # Default (no additional weighting)
-    use_smooth_l1 = False
-    smooth_l1_beta = 1.0
-    if 'golden_window_weight' in cat_params:
-        golden_window_weight = float(cat_params['golden_window_weight'])
-        print(f"  - Golden Window loss weight: {golden_window_weight}x (for {category_filter or 'default'})")
-    if 'use_smooth_l1' in cat_params:
-        use_smooth_l1 = bool(cat_params['use_smooth_l1'])
-        print(f"  - Using SmoothL1Loss: {use_smooth_l1} (for {category_filter or 'default'})")
-    if 'smooth_l1_beta' in cat_params:
-        smooth_l1_beta = float(cat_params['smooth_l1_beta'])
-        print(f"  - SmoothL1Loss beta: {smooth_l1_beta} (for {category_filter or 'default'})")
-    
-    # Find feature indices for extracting from inputs
-    is_monday_idx = None
-    day_of_week_sin_idx = None
-    day_of_week_cos_idx = None
-    is_golden_window_idx = None
-    if 'Is_Monday' in feature_cols:
-        is_monday_idx = feature_cols.index('Is_Monday')
-        print(f"  - Is_Monday feature found at index {is_monday_idx}")
-    if 'day_of_week_sin' in feature_cols and 'day_of_week_cos' in feature_cols:
-        day_of_week_sin_idx = feature_cols.index('day_of_week_sin')
-        day_of_week_cos_idx = feature_cols.index('day_of_week_cos')
-        print(f"  - day_of_week_sin/cos features found at indices {day_of_week_sin_idx}/{day_of_week_cos_idx}")
-    if 'is_golden_window' in feature_cols:
-        is_golden_window_idx = feature_cols.index('is_golden_window')
-        print(f"  - is_golden_window feature found at index {is_golden_window_idx}")
-    
-    # Create a partial function that includes category loss weights, Monday weighting, and Golden Window weighting
-    def create_criterion(cat_loss_weights, monday_weight, golden_window_weight, use_smooth_l1, smooth_l1_beta,
-                        is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_golden_window_idx, horizon_days):
-        def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
-            # Extract Is_Monday for the prediction horizon
-            is_monday_horizon = None
-            if (is_monday_feature_idx is not None or (day_of_week_sin_idx is not None and day_of_week_cos_idx is not None)) and inputs is not None and monday_weight > 1.0:
-                # inputs shape: (batch, input_size, features)
-                batch_size = inputs.shape[0]
-                
-                # Compute day of week for the last input day
-                # Method 1: Use Is_Monday if available (most direct)
-                if is_monday_feature_idx is not None:
-                    last_day_is_monday = inputs[:, -1, is_monday_feature_idx]  # (batch,) or (batch, 1)
-                    # Ensure 1D
-                    if last_day_is_monday.ndim > 1:
-                        last_day_is_monday = last_day_is_monday.squeeze()
-                    # If Is_Monday == 1, then day_of_week = 0 (Monday)
-                    # For non-Monday days, we set to -1 (unknown) and skip Monday weighting for those
-                    last_day_dow = torch.where(
-                        last_day_is_monday > 0.5, 
-                        torch.tensor(0.0, device=inputs.device), 
-                        torch.tensor(-1.0, device=inputs.device)
-                    )
-                    # Ensure 1D shape
-                    if last_day_dow.ndim > 1:
-                        last_day_dow = last_day_dow.squeeze()
-                # Method 2: Compute from day_of_week_sin/cos (more accurate)
-                elif day_of_week_sin_idx is not None and day_of_week_cos_idx is not None:
-                    last_day_sin = inputs[:, -1, day_of_week_sin_idx]  # (batch,) or (batch, 1)
-                    last_day_cos = inputs[:, -1, day_of_week_cos_idx]  # (batch,) or (batch, 1)
-                    # Ensure 1D
-                    if last_day_sin.ndim > 1:
-                        last_day_sin = last_day_sin.squeeze()
-                    if last_day_cos.ndim > 1:
-                        last_day_cos = last_day_cos.squeeze()
-                    # Recover day_of_week from sin/cos: atan2(sin, cos) * 7 / (2*pi)
-                    # Monday (0) -> sin=0, cos=1
-                    # We'll use a simpler approach: check if values are close to Monday's encoding
-                    # Monday: sin ≈ 0, cos ≈ 1
-                    last_day_is_monday = (torch.abs(last_day_sin) < 0.1) & (last_day_cos > 0.9)
-                    last_day_dow = torch.where(
-                        last_day_is_monday, 
-                        torch.tensor(0.0, device=inputs.device), 
-                        torch.tensor(-1.0, device=inputs.device)
-                    )
-                    # Ensure 1D shape
-                    if last_day_dow.ndim > 1:
-                        last_day_dow = last_day_dow.squeeze()
-                else:
-                    last_day_is_monday = None
-                    last_day_dow = None
-                
-                if last_day_dow is not None:
-                    # Ensure last_day_dow is 1D: (batch_size,)
-                    # Squeeze all dimensions of size 1
-                    while last_day_dow.ndim > 1:
-                        last_day_dow = last_day_dow.squeeze()
-                    # If still not 1D, flatten it
-                    if last_day_dow.ndim > 1:
-                        last_day_dow = last_day_dow.flatten()
+    if loss_function_name == "quantile":
+        # Use Quantile Loss (Pinball Loss) for P90 prediction
+        print(f"  - Configuring Quantile Loss (Pinball Loss) with quantile={quantile_value} (P90)...")
+        print(f"  - Quantile Loss provides asymmetric penalty (9x more for under-forecasting):")
+        print(f"    - Higher penalty when actual > prediction (under-forecasting: stock-outs) = {quantile_value} * error")
+        print(f"    - Lower penalty when actual < prediction (over-forecasting: safety stock) = {1-quantile_value} * error")
+        print(f"    - Penalty ratio: {quantile_value}/{1-quantile_value:.1f} = {quantile_value/(1-quantile_value):.1f}x more severe for under-forecasting")
+        
+        # Get active season weight from category-specific params
+        active_season_weight = 1.0  # Default (no additional weighting)
+        peak_loss_window_weight = 1.0  # Default (no additional weighting)
+        august_boost_weight = 1.0  # Default (no additional weighting)
+        cat_params = get_category_params(category_specific_params, category_filter)
+        if 'active_season_weight' in cat_params:
+            active_season_weight = float(cat_params['active_season_weight'])
+            print(f"  - Active season weight: {active_season_weight}x (applies to entire active season, 70+ days)")
+        if 'peak_loss_window_weight' in cat_params:
+            peak_loss_window_weight = float(cat_params['peak_loss_window_weight'])
+            print(f"  - Peak Loss Window weight: {peak_loss_window_weight}x (Lunar Months 7.15 to 8.15, critical peak period)")
+        if 'august_boost_weight' in cat_params:
+            august_boost_weight = float(cat_params['august_boost_weight'])
+            print(f"  - August boost weight: {august_boost_weight}x (Gregorian August, for {category_filter or 'default'})")
+        
+        # Find is_active_season feature index for extracting from inputs
+        is_active_season_idx = None
+        if 'is_active_season' in feature_cols:
+            is_active_season_idx = feature_cols.index('is_active_season')
+            print(f"  - is_active_season feature found at index {is_active_season_idx}")
+        
+        # Find is_peak_loss_window feature index for extracting from inputs
+        is_peak_loss_window_idx = None
+        if 'is_peak_loss_window' in feature_cols:
+            is_peak_loss_window_idx = feature_cols.index('is_peak_loss_window')
+            print(f"  - is_peak_loss_window feature found at index {is_peak_loss_window_idx}")
+        
+        # Find is_august feature index for extracting from inputs
+        is_august_idx = None
+        if 'is_august' in feature_cols:
+            is_august_idx = feature_cols.index('is_august')
+            print(f"  - is_august feature found at index {is_august_idx}")
+        
+        # Create QuantileLoss instance with active season, peak loss window, and August boost weighting
+        quantile_loss_instance = QuantileLoss(
+            quantile=quantile_value, 
+            reduction='mean', 
+            active_season_weight=active_season_weight,
+            peak_loss_window_weight=peak_loss_window_weight,
+            august_boost_weight=august_boost_weight
+        )
+        
+        # Create wrapper function to extract is_active_season, is_peak_loss_window, and is_august from inputs
+        def create_quantile_criterion(quantile_loss_fn, is_active_season_feature_idx, is_peak_loss_window_feature_idx, is_august_feature_idx):
+            def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
+                # Extract is_active_season for the prediction horizon
+                is_active_season_horizon = None
+                if is_active_season_feature_idx is not None and inputs is not None and active_season_weight > 1.0:
+                    # Extract is_active_season from the last timestep of input
+                    last_day_is_active = inputs[:, -1, is_active_season_feature_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_active.ndim > 1:
+                        last_day_is_active = last_day_is_active.squeeze()
                     
                     if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
                         horizon = y_pred.shape[1]
-                        is_monday_horizon = torch.zeros((batch_size, horizon), device=y_pred.device)
-                        
-                        # Compute which days in horizon are Mondays
-                        # If last input day is Monday (dow=0), then:
-                        # - Horizon day 0 (tomorrow) is Tuesday (dow=1)
-                        # - Horizon day 6 is Monday (dow=0)
-                        # - Horizon day 13 is Monday (dow=0)
-                        # General: horizon day H is Monday if (last_day_dow + H + 1) % 7 == 0
-                        for h in range(horizon):
-                            # Compute day of week for horizon day h
-                            # Last input day is day -1, first horizon day is day 0
-                            # last_day_dow is (batch_size,), we add h+1 and take mod 7
-                            # Only compute if we know the day of week (last_day_dow >= 0)
-                            known_dow_mask = last_day_dow >= 0  # True where we know the day of week
-                            horizon_day_dow = torch.where(
-                                known_dow_mask,
-                                (last_day_dow + h + 1) % 7,
-                                torch.tensor(-1.0, device=inputs.device)  # Unknown
-                            )
-                            # Ensure result is 1D
-                            if horizon_day_dow.ndim > 1:
-                                horizon_day_dow = horizon_day_dow.squeeze()
-                            # Monday is day 0, and only mark as Monday if we knew the starting day
-                            is_monday_horizon[:, h] = ((horizon_day_dow == 0) & known_dow_mask).float()
+                        # Expand to match horizon shape
+                        is_active_season_horizon = last_day_is_active.unsqueeze(-1).expand(batch_size, horizon)
                     else:  # Single-step
-                        # For single-step, check if the prediction day is Monday
-                        # If last input day is Monday, next day is Tuesday (not Monday)
-                        # We need to check if next day is Monday: (last_day_dow + 1) % 7 == 0
-                        next_day_dow = (last_day_dow + 1) % 7
-                        if next_day_dow.ndim > 1:
-                            next_day_dow = next_day_dow.squeeze()
-                        is_monday_horizon = (next_day_dow == 0).float()
-                else:
-                    # If we can't determine day of week, set all to zero (no Monday weighting)
-                    if y_pred.ndim == 2:
-                        is_monday_horizon = torch.zeros((batch_size, y_pred.shape[1]), device=y_pred.device)
-                    else:
-                        is_monday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
-            
-            # Extract is_golden_window for the prediction horizon (for MOONCAKE category)
-            is_golden_window_horizon = None
-            if is_golden_window_idx is not None and inputs is not None and golden_window_weight > 1.0:
-                # Extract is_golden_window from the last timestep of input
-                # For multi-step forecasting, we use the last input day's golden window status
-                # and apply it to all horizon days (simplified approach)
-                last_day_is_golden = inputs[:, -1, is_golden_window_idx]  # (batch,) or (batch, 1)
-                if last_day_is_golden.ndim > 1:
-                    last_day_is_golden = last_day_is_golden.squeeze()
+                        is_active_season_horizon = last_day_is_active
                 
-                if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
-                    batch_size = y_pred.shape[0]
-                    horizon = y_pred.shape[1]
-                    # Expand to match horizon shape
-                    is_golden_window_horizon = last_day_is_golden.unsqueeze(-1).expand(batch_size, horizon)
-                else:  # Single-step
-                    is_golden_window_horizon = last_day_is_golden
-            
-            return spike_aware_mse(
-                y_pred, 
-                y_true, 
-                category_ids=category_ids,
-                category_loss_weights=cat_loss_weights if cat_loss_weights else None,
-                is_monday=is_monday_horizon,
-                monday_loss_weight=monday_weight,
-                is_golden_window=is_golden_window_horizon,
-                golden_window_weight=golden_window_weight,
-                use_smooth_l1=use_smooth_l1,
-                smooth_l1_beta=smooth_l1_beta
-            )
-        return criterion_fn
-    
-    criterion = create_criterion(
-        category_loss_weights, 
-        monday_loss_weight, 
-        golden_window_weight,
-        use_smooth_l1,
-        smooth_l1_beta,
-        is_monday_idx, 
-        day_of_week_sin_idx, 
-        day_of_week_cos_idx, 
-        is_golden_window_idx,
-        horizon
-    )
+                # Extract is_peak_loss_window for the prediction horizon
+                is_peak_loss_window_horizon = None
+                if is_peak_loss_window_feature_idx is not None and inputs is not None and peak_loss_window_weight > 1.0:
+                    # Extract is_peak_loss_window from the last timestep of input
+                    last_day_is_peak = inputs[:, -1, is_peak_loss_window_feature_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_peak.ndim > 1:
+                        last_day_is_peak = last_day_is_peak.squeeze()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
+                        horizon = y_pred.shape[1]
+                        # Expand to match horizon shape
+                        is_peak_loss_window_horizon = last_day_is_peak.unsqueeze(-1).expand(batch_size, horizon)
+                    else:  # Single-step
+                        is_peak_loss_window_horizon = last_day_is_peak
+                
+                # Extract is_august for the prediction horizon (for MOONCAKE category - Gregorian August)
+                is_august_horizon = None
+                if is_august_feature_idx is not None and inputs is not None and august_boost_weight > 1.0:
+                    # Extract is_august from the last timestep of input
+                    last_day_is_august = inputs[:, -1, is_august_feature_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_august.ndim > 1:
+                        last_day_is_august = last_day_is_august.squeeze()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
+                        horizon = y_pred.shape[1]
+                        # Expand to match horizon shape
+                        is_august_horizon = last_day_is_august.unsqueeze(-1).expand(batch_size, horizon)
+                    else:  # Single-step
+                        is_august_horizon = last_day_is_august
+                
+                return quantile_loss_fn(
+                    y_pred, y_true, 
+                    category_ids=category_ids, 
+                    inputs=inputs, 
+                    is_active_season=is_active_season_horizon,
+                    is_peak_loss_window=is_peak_loss_window_horizon,
+                    is_august=is_august_horizon
+                )
+            return criterion_fn
+        
+        criterion = create_quantile_criterion(quantile_loss_instance, is_active_season_idx, is_peak_loss_window_idx, is_august_idx)
+        print(f"  - ✓ Quantile Loss configured for {category_filter or 'all categories'}")
+        print(f"  - Target: At least {quantile_value*100:.0f}% of actual values should fall below P90 prediction")
+    else:
+        # Use spike_aware_mse loss (default behavior)
+        print(f"  - Configuring spike_aware_mse loss with category-specific weights...")
+        
+        # Build category loss weights mapping (category_id -> loss_weight)
+        category_loss_weights = {}
+        cat_params = get_category_params(category_specific_params, category_filter)
+        if 'loss_weight' in cat_params:
+            # Map category name to category_id
+            if category_filter and category_filter in cat2id:
+                category_loss_weights[cat2id[category_filter]] = cat_params['loss_weight']
+                print(f"  - Loss weight for {category_filter}: {cat_params['loss_weight']}")
+        
+        # Get Monday loss weight from config (for FRESH category)
+        monday_loss_weight = 3.0  # Default
+        cat_params = get_category_params(category_specific_params, category_filter)
+        if 'monday_loss_weight' in cat_params:
+            monday_loss_weight = float(cat_params['monday_loss_weight'])
+            print(f"  - Monday loss weight: {monday_loss_weight}x (for {category_filter or 'default'})")
+        
+        # Get Golden Window loss weight from config (for MOONCAKE category)
+        golden_window_weight = 1.0  # Default (no additional weighting)
+        peak_loss_window_weight = 1.0  # Default (no additional weighting)
+        august_boost_weight = 1.0  # Default (no additional weighting)
+        use_smooth_l1 = False
+        smooth_l1_beta = 1.0
+        if 'golden_window_weight' in cat_params:
+            golden_window_weight = float(cat_params['golden_window_weight'])
+            print(f"  - Golden Window loss weight: {golden_window_weight}x (for {category_filter or 'default'})")
+        if 'peak_loss_window_weight' in cat_params:
+            peak_loss_window_weight = float(cat_params['peak_loss_window_weight'])
+            print(f"  - Peak Loss Window weight: {peak_loss_window_weight}x (Lunar Months 7.15 to 8.15, for {category_filter or 'default'})")
+        if 'august_boost_weight' in cat_params:
+            august_boost_weight = float(cat_params['august_boost_weight'])
+            print(f"  - August boost weight: {august_boost_weight}x (Gregorian August, for {category_filter or 'default'})")
+        if 'use_smooth_l1' in cat_params:
+            use_smooth_l1 = bool(cat_params['use_smooth_l1'])
+            print(f"  - Using SmoothL1Loss: {use_smooth_l1} (for {category_filter or 'default'})")
+        if 'smooth_l1_beta' in cat_params:
+            smooth_l1_beta = float(cat_params['smooth_l1_beta'])
+            print(f"  - SmoothL1Loss beta: {smooth_l1_beta} (for {category_filter or 'default'})")
+        
+        # Find feature indices for extracting from inputs
+        is_monday_idx = None
+        day_of_week_sin_idx = None
+        day_of_week_cos_idx = None
+        is_golden_window_idx = None
+        if 'Is_Monday' in feature_cols:
+            is_monday_idx = feature_cols.index('Is_Monday')
+            print(f"  - Is_Monday feature found at index {is_monday_idx}")
+        if 'day_of_week_sin' in feature_cols and 'day_of_week_cos' in feature_cols:
+            day_of_week_sin_idx = feature_cols.index('day_of_week_sin')
+            day_of_week_cos_idx = feature_cols.index('day_of_week_cos')
+            print(f"  - day_of_week_sin/cos features found at indices {day_of_week_sin_idx}/{day_of_week_cos_idx}")
+        if 'is_golden_window' in feature_cols:
+            is_golden_window_idx = feature_cols.index('is_golden_window')
+            print(f"  - is_golden_window feature found at index {is_golden_window_idx}")
+        
+        is_peak_loss_window_idx = None
+        if 'is_peak_loss_window' in feature_cols:
+            is_peak_loss_window_idx = feature_cols.index('is_peak_loss_window')
+            print(f"  - is_peak_loss_window feature found at index {is_peak_loss_window_idx}")
+        
+        is_august_idx = None
+        if 'is_august' in feature_cols:
+            is_august_idx = feature_cols.index('is_august')
+            print(f"  - is_august feature found at index {is_august_idx}")
+        
+        # Create a partial function that includes category loss weights, Monday weighting, and Golden Window weighting
+        def create_criterion(cat_loss_weights, monday_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
+                            is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
+            def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
+                # Extract Is_Monday for the prediction horizon
+                is_monday_horizon = None
+                if (is_monday_feature_idx is not None or (day_of_week_sin_idx is not None and day_of_week_cos_idx is not None)) and inputs is not None and monday_weight > 1.0:
+                    # inputs shape: (batch, input_size, features)
+                    batch_size = inputs.shape[0]
+                    
+                    # Compute day of week for the last input day
+                    # Method 1: Use Is_Monday if available (most direct)
+                    if is_monday_feature_idx is not None:
+                        last_day_is_monday = inputs[:, -1, is_monday_feature_idx]  # (batch,) or (batch, 1)
+                        # Ensure 1D
+                        if last_day_is_monday.ndim > 1:
+                            last_day_is_monday = last_day_is_monday.squeeze()
+                        # If Is_Monday == 1, then day_of_week = 0 (Monday)
+                        # For non-Monday days, we set to -1 (unknown) and skip Monday weighting for those
+                        last_day_dow = torch.where(
+                            last_day_is_monday > 0.5, 
+                            torch.tensor(0.0, device=inputs.device), 
+                            torch.tensor(-1.0, device=inputs.device)
+                        )
+                        # Ensure 1D shape
+                        if last_day_dow.ndim > 1:
+                            last_day_dow = last_day_dow.squeeze()
+                    # Method 2: Compute from day_of_week_sin/cos (more accurate)
+                    elif day_of_week_sin_idx is not None and day_of_week_cos_idx is not None:
+                        last_day_sin = inputs[:, -1, day_of_week_sin_idx]  # (batch,) or (batch, 1)
+                        last_day_cos = inputs[:, -1, day_of_week_cos_idx]  # (batch,) or (batch, 1)
+                        # Ensure 1D
+                        if last_day_sin.ndim > 1:
+                            last_day_sin = last_day_sin.squeeze()
+                        if last_day_cos.ndim > 1:
+                            last_day_cos = last_day_cos.squeeze()
+                        # Recover day_of_week from sin/cos: atan2(sin, cos) * 7 / (2*pi)
+                        # Monday (0) -> sin=0, cos=1
+                        # We'll use a simpler approach: check if values are close to Monday's encoding
+                        # Monday: sin ≈ 0, cos ≈ 1
+                        last_day_is_monday = (torch.abs(last_day_sin) < 0.1) & (last_day_cos > 0.9)
+                        last_day_dow = torch.where(
+                            last_day_is_monday, 
+                            torch.tensor(0.0, device=inputs.device), 
+                            torch.tensor(-1.0, device=inputs.device)
+                        )
+                        # Ensure 1D shape
+                        if last_day_dow.ndim > 1:
+                            last_day_dow = last_day_dow.squeeze()
+                    else:
+                        last_day_is_monday = None
+                        last_day_dow = None
+                    
+                    if last_day_dow is not None:
+                        # Ensure last_day_dow is 1D: (batch_size,)
+                        # Squeeze all dimensions of size 1
+                        while last_day_dow.ndim > 1:
+                            last_day_dow = last_day_dow.squeeze()
+                        # If still not 1D, flatten it
+                        if last_day_dow.ndim > 1:
+                            last_day_dow = last_day_dow.flatten()
+                        
+                        if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                            horizon = y_pred.shape[1]
+                            is_monday_horizon = torch.zeros((batch_size, horizon), device=y_pred.device)
+                            
+                            # Compute which days in horizon are Mondays
+                            # If last input day is Monday (dow=0), then:
+                            # - Horizon day 0 (tomorrow) is Tuesday (dow=1)
+                            # - Horizon day 6 is Monday (dow=0)
+                            # - Horizon day 13 is Monday (dow=0)
+                            # General: horizon day H is Monday if (last_day_dow + H + 1) % 7 == 0
+                            for h in range(horizon):
+                                # Compute day of week for horizon day h
+                                # Last input day is day -1, first horizon day is day 0
+                                # last_day_dow is (batch_size,), we add h+1 and take mod 7
+                                # Only compute if we know the day of week (last_day_dow >= 0)
+                                known_dow_mask = last_day_dow >= 0  # True where we know the day of week
+                                horizon_day_dow = torch.where(
+                                    known_dow_mask,
+                                    (last_day_dow + h + 1) % 7,
+                                    torch.tensor(-1.0, device=inputs.device)  # Unknown
+                                )
+                                # Ensure result is 1D
+                                if horizon_day_dow.ndim > 1:
+                                    horizon_day_dow = horizon_day_dow.squeeze()
+                                # Monday is day 0, and only mark as Monday if we knew the starting day
+                                is_monday_horizon[:, h] = ((horizon_day_dow == 0) & known_dow_mask).float()
+                        else:  # Single-step
+                            # For single-step, check if the prediction day is Monday
+                            # If last input day is Monday, next day is Tuesday (not Monday)
+                            # We need to check if next day is Monday: (last_day_dow + 1) % 7 == 0
+                            next_day_dow = (last_day_dow + 1) % 7
+                            if next_day_dow.ndim > 1:
+                                next_day_dow = next_day_dow.squeeze()
+                            is_monday_horizon = (next_day_dow == 0).float()
+                    else:
+                        # If we can't determine day of week, set all to zero (no Monday weighting)
+                        if y_pred.ndim == 2:
+                            is_monday_horizon = torch.zeros((batch_size, y_pred.shape[1]), device=y_pred.device)
+                        else:
+                            is_monday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
+                
+                # Extract is_golden_window for the prediction horizon (for MOONCAKE category)
+                is_golden_window_horizon = None
+                if is_golden_window_idx is not None and inputs is not None and golden_window_weight > 1.0:
+                    # Extract is_golden_window from the last timestep of input
+                    # For multi-step forecasting, we use the last input day's golden window status
+                    # and apply it to all horizon days (simplified approach)
+                    last_day_is_golden = inputs[:, -1, is_golden_window_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_golden.ndim > 1:
+                        last_day_is_golden = last_day_is_golden.squeeze()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
+                        horizon = y_pred.shape[1]
+                        # Expand to match horizon shape
+                        is_golden_window_horizon = last_day_is_golden.unsqueeze(-1).expand(batch_size, horizon)
+                    else:  # Single-step
+                        is_golden_window_horizon = last_day_is_golden
+                
+                # Extract is_peak_loss_window for the prediction horizon (for MOONCAKE category - Lunar Months 7.15 to 8.15)
+                is_peak_loss_window_horizon = None
+                if is_peak_loss_window_idx is not None and inputs is not None and peak_loss_window_weight > 1.0:
+                    # Extract is_peak_loss_window from the last timestep of input
+                    last_day_is_peak = inputs[:, -1, is_peak_loss_window_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_peak.ndim > 1:
+                        last_day_is_peak = last_day_is_peak.squeeze()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
+                        horizon = y_pred.shape[1]
+                        # Expand to match horizon shape
+                        is_peak_loss_window_horizon = last_day_is_peak.unsqueeze(-1).expand(batch_size, horizon)
+                    else:  # Single-step
+                        is_peak_loss_window_horizon = last_day_is_peak
+                
+                # Extract is_august for the prediction horizon (for MOONCAKE category - Gregorian August)
+                is_august_horizon = None
+                if is_august_idx is not None and inputs is not None and august_boost_weight > 1.0:
+                    # Extract is_august from the last timestep of input
+                    last_day_is_august = inputs[:, -1, is_august_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_august.ndim > 1:
+                        last_day_is_august = last_day_is_august.squeeze()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
+                        horizon = y_pred.shape[1]
+                        # Expand to match horizon shape
+                        is_august_horizon = last_day_is_august.unsqueeze(-1).expand(batch_size, horizon)
+                    else:  # Single-step
+                        is_august_horizon = last_day_is_august
+                
+                return spike_aware_mse(
+                    y_pred, 
+                    y_true, 
+                    category_ids=category_ids,
+                    category_loss_weights=cat_loss_weights if cat_loss_weights else None,
+                    is_monday=is_monday_horizon,
+                    monday_loss_weight=monday_weight,
+                    is_golden_window=is_golden_window_horizon,
+                    golden_window_weight=golden_window_weight,
+                    is_peak_loss_window=is_peak_loss_window_horizon,
+                    peak_loss_window_weight=peak_loss_window_weight,
+                    is_august=is_august_horizon,
+                    august_boost_weight=august_boost_weight,
+                    use_smooth_l1=use_smooth_l1,
+                    smooth_l1_beta=smooth_l1_beta
+                )
+            return criterion_fn
+        
+        criterion = create_criterion(
+            category_loss_weights, 
+            monday_loss_weight, 
+            golden_window_weight,
+            peak_loss_window_weight,
+            august_boost_weight,
+            use_smooth_l1,
+            smooth_l1_beta,
+            is_monday_idx, 
+            day_of_week_sin_idx, 
+            day_of_week_cos_idx, 
+            is_golden_window_idx,
+            is_peak_loss_window_idx,
+            is_august_idx,
+            horizon
+        )
     
     # Build optimizer with category-specific learning rate
     # Priority: category-specific config > category_specific_params > base config
@@ -1739,6 +2010,17 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test samples: {len(y_true)}")
     
+    # Calculate quantile coverage if using quantile loss (primary metric for P90)
+    if loss_function_name == "quantile":
+        print(f"\n  - Calculating Quantile Coverage (Primary Metric for P90)...")
+        quantile_val = training_config.get('quantile', 0.9)
+        
+        # Calculate coverage on original scale (after inverse transform)
+        # We'll calculate this after inverse scaling below
+        use_quantile_evaluation = True
+    else:
+        use_quantile_evaluation = False
+    
     # Apply seasonal active-window masking (hard-zero constraint) for seasonal categories
     # This enforces that predictions are zero during off-season periods
     # Check if category-specific config requires seasonal masking
@@ -1845,6 +2127,67 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"    - Zero count: {np.sum(y_true_original == 0)} / {len(y_true_original)}")
     print(f"    - First 10 values: {y_true_original[:10]}")
     
+    # Calculate quantile coverage (primary metric for P90 quantile regression)
+    training_results = {}  # Initialize training results dict
+    if use_quantile_evaluation:
+        print(f"\n  - Quantile Coverage Evaluation (P90):")
+        quantile_val = training_config.get('quantile', 0.9)
+        
+        # Reshape to match original shapes if needed
+        y_true_eval = y_true_original.reshape(-1) if y_true_original.ndim > 1 else y_true_original
+        y_pred_eval = y_pred_original.reshape(-1) if y_pred_original.ndim > 1 else y_pred_original
+        
+        # Calculate comprehensive metrics including quantile coverage
+        metrics = calculate_forecast_metrics(
+            y_true_eval,
+            y_pred_eval,
+            quantile=quantile_val,
+            mask=None  # Could add mask to exclude off-season zeros if needed
+        )
+        
+        coverage_rate = metrics['quantile_coverage']
+        coverage_details = metrics['quantile_coverage_details']
+        
+        print(f"    - Quantile Coverage: {coverage_rate:.2%} (Target: {quantile_val*100:.0f}%)")
+        print(f"    - Coverage Error: {coverage_details['coverage_error']:+.2%} (actual - target)")
+        print(f"    - Covered samples: {coverage_details['over_coverage']} / {len(y_true_eval)}")
+        print(f"    - Violations (under-coverage): {coverage_details['under_coverage']} samples")
+        if coverage_details['under_coverage'] > 0:
+            print(f"    - Mean Excess (violations): {coverage_details['mean_excess']:.2f} CBM")
+        
+        # Success criterion: at least 90% coverage for P90
+        if coverage_rate >= quantile_val:
+            print(f"    - ✓ SUCCESS: Coverage ({coverage_rate:.2%}) meets target ({quantile_val*100:.0f}%)")
+        else:
+            print(f"    - ⚠ WARNING: Coverage ({coverage_rate:.2%}) below target ({quantile_val*100:.0f}%)")
+        
+        # Also print traditional metrics for reference
+        print(f"    - MAE: {metrics['mae']:.2f} CBM (reference)")
+        print(f"    - RMSE: {metrics['rmse']:.2f} CBM (reference)")
+        
+        # Store quantile coverage in metadata (convert numpy types to native Python types for JSON)
+        training_results['quantile_coverage'] = float(coverage_rate)
+        training_results['quantile_coverage_details'] = {
+            'coverage_rate': float(coverage_details['coverage_rate']),
+            'target_coverage': float(coverage_details['target_coverage']),
+            'coverage_error': float(coverage_details['coverage_error']),
+            'under_coverage': int(coverage_details['under_coverage']),
+            'over_coverage': int(coverage_details['over_coverage']),
+            'mean_excess': float(coverage_details['mean_excess'])
+        }
+        training_results['mae'] = float(metrics['mae'])
+        training_results['rmse'] = float(metrics['rmse'])
+    else:
+        # For non-quantile loss, calculate traditional metrics
+        y_true_eval = y_true_original.reshape(-1) if y_true_original.ndim > 1 else y_true_original
+        y_pred_eval = y_pred_original.reshape(-1) if y_pred_original.ndim > 1 else y_pred_original
+        metrics = calculate_forecast_metrics(y_true_eval, y_pred_eval)
+        print(f"\n  - Traditional Metrics:")
+        print(f"    - MAE: {metrics['mae']:.2f} CBM")
+        print(f"    - RMSE: {metrics['rmse']:.2f} CBM")
+        training_results['mae'] = float(metrics['mae'])
+        training_results['rmse'] = float(metrics['rmse'])
+    
     # Save training metadata (including a compact text summary of this log)
     print("\n[9/9] Saving training metadata...")
     log_summary_lines = [
@@ -1885,7 +2228,8 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             'final_val_loss': val_losses[-1] if val_losses else None,
             'best_val_loss': trainer.best_val_loss,
             'test_loss': float(test_loss),
-            'training_time_seconds': training_time
+            'training_time_seconds': training_time,
+            **training_results  # Include quantile coverage or traditional metrics
         },
         'log_summary': "\n".join(log_summary_lines),
         'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
@@ -1953,11 +2297,14 @@ def main():
     
     # Override configuration for training
     print("\n[2/8] Applying training overrides...")
-    base_config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
+    # Only force spike_aware_mse if loss is not explicitly set to "quantile"
+    # This allows category-specific configs to use quantile loss (e.g., MOONCAKE)
+    if base_config.training.get('loss', 'spike_aware_mse') != 'quantile':
+        base_config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss for other categories
     base_config.set('output.save_model', True)  # Ensure model saving is enabled
     
     print(f"  - Data years: {base_config.data['years']}")
-    print(f"  - Loss function: spike_aware_mse (forced)")
+    print(f"  - Loss function: {base_config.training.get('loss', 'spike_aware_mse')}")
     
     # Load data
     print("\n[3/8] Loading data...")
@@ -2031,8 +2378,10 @@ def main():
             print(f"\n[Loading category-specific config for {category}...]")
             category_config = load_config(category=category)
             
-            # Override training loss
-            category_config.set('training.loss', 'spike_aware_mse')
+            # Only override training loss if not explicitly set to "quantile"
+            # This allows MOONCAKE to use quantile loss while other categories use spike_aware_mse
+            if category_config.training.get('loss', 'spike_aware_mse') != 'quantile':
+                category_config.set('training.loss', 'spike_aware_mse')
             
             # Create isolated output directory for this category
             category_output_dir = os.path.join("outputs", category)

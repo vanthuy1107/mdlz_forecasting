@@ -10,43 +10,85 @@ window:
   horizon: 30     # 30-day forecast horizon
 
 # Model Configuration - Reduced complexity to prevent overfitting on sparse data
+# Layer normalization and weight decay help prevent overfitting to 2023 outlier peaks (495 CBM)
+# while still capturing the P90 threshold for the flattening trend (383 CBM in 2025)
 model:
   hidden_size: 128  # Reduced from 256 to prevent overfitting on sparse seasonal data
   n_layers: 2       # Reduced from 3 to prevent overfitting
   dropout_prob: 0.2
-  use_layer_norm: true
+  use_layer_norm: true  # Layer normalization helps prevent overfitting to 2023 peaks
 
-# Training Configuration - Optimized for sparse seasonal patterns
+# Training Configuration - Optimized for sparse seasonal patterns with P90 Risk-Aware Safety Stock Model
 training:
   batch_size: 32
   epochs: 40
-  learning_rate: 0.001  # Conservative learning rate for high precision during season, zero outside
-  weight_decay: 1e-4
+  learning_rate: 0.0008  # Slightly lower to handle the wider season (70+ days) and prevent overfitting to 2023 peaks
+  weight_decay: 1e-4  # Weight decay to prevent overfitting to 2023 outlier peaks (495 CBM vs 383 CBM in 2025)
   scheduler:
     patience: 3
     factor: 0.5
-  loss: "spike_aware_mse"  # Use spike-aware loss with Golden Window weighting
-  # SUGGESTION: Consider switching to "focal_loss" or "huber_loss" for better handling
-  # of outliers and difficult peak samples. These loss functions are more robust to
-  # outliers and will help the model focus on the "difficult" peak samples rather than
-  # the "easy" zero samples. Available in src.utils.losses: focal_loss() and huber_loss()
+  loss: "quantile"  # Use Quantile Loss (Pinball Loss) for P90 prediction
+  quantile: 0.9  # Target 90th percentile (P90) - ensures only 10% probability of exceeding forecast
+  # Quantile Loss provides asymmetric penalty (9x more for under-forecasting):
+  # - Higher penalty when actual > prediction (under-forecasting: stock-outs) = 0.9 * error
+  # - Lower penalty when actual < prediction (over-forecasting: safety stock) = 0.1 * error
+  # Ratio: 0.9/0.1 = 9x more severe penalty for under-forecasting
+  # This is critical for MOONCAKE where missing the peak is much costlier than slight over-forecasting
 
-# Category-specific loss weighting - High weight for Golden Window (Lunar Months 6.15 to 8.01)
+# Category-specific loss weighting - High weight for entire Active Season (70+ days, not just peak day)
+# CRITICAL: Loss function penalizes errors in Lunar Month 7.15 to 8.15 window (peak period)
+# NEW: Gregorian-Anchored Peak Alignment - Anchor the primary spike signal to August (Gregorian)
 category_specific_params:
   MOONCAKE:
-    learning_rate: 0.001  # Conservative learning rate for high precision during season, zero outside
-    epochs: 20
-    loss_weight: 20.0  # Aggressively increased for peak prediction (applies only to active days) - was 10.0
-    golden_window_weight: 10.0  # Aggressively increased for Golden Window (Lunar Months 6.15 to 8.01) - was 5.0
-    weight_decay: 1e-4
-    use_smooth_l1: false  # Set to true to use SmoothL1Loss instead of MSE
+    learning_rate: 0.0008  # Slightly lower to handle wider season and prevent overfitting
+    epochs: 15
+    loss_weight: 100  # High weight for entire active season (70+ days in 2025) - applies to all active days
+    golden_window_weight: 12.0  # High weight for Golden Window (Gregorian August 1-31) - peak buildup period
+    peak_loss_window_weight: 20.0  # EXTRA HIGH weight for Peak Loss Window (Lunar Months 7.15 to 8.15) - critical peak period
+    active_season_weight: 15.0  # Weight multiplier for entire active season (Lunar Months 7-9 AND Gregorian months 7-9, July-September)
+    august_boost_weight: 30.0  # CRITICAL: High weight for Gregorian August (month == 8) to anchor peak signal
+    primary_event: "lunar_08_01_countdown"  # Use countdown to Lunar 08-01 as primary temporal feature
+    weight_decay: 1e-4  # Prevent overfitting to 2023 outlier peaks
+    use_smooth_l1: false  # Not used with quantile loss
 
 # Seasonal configuration - MOONCAKE is highly seasonal
+# NEW: Gregorian-Anchored Peak Alignment - Anchor to August (Gregorian) to prevent phase shift
 data:
-  seasonal_active_window: "lunar_months_6_9"  # Active between Lunar Months 6-9
+  seasonal_active_window: "lunar_months_7_9_gregorian_july_september"  # Active between Lunar Months 7-9 AND Gregorian months 7-9 (July-September) - prevents early June and late October predictions
   peak_event: "mid_autumn"  # Peak event is Mid-Autumn Festival (Lunar Month 8, Day 15)
   apply_seasonal_mask: true  # Hard-zero constraint during off-season
-  golden_window: "lunar_months_6.15_8.01"  # Golden Window: Lunar Months 6.15 to 8.01 (peak buildup)
+  golden_window: "august_gregorian"  # Golden Window: Gregorian August 1-31 (anchored to prevent phase shift)
+  
+  # Feature columns - includes YoY features for seasonal prediction
+  feature_cols:
+    - "month_sin"
+    - "month_cos"
+    - "dayofmonth_sin"
+    - "dayofmonth_cos"
+    - "holiday_indicator"
+    - "days_until_next_holiday"
+    - "days_since_holiday"
+    - "is_weekend"
+    - "day_of_week_sin"
+    - "day_of_week_cos"
+    - "weekday_volume_tier"
+    - "is_high_volume_weekday"
+    - "Is_Monday"
+    - "is_EOM"
+    - "days_until_month_end"
+    - "lunar_month"  # DEPRECATED for MOONCAKE: Use days_until_lunar_08_01 instead
+    - "lunar_day"
+    - "days_until_lunar_08_01"  # NEW: Countdown to Lunar 08-01 (replaces raw lunar_month dependency)
+    - "is_august"  # NEW: Binary feature for Gregorian August (month == 8) - strong signal anchor
+    - "rolling_mean_7d"
+    - "rolling_mean_30d"
+    - "momentum_3d_vs_14d"
+    - "Total CBM"
+    - "cbm_last_year"  # CRITICAL: Year-over-year feature for seasonal prediction
+    - "cbm_2_years_ago"  # CRITICAL: Two-year-ago feature for seasonal prediction
+    - "is_active_season"  # Active season indicator (Lunar Months 6-9)
+    - "is_golden_window"  # Golden Window indicator (Lunar Months 6.15 to 8.01)
+    - "is_peak_loss_window"  # Peak Loss Window indicator (Lunar Months 7.15 to 8.15)
 
 # Transfer Learning Configuration
 transfer_learning:

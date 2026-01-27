@@ -73,10 +73,15 @@ VIETNAM_HOLIDAYS_BY_YEAR = load_holidays(holiday_type="model")
 
 def solar_to_lunar_date(solar_date: date) -> tuple:
     """
-    Convert solar (Gregorian) date to lunar (Vietnamese) date approximation.
+    Convert solar (Gregorian) date to lunar (Vietnamese) date using anchor points.
     
-    This is a simplified approximation. For production, use a proper lunar calendar library.
-    Tet (Lunar New Year) typically falls between Jan 20 - Feb 20 in solar calendar.
+    Uses known Mid-Autumn Festival dates (Lunar Month 8, Day 15) as anchor points:
+    - 2023: Sep 29 = Lunar 08-15
+    - 2024: Sep 17 = Lunar 08-15
+    - 2025: Oct 6 = Lunar 08-15
+    - 2026: Sep 25 = Lunar 08-15
+    
+    This provides accurate lunar date conversion for MOONCAKE forecasting.
     
     Args:
         solar_date: Gregorian date.
@@ -84,29 +89,64 @@ def solar_to_lunar_date(solar_date: date) -> tuple:
     Returns:
         Tuple of (lunar_month, lunar_day) where lunar_month is 1-12.
     """
-    # Simplified conversion: use solar month/day as approximation
-    # This will be refined with actual lunar calendar data
-    # For now, Tet is typically in late Jan / early Feb
-    if solar_date.month == 1 and solar_date.day >= 20:
-        # Late January = start of lunar year (month 1)
-        lunar_month = 1
-        lunar_day = solar_date.day - 19  # Approximate offset
-    elif solar_date.month == 2:
-        # February continues lunar month 1 or moves to month 2
-        if solar_date.day <= 10:
-            lunar_month = 1
-            lunar_day = solar_date.day + 12  # Continue from Jan
+    # Anchor points: Mid-Autumn Festival dates (Lunar Month 8, Day 15)
+    mid_autumn_anchors = {
+        2023: date(2023, 9, 29),   # Lunar 08-15
+        2024: date(2024, 9, 17),   # Lunar 08-15
+        2025: date(2025, 10, 6),   # Lunar 08-15
+        2026: date(2026, 9, 25),   # Lunar 08-15
+    }
+    
+    # Find the closest Mid-Autumn anchor (before or after)
+    year = solar_date.year
+    if year not in mid_autumn_anchors:
+        # For years outside our anchor range, use the closest year
+        if year < 2023:
+            anchor_year = 2023
+        elif year > 2026:
+            anchor_year = 2026
         else:
-            lunar_month = 2
-            lunar_day = solar_date.day - 10
+            anchor_year = year
     else:
-        # Approximate: lunar months are roughly aligned with solar months
-        lunar_month = solar_date.month
-        lunar_day = solar_date.day
+        anchor_year = year
+    
+    anchor_date = mid_autumn_anchors[anchor_year]
+    days_diff = (solar_date - anchor_date).days
+    
+    # Calculate lunar date relative to anchor (Lunar Month 8, Day 15)
+    # Approximate: 1 lunar month ≈ 29.5 solar days
+    # Lunar months: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+    # We're at Month 8, Day 15 when days_diff = 0
+    
+    # Convert days difference to lunar month/day offset
+    # Positive days_diff = after Mid-Autumn (moving forward in lunar calendar)
+    # Negative days_diff = before Mid-Autumn (moving backward in lunar calendar)
+    
+    # Start from Lunar Month 8, Day 15
+    lunar_month = 8
+    lunar_day = 15
+    
+    # Adjust by days difference (approximate: 29.5 days per lunar month)
+    if days_diff > 0:
+        # After Mid-Autumn: move forward
+        lunar_day += days_diff
+        while lunar_day > 30:
+            lunar_day -= 30
+            lunar_month += 1
+            if lunar_month > 12:
+                lunar_month = 1
+    else:
+        # Before Mid-Autumn: move backward
+        lunar_day += days_diff
+        while lunar_day < 1:
+            lunar_day += 30
+            lunar_month -= 1
+            if lunar_month < 1:
+                lunar_month = 12
     
     # Clamp to valid ranges
     lunar_month = max(1, min(12, lunar_month))
-    lunar_day = max(1, min(30, lunar_day))  # Lunar months have 29-30 days
+    lunar_day = max(1, min(30, lunar_day))
     
     return lunar_month, lunar_day
 
@@ -1967,14 +2007,42 @@ def main():
         file_pattern=data_config['file_pattern']
     )
     
+    # ENHANCED: Load multiple years for better lunar-aligned YoY lookup
+    # For MOONCAKE, we need 2+ years of history for cbm_last_year and cbm_2_years_ago
+    historical_years = [historical_year - 1, historical_year]  # Load 2 years (e.g., 2023, 2024)
+    print(f"  - Loading historical data for years: {historical_years}")
+    
     try:
-        ref_data = data_reader.load(years=[historical_year])
+        ref_data = data_reader.load(years=historical_years)
     except FileNotFoundError:
         print("[WARNING] Trying pattern-based loading...")
         ref_data = data_reader.load_by_file_pattern(
-            years=[historical_year],
+            years=historical_years,
             file_prefix=data_config.get('file_prefix', 'Outboundreports')
         )
+    
+    # DIAGNOSTIC: Check historical data coverage
+    # Get column names from config first
+    time_col_diag = config.data.get('time_col', 'ACTUALSHIPDATE')
+    target_col_diag = config.data.get('target_col', 'Total CBM')
+    
+    if len(ref_data) > 0 and time_col_diag in ref_data.columns:
+        ref_data_dates = pd.to_datetime(ref_data[time_col_diag])
+        print(f"  - Historical data loaded: {len(ref_data)} rows")
+        print(f"  - Date range: {ref_data_dates.min().date()} to {ref_data_dates.max().date()}")
+        print(f"  - Unique dates: {ref_data_dates.dt.date.nunique()}")
+        
+        # Check for peak season data (August-October of historical years)
+        for year in historical_years:
+            peak_mask = (ref_data_dates.dt.year == year) & (ref_data_dates.dt.month.isin([8, 9, 10]))
+            peak_rows = peak_mask.sum()
+            if peak_rows > 0 and target_col_diag in ref_data.columns:
+                peak_volume = ref_data.loc[peak_mask, target_col_diag].sum()
+                print(f"  - {year} peak season (Aug-Oct): {peak_rows} rows, {peak_volume:.2f} total CBM")
+            else:
+                print(f"  - ⚠️  WARNING: No {year} peak season data found!")
+    else:
+        print(f"  - ⚠️  WARNING: Historical data is empty or missing time column!")
     
     # Get category mode from TRAINING config (use the same setting for train & prediction)
     # Category-Specific Independent Training Mode
@@ -2352,9 +2420,9 @@ def main():
         print(f"  - MAE:  {mae_tf:.4f}")
         print(f"  - RMSE: {rmse_tf:.4f}")
         if not np.isnan(accuracy_tf_abs):
-            print(f"  - Accuracy (Σ|err|):       {accuracy_tf_abs:.2f}%")
+            print(f"  - Accuracy (Sum|err|):       {accuracy_tf_abs:.2f}%")
         if not np.isnan(accuracy_tf_sum):
-            print(f"  - Accuracy (|Σ err|):      {accuracy_tf_sum:.2f}%")
+            print(f"  - Accuracy (|Sum err|):      {accuracy_tf_sum:.2f}%")
     
     # ========================================================================
     # MODE 2: RECURSIVE (Production Forecast) - Uses model's own predictions
@@ -2455,32 +2523,32 @@ def main():
                 ref_data_cat, config_cat, cat2id_fallback, scaler_cat, trained_cat2id_cat, current_category=current_category
             )
             
-            # Get historical window for this category
-            historical_window_cat = get_historical_window_data(
-                historical_data_prepared_cat,
-                end_date=date(historical_year, 12, 31),
-                config=config_cat,
-                num_days=config_cat.window['input_size']
-            )
-            print(f"  - Historical window for {current_category}: {len(historical_window_cat)} samples")
-            
-            # Historical window should already be filtered to this category only
-            historical_window_filtered = historical_window_cat.copy()
-            
-            # Prepare actuals for this category (filter BEFORE preparation)
-            # CRITICAL FIX: Use trained_cat2id directly - don't create new mapping
+            # Prepare prediction-period data for this category (needed for actuals and for extending history)
             prediction_data_cat = prediction_data[prediction_data[data_config['cat_col']] == current_category].copy()
             cat2id_fallback = trained_cat2id_cat if trained_cat2id_cat is not None else {}
-            
-            # CRITICAL FIX for MOONCAKE: Pass historical data to enable year-over-year features
-            # Historical data must be aggregated and filtered to current category
             historical_for_yoy = None
             if current_category == "MOONCAKE" and len(ref_data_cat) > 0:
-                # Use the already-prepared historical data (aggregated, filtered to category)
                 historical_for_yoy = historical_data_prepared_cat.copy()
+                # DIAGNOSTIC: Check what's in historical data for YoY
+                print(f"  - Historical data for YoY: {len(historical_for_yoy)} rows")
+                if time_col in historical_for_yoy.columns:
+                    hist_dates = pd.to_datetime(historical_for_yoy[time_col])
+                    print(f"  - Date range: {hist_dates.min().date()} to {hist_dates.max().date()}")
+                has_lunar = 'lunar_month' in historical_for_yoy.columns and 'lunar_day' in historical_for_yoy.columns
+                has_cbm = data_config['target_col'] in historical_for_yoy.columns
+                print(f"  - Has lunar columns: {has_lunar}, Has CBM: {has_cbm}")
+                if has_cbm:
+                    # Check for peak season data
+                    if time_col in historical_for_yoy.columns:
+                        for year in [2023, 2024]:
+                            year_mask = hist_dates.dt.year == year
+                            peak_mask = year_mask & hist_dates.dt.month.isin([8, 9, 10])
+                            if peak_mask.any():
+                                peak_cbm = historical_for_yoy.loc[peak_mask, data_config['target_col']].sum()
+                                print(f"  - {year} peak season in historical_for_yoy: {peak_cbm:.2f} CBM")
             
             prediction_data_unscaled_cat = prepare_prediction_data(
-                prediction_data_cat, config_cat, cat2id_fallback, scaler=None, 
+                prediction_data_cat, config_cat, cat2id_fallback, scaler=None,
                 trained_cat2id=trained_cat2id_cat, current_category=current_category,
                 historical_data=historical_for_yoy
             )
@@ -2489,6 +2557,42 @@ def main():
                 ['date', data_config['cat_col']]
             )[data_config['target_col']].sum().reset_index()
             actuals_by_date_cat = actuals_by_date_cat.rename(columns={data_config['target_col']: 'actual'})
+            
+            # CRITICAL: Build initial window using data up to (prediction_start - 1 day) when available.
+            # If prediction data contains dates before prediction_start (e.g. 2025-01-01 to 2025-07-31 when
+            # predicting from 2025-08-01), use them so the model sees recent context (e.g. July 2025) and
+            # predictions start from day 1 (08/01) instead of only "waking up" after many rolled chunks.
+            window_end_date = date(historical_year, 12, 31)
+            data_before_start = prediction_data_unscaled_cat[
+                prediction_data_unscaled_cat['date'] < prediction_start_date
+            ].copy()
+            if len(data_before_start) > 0:
+                # Use day before prediction_start so the last window day is 07/31 when predicting from 08/01
+                window_end_date = prediction_start_date - timedelta(days=1)
+                common_cols = [c for c in historical_data_prepared_cat.columns if c in data_before_start.columns]
+                combined_history = pd.concat([
+                    historical_data_prepared_cat[common_cols],
+                    data_before_start[common_cols]
+                ], ignore_index=True)
+                combined_history = combined_history.drop_duplicates(subset=[time_col], keep='last')
+                combined_history = combined_history.sort_values(time_col).reset_index(drop=True)
+                historical_window_cat = get_historical_window_data(
+                    combined_history,
+                    end_date=window_end_date,
+                    config=config_cat,
+                    num_days=config_cat.window['input_size']
+                )
+                print(f"  - Historical window for {current_category}: last input day = {window_end_date} (uses prediction-period data before {prediction_start_date}), {len(historical_window_cat)} samples")
+            else:
+                historical_window_cat = get_historical_window_data(
+                    historical_data_prepared_cat,
+                    end_date=window_end_date,
+                    config=config_cat,
+                    num_days=config_cat.window['input_size']
+                )
+                print(f"  - Historical window for {current_category}: {len(historical_window_cat)} samples")
+            
+            historical_window_filtered = historical_window_cat.copy()
         else:
             # For non-"each" mode, use the global prepared data
             # Build per-(date, category) actuals on ORIGINAL scale once, then reuse
@@ -2558,6 +2662,11 @@ def main():
             # Use rolling prediction for long date ranges
             print(f"  - Date range ({requested_days} days) exceeds horizon ({horizon_days} days)")
             print(f"  - Using rolling prediction to cover full date range")
+            # CRITICAL FIX: Pass historical data for YoY feature recomputation (essential for MOONCAKE)
+            historical_for_rolling = None
+            if current_category == "MOONCAKE" and 'historical_data_prepared_cat' in locals():
+                historical_for_rolling = historical_data_prepared_cat.copy()
+                print(f"  - Passing historical data ({len(historical_for_rolling)} rows) for YoY feature lookup")
             recursive_preds = predict_direct_multistep_rolling(
                 model=model,
                 device=device,
@@ -2566,7 +2675,8 @@ def main():
                 end_date=prediction_end_date,
                 config=config_to_use,
                 cat_id=cat_id,
-                category=current_category
+                category=current_category,
+                historical_data=historical_for_rolling
             )
         else:
             # Use single-shot prediction for short date ranges
@@ -2646,17 +2756,13 @@ def main():
                 # Calculate is_active_season for each date
                 def get_is_active_season_mooncake(row_date):
                     """
-                    Calculate is_active_season for MOONCAKE: Active between Lunar Months 6-9
+                    Calculate is_active_season for MOONCAKE: Active between Lunar Months 7-9 AND Gregorian months 7-9 (July-September)
                     
-                    CRITICAL: The simplified solar_to_lunar_date function may not be accurate.
-                    For 2025, we use a more accurate approximation:
-                    - Mid-Autumn Festival 2025 is around September 6-7 (solar)
-                    - This corresponds to Lunar Month 8, Day 15
-                    - So Lunar Month 6 ≈ June-July, Lunar Month 7 ≈ July-August, 
-                      Lunar Month 8 ≈ August-September, Lunar Month 9 ≈ September-October
+                    CRITICAL FIX: Narrowed from Lunar Months 6-9 to 7-9 to prevent early June predictions.
+                    Added Gregorian month constraints (7-9) to ensure predictions only in July-September.
                     
-                    For safety, we use a conservative approach: only allow predictions
-                    during August-September (solar months) which definitely contain the peak.
+                    This prevents the model from predicting too early (e.g., June 2, 2025) or too late (October)
+                    when the actual peak season is July-September.
                     """
                     if isinstance(row_date, str):
                         row_date = pd.to_datetime(row_date).date()
@@ -2665,18 +2771,13 @@ def main():
                     elif not isinstance(row_date, date):
                         row_date = pd.to_datetime(row_date).date()
                     
-                    # FIXED: Allow Lunar Months 6-9, which corresponds to Solar months 6-9 (June-September)
-                    # This matches the config setting: seasonal_active_window: "lunar_months_6_9"
-                    # Previous implementation was too restrictive (only months 8-9), causing July and October to be zeroed
-                    solar_month = row_date.month
+                    # Get lunar month and Gregorian month
+                    lunar_month, lunar_day = solar_to_lunar_date(row_date)
+                    gregorian_month = row_date.month
                     
-                    # Active season: Lunar Months 6-9 ≈ Solar months 6-9 (June-September)
-                    # This allows predictions in July and October (tail ends of season)
-                    is_active = (solar_month >= 6) and (solar_month <= 9)
-                    
-                    # Alternative: Use lunar calculation but with stricter bounds
-                    # lunar_month, _ = solar_to_lunar_date(row_date)
-                    # is_active = (lunar_month >= 6) and (lunar_month <= 9)
+                    # Active season: Lunar Months 7-9 AND Gregorian months 7-9 (July-September only)
+                    # This prevents early predictions in June and late predictions in October
+                    is_active = (lunar_month >= 7) and (lunar_month <= 9) and (gregorian_month >= 7) and (gregorian_month <= 9)
                     
                     return 1 if is_active else 0
                 
@@ -2687,7 +2788,7 @@ def main():
                 # Count how many were zeroed
                 zeroed_count = (mooncake_rows['is_active_season'] == 0).sum()
                 if zeroed_count > 0:
-                    print(f"    - Zeroed {zeroed_count} MOONCAKE predictions outside active season (Lunar Months 6-9)")
+                    print(f"    - Zeroed {zeroed_count} MOONCAKE predictions outside active season (Lunar Months 7-9 AND Gregorian months 7-9, July-September)")
                 
                 # NOTE: No hardcoded scaling factors - model should learn peak predictions directly
                 # through training with proper loss weights (loss_weight=20.0, golden_window_weight=10.0)
@@ -2790,9 +2891,9 @@ def main():
         print(f"  - MAE (total): {mae_rec:.4f}")
         print(f"  - RMSE (total): {rmse_rec:.4f}")
         if not np.isnan(accuracy_rec_total_abs):
-            print(f"  - Accuracy (total, Σ|err|):  {accuracy_rec_total_abs:.2f}%")
+            print(f"  - Accuracy (total, Sum|err|):  {accuracy_rec_total_abs:.2f}%")
         if not np.isnan(accuracy_rec_total_sum):
-            print(f"  - Accuracy (total, |Σ err|): {accuracy_rec_total_sum:.2f}%")
+            print(f"  - Accuracy (total, |Sum err|): {accuracy_rec_total_sum:.2f}%")
 
         # --------------------------------------------------------------------
         # Accuracy BY MONTH (TOTAL across all categories)
@@ -2818,8 +2919,8 @@ def main():
 
             line = (
                 f"    {month}: "
-                f"Acc(Σ|err|)={month_accuracy_abs:.2f}% | "
-                f"Acc(|Σ err|)={month_accuracy_sum:.2f}% | "
+                f"Acc(Sum|err|)={month_accuracy_abs:.2f}% | "
+                f"Acc(|Sum err|)={month_accuracy_sum:.2f}% | "
                 f"Total_Actual={month_total_actual:.2f} | "
                 f"Total_Pred={month_total_pred:.2f}"
             )
@@ -2856,8 +2957,8 @@ def main():
 
             line = (
                 f"    Category={cat_value} | {month}: "
-                f"Acc(Σ|err|)={month_accuracy_abs:.2f}% | "
-                f"Acc(|Σ err|)={month_accuracy_sum:.2f}% | "
+                f"Acc(Sum|err|)={month_accuracy_abs:.2f}% | "
+                f"Acc(|Sum err|)={month_accuracy_sum:.2f}% | "
                 f"Total_Actual={month_total_actual:.2f} | "
                 f"Total_Pred={month_total_pred:.2f}"
             )

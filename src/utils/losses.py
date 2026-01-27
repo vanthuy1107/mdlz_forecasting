@@ -13,6 +13,10 @@ def spike_aware_mse(
     monday_loss_weight: float = 3.0,
     is_golden_window: Optional[torch.Tensor] = None,
     golden_window_weight: float = 1.0,
+    is_peak_loss_window: Optional[torch.Tensor] = None,
+    peak_loss_window_weight: float = 1.0,
+    is_august: Optional[torch.Tensor] = None,
+    august_boost_weight: float = 1.0,
     use_smooth_l1: bool = False,
     smooth_l1_beta: float = 1.0
 ) -> torch.Tensor:
@@ -22,7 +26,7 @@ def spike_aware_mse(
     This loss function assigns 3x weight to top 20% values (spikes) to better
     handle sudden demand surges. Optionally supports category-specific loss weights,
     Monday-specific weighting for FRESH category, and Golden Window weighting for
-    MOONCAKE category (Lunar Months 6.15 to 8.01).
+    MOONCAKE category (Gregorian August 1-31).
     
     Args:
         y_pred: Predicted values tensor.
@@ -33,8 +37,14 @@ def spike_aware_mse(
                   Shape should match y_true (can be 1D for single-step or 2D for multi-step).
         monday_loss_weight: Weight multiplier for Monday samples (default: 3.0).
         is_golden_window: Optional tensor indicating Golden Window samples (1 for Golden Window, 0 otherwise).
-                         For MOONCAKE: Lunar Months 6.15 to 8.01. Shape should match y_true.
-        golden_window_weight: Weight multiplier for Golden Window samples (default: 1.0, typically 3.0 for MOONCAKE).
+                         For MOONCAKE: Gregorian August 1-31. Shape should match y_true.
+        golden_window_weight: Weight multiplier for Golden Window samples (default: 1.0, typically 12.0 for MOONCAKE).
+        is_peak_loss_window: Optional tensor indicating Peak Loss Window samples (1 for Peak Loss Window, 0 otherwise).
+                           For MOONCAKE: Lunar Months 7.15 to 8.15 (critical peak period). Shape should match y_true.
+        peak_loss_window_weight: Weight multiplier for Peak Loss Window samples (default: 1.0, typically 20.0 for MOONCAKE).
+        is_august: Optional tensor indicating August samples (1 for Gregorian month == 8, 0 otherwise).
+                  For MOONCAKE: Reinforces August as strong signal anchor. Shape should match y_true.
+        august_boost_weight: Weight multiplier for August samples (default: 1.0, typically 30.0 for MOONCAKE).
         use_smooth_l1: If True, use SmoothL1Loss instead of MSE (default: False).
         smooth_l1_beta: Beta parameter for SmoothL1Loss (default: 1.0).
     
@@ -85,6 +95,40 @@ def spike_aware_mse(
             torch.tensor(1.0, device=y_true.device)
         )
         base_weight = base_weight * golden_weight
+    
+    # Apply Peak Loss Window weighting if provided (for MOONCAKE category - Lunar Months 7.15 to 8.15)
+    # This is the critical peak period where errors must be heavily penalized
+    if is_peak_loss_window is not None and peak_loss_window_weight > 1.0:
+        # Ensure is_peak_loss_window matches y_true shape
+        if is_peak_loss_window.ndim == 1 and y_true.ndim == 2:
+            is_peak_loss_window = is_peak_loss_window.unsqueeze(-1).expand_as(y_true)
+        elif is_peak_loss_window.ndim == 2 and y_true.ndim == 1:
+            is_peak_loss_window = is_peak_loss_window[:, 0] if is_peak_loss_window.shape[1] > 0 else is_peak_loss_window.mean(dim=1)
+        
+        # Apply Peak Loss Window weight: multiplier for Peak Loss Window samples
+        peak_weight = torch.where(
+            is_peak_loss_window > 0.5,  # In Peak Loss Window (Lunar Months 7.15 to 8.15)
+            torch.tensor(peak_loss_window_weight, device=y_true.device),
+            torch.tensor(1.0, device=y_true.device)
+        )
+        base_weight = base_weight * peak_weight
+    
+    # Apply August boost weighting if provided (for MOONCAKE category - Gregorian August)
+    # This reinforces August (Gregorian month 8) as a strong signal anchor
+    if is_august is not None and august_boost_weight > 1.0:
+        # Ensure is_august matches y_true shape
+        if is_august.ndim == 1 and y_true.ndim == 2:
+            is_august = is_august.unsqueeze(-1).expand_as(y_true)
+        elif is_august.ndim == 2 and y_true.ndim == 1:
+            is_august = is_august[:, 0] if is_august.shape[1] > 0 else is_august.mean(dim=1)
+        
+        # Apply August boost weight: multiplier for August samples (Gregorian month == 8)
+        august_weight = torch.where(
+            is_august > 0.5,  # In August (Gregorian month == 8)
+            torch.tensor(august_boost_weight, device=y_true.device),
+            torch.tensor(1.0, device=y_true.device)
+        )
+        base_weight = base_weight * august_weight
     
     # Apply category-specific loss weights if provided
     # CRITICAL: For MOONCAKE, loss_weight should only apply to active days (is_active_season == 1)
@@ -233,4 +277,229 @@ def huber_loss(
         return torch.sum(loss)
     else:
         return loss
+
+
+class QuantileLoss(nn.Module):
+    """
+    Quantile Loss (Pinball Loss) for asymmetric regression with active season weighting.
+    
+    This loss function is designed to predict a specific quantile (e.g., 90th percentile)
+    rather than the mean. It applies asymmetric penalties:
+    - Higher penalty when actual value exceeds prediction (under-forecasting)
+    - Lower penalty when actual value is below prediction (over-forecasting)
+    
+    For P90 (τ=0.9), the penalty ratio is 9:1 (0.9/0.1), meaning under-forecasting is
+    penalized 9x more severely than over-forecasting.
+    
+    This is particularly useful for MOONCAKE category where the cost of under-forecasting
+    (stock-outs) is much higher than the cost of slight over-forecasting (safety stock).
+    
+    Mathematical Formula:
+    L_τ(y, ŷ) = {
+        τ * (y - ŷ)    if y >= ŷ  (under-forecasting: higher penalty)
+        (1-τ) * (ŷ - y)  if y < ŷ  (over-forecasting: lower penalty)
+    }
+    
+    Where τ is the target quantile (e.g., 0.9 for 90th percentile).
+    
+    Active Season Weighting:
+    When is_active_season is provided, the loss is multiplied by active_season_weight
+    for samples in the active season. This ensures the model focuses on the entire
+    active season (70+ days) rather than just the peak day.
+    
+    Peak Loss Window Weighting:
+    When is_peak_loss_window is provided, the loss is multiplied by peak_loss_window_weight
+    for samples in the peak loss window (Lunar Months 7.15 to 8.15). This ensures the model
+    is heavily penalized for errors in the critical peak period.
+    
+    August Boost Weighting:
+    When is_august is provided, the loss is multiplied by august_boost_weight for samples
+    in August (Gregorian month == 8). This reinforces August as a strong signal anchor
+    for MOONCAKE category, preventing phase shift errors.
+    
+    Args:
+        quantile: Target quantile (default: 0.9 for P90). Must be between 0 and 1.
+        reduction: Reduction method: 'mean', 'sum', or 'none' (default: 'mean').
+        active_season_weight: Weight multiplier for active season samples (default: 1.0, no weighting).
+        peak_loss_window_weight: Weight multiplier for peak loss window samples (default: 1.0, no weighting).
+        august_boost_weight: Weight multiplier for August samples (default: 1.0, no weighting).
+    """
+    
+    def __init__(self, quantile: float = 0.9, reduction: str = 'mean', active_season_weight: float = 1.0, peak_loss_window_weight: float = 1.0, august_boost_weight: float = 1.0):
+        """
+        Initialize Quantile Loss.
+        
+        Args:
+            quantile: Target quantile (default: 0.9 for P90). Must be between 0 and 1.
+            reduction: Reduction method: 'mean', 'sum', or 'none' (default: 'mean').
+            active_season_weight: Weight multiplier for active season samples (default: 1.0).
+            peak_loss_window_weight: Weight multiplier for peak loss window samples (default: 1.0).
+        """
+        super(QuantileLoss, self).__init__()
+        if not 0.0 < quantile < 1.0:
+            raise ValueError(f"Quantile must be between 0 and 1, got {quantile}")
+        self.quantile = quantile
+        self.reduction = reduction
+        self.active_season_weight = active_season_weight
+        self.peak_loss_window_weight = peak_loss_window_weight
+        self.august_boost_weight = august_boost_weight
+    
+    def forward(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        category_ids: Optional[torch.Tensor] = None,
+        inputs: Optional[torch.Tensor] = None,
+        is_active_season: Optional[torch.Tensor] = None,
+        is_peak_loss_window: Optional[torch.Tensor] = None,
+        is_august: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Compute quantile loss with optional active season, peak loss window, and August boost weighting.
+        
+        Args:
+            y_pred: Predicted values tensor (can be 1D or 2D).
+            y_true: True values tensor (same shape as y_pred).
+            category_ids: Optional category IDs (not used in quantile loss, kept for API compatibility).
+            inputs: Optional input features (not used in quantile loss, kept for API compatibility).
+            is_active_season: Optional tensor indicating active season samples (1 for active season, 0 otherwise).
+                            Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+                            When provided, loss is multiplied by active_season_weight for active season samples.
+            is_peak_loss_window: Optional tensor indicating peak loss window samples (1 for peak loss window, 0 otherwise).
+                                Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+                                When provided, loss is multiplied by peak_loss_window_weight for peak loss window samples.
+            is_august: Optional tensor indicating August samples (1 for Gregorian month == 8, 0 otherwise).
+                      Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+                      When provided, loss is multiplied by august_boost_weight for August samples.
+        
+        Returns:
+            Quantile loss value (scalar if reduction='mean' or 'sum', tensor otherwise).
+        """
+        # Ensure y_pred and y_true have the same shape
+        if y_pred.shape != y_true.shape:
+            # Try to broadcast if possible
+            if y_pred.ndim == 1 and y_true.ndim == 2:
+                y_pred = y_pred.unsqueeze(-1).expand_as(y_true)
+            elif y_pred.ndim == 2 and y_true.ndim == 1:
+                y_true = y_true.unsqueeze(-1).expand_as(y_pred)
+            else:
+                raise ValueError(
+                    f"Shape mismatch: y_pred {y_pred.shape} vs y_true {y_true.shape}"
+                )
+        
+        # Compute error: positive when y_true > y_pred (under-forecasting)
+        error = y_true - y_pred
+        
+        # Apply asymmetric penalty based on quantile
+        # When error >= 0 (under-forecasting): penalty = quantile * error
+        # When error < 0 (over-forecasting): penalty = (1 - quantile) * |error|
+        # For P90 (τ=0.9): under-forecasting penalty = 0.9 * error, over-forecasting = 0.1 * |error|
+        # Ratio: 0.9/0.1 = 9x more severe penalty for under-forecasting
+        loss = torch.where(
+            error >= 0,
+            self.quantile * error,           # Under-forecasting: higher penalty (0.9 * error for P90)
+            (1 - self.quantile) * (-error)   # Over-forecasting: lower penalty (0.1 * error for P90)
+        )
+        
+        # Apply active season weighting if provided
+        if is_active_season is not None and self.active_season_weight > 1.0:
+            # Ensure is_active_season matches y_true shape
+            if is_active_season.ndim == 1 and y_true.ndim == 2:
+                is_active_season = is_active_season.unsqueeze(-1).expand_as(y_true)
+            elif is_active_season.ndim == 2 and y_true.ndim == 1:
+                is_active_season = is_active_season[:, 0] if is_active_season.shape[1] > 0 else is_active_season.mean(dim=1)
+            
+            # Create weight tensor: active_season_weight for active season, 1.0 otherwise
+            season_weight = torch.where(
+                is_active_season > 0.5,  # Active season indicator
+                torch.tensor(self.active_season_weight, device=y_true.device),
+                torch.tensor(1.0, device=y_true.device)
+            )
+            loss = loss * season_weight
+        
+        # Apply peak loss window weighting if provided (for MOONCAKE category - Lunar Months 7.15 to 8.15)
+        # This is the critical peak period where errors must be heavily penalized
+        if is_peak_loss_window is not None and self.peak_loss_window_weight > 1.0:
+            # Ensure is_peak_loss_window matches y_true shape
+            if is_peak_loss_window.ndim == 1 and y_true.ndim == 2:
+                is_peak_loss_window = is_peak_loss_window.unsqueeze(-1).expand_as(y_true)
+            elif is_peak_loss_window.ndim == 2 and y_true.ndim == 1:
+                is_peak_loss_window = is_peak_loss_window[:, 0] if is_peak_loss_window.shape[1] > 0 else is_peak_loss_window.mean(dim=1)
+            
+            # Create weight tensor: peak_loss_window_weight for peak loss window, 1.0 otherwise
+            peak_weight = torch.where(
+                is_peak_loss_window > 0.5,  # In Peak Loss Window (Lunar Months 7.15 to 8.15)
+                torch.tensor(self.peak_loss_window_weight, device=y_true.device),
+                torch.tensor(1.0, device=y_true.device)
+            )
+            loss = loss * peak_weight
+        
+        # Apply August boost weighting if provided (for MOONCAKE category - Gregorian August)
+        # This reinforces August (Gregorian month 8) as a strong signal anchor
+        if is_august is not None and self.august_boost_weight > 1.0:
+            # Ensure is_august matches y_true shape
+            if is_august.ndim == 1 and y_true.ndim == 2:
+                is_august = is_august.unsqueeze(-1).expand_as(y_true)
+            elif is_august.ndim == 2 and y_true.ndim == 1:
+                is_august = is_august[:, 0] if is_august.shape[1] > 0 else is_august.mean(dim=1)
+            
+            # Create weight tensor: august_boost_weight for August, 1.0 otherwise
+            august_weight = torch.where(
+                is_august > 0.5,  # In August (Gregorian month == 8)
+                torch.tensor(self.august_boost_weight, device=y_true.device),
+                torch.tensor(1.0, device=y_true.device)
+            )
+            loss = loss * august_weight
+        
+        # Apply reduction
+        if self.reduction == 'mean':
+            return torch.mean(loss)
+        elif self.reduction == 'sum':
+            return torch.sum(loss)
+        elif self.reduction == 'none':
+            return loss
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}. Must be 'mean', 'sum', or 'none'.")
+
+
+def quantile_loss(
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    quantile: float = 0.9,
+    reduction: str = 'mean',
+    category_ids: Optional[torch.Tensor] = None,
+    inputs: Optional[torch.Tensor] = None,
+    is_active_season: Optional[torch.Tensor] = None,
+    active_season_weight: float = 1.0,
+    is_peak_loss_window: Optional[torch.Tensor] = None,
+    peak_loss_window_weight: float = 1.0,
+    is_august: Optional[torch.Tensor] = None,
+    august_boost_weight: float = 1.0
+) -> torch.Tensor:
+    """
+    Quantile Loss (Pinball Loss) function for asymmetric regression.
+    
+    Convenience function that creates and calls QuantileLoss.
+    This function signature matches the pattern used by other loss functions
+    in this module for consistency with the training pipeline.
+    
+    Args:
+        y_pred: Predicted values tensor.
+        y_true: True values tensor.
+        quantile: Target quantile (default: 0.9 for P90). Must be between 0 and 1.
+        reduction: Reduction method: 'mean', 'sum', or 'none' (default: 'mean').
+        category_ids: Optional category IDs (not used, kept for API compatibility).
+        inputs: Optional input features (not used, kept for API compatibility).
+        is_active_season: Optional tensor indicating active season samples (1 for active season, 0 otherwise).
+        active_season_weight: Weight multiplier for active season samples (default: 1.0).
+        is_peak_loss_window: Optional tensor indicating peak loss window samples (1 for peak loss window, 0 otherwise).
+        peak_loss_window_weight: Weight multiplier for peak loss window samples (default: 1.0).
+        is_august: Optional tensor indicating August samples (1 for Gregorian month == 8, 0 otherwise).
+        august_boost_weight: Weight multiplier for August samples (default: 1.0).
+    
+    Returns:
+        Quantile loss value.
+    """
+    loss_fn = QuantileLoss(quantile=quantile, reduction=reduction, active_season_weight=active_season_weight, peak_loss_window_weight=peak_loss_window_weight, august_boost_weight=august_boost_weight)
+    return loss_fn(y_pred, y_true, category_ids=category_ids, inputs=inputs, is_active_season=is_active_season, is_peak_loss_window=is_peak_loss_window, is_august=is_august)
 

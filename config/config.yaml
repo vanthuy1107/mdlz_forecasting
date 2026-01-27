@@ -21,12 +21,10 @@ data:
   #                       statistical heuristics (e.g., moving average) instead of LSTM.
   #                       These are excluded from training if specified.
   major_categories:
-    #- "DRY"
-     - "FRESH"
+    # - "DRY"
+    # - "FRESH"
     # - "TET"
-    # # - "POSM"
-    # # - "OTHER"s
-    #- "MOONCAKE"
+    - "MOONCAKE"
   minor_categories:
     # - "POSM"
     # - "OTHER"
