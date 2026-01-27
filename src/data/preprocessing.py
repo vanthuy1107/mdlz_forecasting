@@ -1071,6 +1071,7 @@ def apply_sunday_to_monday_carryover(
     # For each category, apply carryover logic
     def apply_carryover_per_category(group):
         """Apply Sunday-to-Monday carryover for a single category."""
+        group[cat_col] = group.name
         group = group.copy()
         
         # Identify Mondays (day_of_week == 0)
@@ -1100,8 +1101,7 @@ def apply_sunday_to_monday_carryover(
         return group
     
     # Apply carryover per category
-    df = df.groupby(cat_col, group_keys=False).apply(apply_carryover_per_category)
-    
+    df = df.groupby(cat_col, group_keys=False).apply(apply_carryover_per_category).reset_index(drop=False)
     # Clean up temporary columns
     df = df.drop(columns=['_day_of_week'])
     

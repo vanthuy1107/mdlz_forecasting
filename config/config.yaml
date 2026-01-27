@@ -2,7 +2,7 @@
 
 # Data Configuration
 data:
-  data_dir: "./dataset/data_cat"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
+  data_dir: "./dataset"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
   file_pattern: "data_{year}.csv"  # Pattern for combined year files
   years: [2023, 2024]
   
@@ -12,7 +12,7 @@ data:
   #   "single" - Train on one specific category (specify in category_filter)
   #   "both" - Train on all categories AND each category separately
   #   "each" - Train on each category separately (uses major_categories if specified)
-  category_mode: "single"  # "all", "single", "both", or "each"
+  category_mode: "all"  # "all", "single", "both", or "each"
   category_filter: "DRY"  # Only used when category_mode is "single". Specify category name or null for all
   # Category behavior rules for multi-target decomposition:
   #   - major_categories: High-volume, structurally stable categories that should be modeled with the LSTM
@@ -23,6 +23,10 @@ data:
   major_categories:
     - "DRY"
     - "FRESH"
+    - "TET"
+    - "MOONCAKE"
+    - "POSM"
+    - "OTHER"
   minor_categories:
     - "POSM"
     - "OTHER"
@@ -75,8 +79,8 @@ data:
 # Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
 # This prevents exposure bias from recursive forecasting where errors compound
 window:
-  input_size: 30  # Increased from 30 to provide more context
-  horizon: 30     # Changed from 1 to 30 for direct multi-step prediction
+  input_size: 7  # Increased from 30 to provide more context
+  horizon: 2     # Changed from 1 to 30 for direct multi-step prediction
 
 # Model Configuration
 model:
@@ -144,7 +148,7 @@ inference:
   # "2025-01-01" and prediction_end to "2025-12-31" will automatically predict
   # the full year by looping through chunks of horizon days, updating the window
   # with predictions from each chunk for the next chunk.
-  prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
+  prediction_data_path: "dataset/data_2025.csv"  # CSV with future period to predict
   prediction_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
   prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
 

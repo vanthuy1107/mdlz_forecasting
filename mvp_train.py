@@ -24,6 +24,7 @@ from config import load_config, load_holidays
 from src.data import (
     DataReader,
     ForecastDataset,
+    RollingGroupScaler,
     slicing_window_category,
     encode_categories,
     split_data,
@@ -787,10 +788,12 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         target_col=target_col_name,
         actual_col=target_col_name
     )
+    
     print("    - Monday's target now includes Sunday's demand (captures backlog accumulation)")
     
     # Feature engineering: Add CBM/QTY density features, including last-year prior
     print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")
+    
     filtered_data = add_cbm_density_features(
         filtered_data,
         cbm_col=target_col_name,   # e.g., "Total CBM"
@@ -866,37 +869,47 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"  - Category mapping: {cat2id}")
     
     # Split data
-    print("\n[6/8] Splitting data...")
-    train_data, val_data, test_data = split_data(
-        filtered_data,
-        train_size=data_config['train_size'],
-        val_size=data_config['val_size'],
-        test_size=data_config['test_size'],
-        temporal=True
-    )
-    print(f"  - Train samples: {len(train_data)}")
-    print(f"  - Validation samples: {len(val_data)}")
-    print(f"  - Test samples: {len(test_data)}")
+    # print("\n[6/8] Splitting data...")
+    # train_data, val_data, test_data = split_data(
+    #     filtered_data,
+    #     train_size=data_config['train_size'],
+    #     val_size=data_config['val_size'],
+    #     test_size=data_config['test_size'],
+    #     temporal=True
+    # )
+    # print(f"  - Train samples: {len(train_data)}")
+    # print(f"  - Validation samples: {len(val_data)}")
+    # print(f"  - Test samples: {len(test_data)}")
     
-    # DEBUG: Check test data target values BEFORE scaling
-    test_target_before_scaling = test_data[target_col_for_model].values
-    print(f"\n  - DEBUG: Test data target BEFORE scaling (column='{target_col_for_model}'):")
-    print(f"    - Min: {test_target_before_scaling.min():.4f}")
-    print(f"    - Max: {test_target_before_scaling.max():.4f}")
-    print(f"    - Mean: {test_target_before_scaling.mean():.4f}")
-    print(f"    - Non-zero count: {np.sum(test_target_before_scaling != 0)} / {len(test_target_before_scaling)}")
-    print(f"    - Zero count: {np.sum(test_target_before_scaling == 0)} / {len(test_target_before_scaling)}")
+    # # DEBUG: Check test data target values BEFORE scaling
+    # test_target_before_scaling = test_data[target_col_for_model].values
+    # print(f"\n  - DEBUG: Test data target BEFORE scaling (column='{target_col_for_model}'):")
+    # print(f"    - Min: {test_target_before_scaling.min():.4f}")
+    # print(f"    - Max: {test_target_before_scaling.max():.4f}")
+    # print(f"    - Mean: {test_target_before_scaling.mean():.4f}")
+    # print(f"    - Non-zero count: {np.sum(test_target_before_scaling != 0)} / {len(test_target_before_scaling)}")
+    # print(f"    - Zero count: {np.sum(test_target_before_scaling == 0)} / {len(test_target_before_scaling)}")
     
     # Fit scaler on training data and apply to all splits
     print(f"\n[6.5/8] Scaling target values in column '{target_col_for_model}'...")
-    scaler = fit_scaler(train_data, target_col=target_col_for_model)
-    print(f"  - Scaler fitted on training data:")
-    print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
+    scaler = RollingGroupScaler(
+        group_col=cat_id_col,
+        time_col=time_col,
+        feature_cols=target_col_for_model,
+        lookback_months=6
+    )
+    # scaler = fit_scaler(train_data, target_col=target_col_for_model)
+    test_end_date = pd.Timestamp("2025-01-01")
+    filtered_data[time_col] = pd.to_datetime(filtered_data[time_col])
+    scaler.fit(filtered_data, test_end_date)
+    data_scaled = scaler.transform(filtered_data)
+    # print(f"  - Scaler fitted on training data:")
+    # print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
     
-    train_data = apply_scaling(train_data, scaler, target_col=target_col_for_model)
-    val_data = apply_scaling(val_data, scaler, target_col=target_col_for_model)
-    test_data = apply_scaling(test_data, scaler, target_col=target_col_for_model)
-    print("  - Scaling applied to train, validation, and test sets")
+    # train_data = apply_scaling(train_data, scaler, target_col=target_col_for_model)
+    # val_data = apply_scaling(val_data, scaler, target_col=target_col_for_model)
+    # test_data = apply_scaling(test_data, scaler, target_col=target_col_for_model)
+    # print("  - Scaling applied to train, validation, and test sets")
     
     # Create windows using slicing_window_category
     print("\n[7/8] Creating sliding windows...")
@@ -920,7 +933,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     
     print("  - Creating training windows...")
     X_train, y_train, cat_train = slicing_window_category(
-        train_data,
+        data_scaled,
         input_size,
         horizon,
         feature_cols=feature_cols,
@@ -929,52 +942,52 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         time_col=time_col_list
     )
     
-    print("  - Creating validation windows...")
-    X_val, y_val, cat_val = slicing_window_category(
-        val_data,
-        input_size,
-        horizon,
-        feature_cols=feature_cols,
-        target_col=target_col,
-        cat_col=cat_col_list,
-        time_col=time_col_list
-    )
+    # print("  - Creating validation windows...")
+    # X_val, y_val, cat_val = slicing_window_category(
+    #     val_data,
+    #     input_size,
+    #     horizon,
+    #     feature_cols=feature_cols,
+    #     target_col=target_col,
+    #     cat_col=cat_col_list,
+    #     time_col=time_col_list
+    # )
     
-    print("  - Creating test windows...")
-    X_test, y_test, cat_test = slicing_window_category(
-        test_data,
-        input_size,
-        horizon,
-        feature_cols=feature_cols,
-        target_col=target_col,
-        cat_col=cat_col_list,
-        time_col=time_col_list
-    )
+    # print("  - Creating test windows...")
+    # X_test, y_test, cat_test = slicing_window_category(
+    #     test_data,
+    #     input_size,
+    #     horizon,
+    #     feature_cols=feature_cols,
+    #     target_col=target_col,
+    #     cat_col=cat_col_list,
+    #     time_col=time_col_list
+    # )
     
     print(f"  - X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
-    print(f"  - X_val shape: {X_val.shape}, y_val shape: {y_val.shape}")
-    print(f"  - X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
+    # print(f"  - X_val shape: {X_val.shape}, y_val shape: {y_val.shape}")
+    # print(f"  - X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
 
     # If using residual targets, also create aligned baseline windows for test set
     # so that we can reconstruct absolute Total CBM after inverse-scaling.
-    y_test_baseline = None
-    if use_residual and baseline_col_name is not None:
-        print("  - Creating baseline windows for test set (for residual reconstruction)...")
-        _, y_test_baseline, _ = slicing_window_category(
-            test_data,
-            input_size,
-            horizon,
-            feature_cols=feature_cols,
-            target_col=[baseline_col_name],
-            cat_col=cat_col_list,
-            time_col=time_col_list
-        )
-        print(f"  - y_test_baseline shape: {y_test_baseline.shape}")
+    # y_test_baseline = None
+    # if use_residual and baseline_col_name is not None:
+    #     print("  - Creating baseline windows for test set (for residual reconstruction)...")
+    #     _, y_test_baseline, _ = slicing_window_category(
+    #         test_data,
+    #         input_size,
+    #         horizon,
+    #         feature_cols=feature_cols,
+    #         target_col=[baseline_col_name],
+    #         cat_col=cat_col_list,
+    #         time_col=time_col_list
+    #     )
+    #     print(f"  - y_test_baseline shape: {y_test_baseline.shape}")
     
     # Create datasets
     train_dataset = ForecastDataset(X_train, y_train, cat_train)
-    val_dataset = ForecastDataset(X_val, y_val, cat_val)
-    test_dataset = ForecastDataset(X_test, y_test, cat_test)
+    # val_dataset = ForecastDataset(X_val, y_val, cat_val)
+    # test_dataset = ForecastDataset(X_test, y_test, cat_test)
     
     # Create data loaders
     training_config = config.training
@@ -983,16 +996,16 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         batch_size=training_config['batch_size'],
         shuffle=True
     )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=training_config['val_batch_size'],
-        shuffle=False
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=training_config['test_batch_size'],
-        shuffle=False
-    )
+    # val_loader = DataLoader(
+    #     val_dataset,
+    #     batch_size=training_config['val_batch_size'],
+    #     shuffle=False
+    # )
+    # test_loader = DataLoader(
+    #     test_dataset,
+    #     batch_size=training_config['test_batch_size'],
+    #     shuffle=False
+    # )
     
     # Build model
     print("\n[8/8] Building model and trainer...")
@@ -1002,7 +1015,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         input_dim=model_config['input_dim'],
         hidden_size=model_config['hidden_size'],
         n_layers=model_config['n_layers'],
-        output_dim=model_config['output_dim'],
+        output_dim=horizon,
         use_layer_norm=model_config.get('use_layer_norm', True),
     )
     print(f"  - Model: {model_config['name']}")
@@ -1060,7 +1073,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     
     train_losses, val_losses = trainer.fit(
         train_loader=train_loader,
-        val_loader=val_loader,
+        val_loader=None,
         epochs=training_config['epochs'],
         save_best=True,
         verbose=True,
@@ -1079,70 +1092,70 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     print(f"  - Scaler saved to: {scaler_path}")
     
     # Evaluate on test set
-    print("\n" + "=" * 80)
-    print("EVALUATION")
-    print("=" * 80)
+    # print("\n" + "=" * 80)
+    # print("EVALUATION")
+    # print("=" * 80)
     
-    test_loss, y_true, y_pred = trainer.evaluate(
-        test_loader,
-        return_predictions=True
-    )
-    print(f"Test loss: {test_loss:.4f}")
-    print(f"Test samples: {len(y_true)}")
+    # test_loss, y_true, y_pred = trainer.evaluate(
+    #     test_loader,
+    #     return_predictions=True
+    # )
+    # print(f"Test loss: {test_loss:.4f}")
+    # print(f"Test samples: {len(y_true)}")
     
-    # DEBUG: Check y_true values (should be in scaled space of target_col_for_model)
-    print("  - DEBUG: Checking y_true values (scaled):")
-    print(f"    - Min: {y_true.min():.4f}")
-    print(f"    - Max: {y_true.max():.4f}")
-    print(f"    - Mean: {y_true.mean():.4f}")
-    print(f"    - Non-zero count: {np.sum(y_true != 0)} / {len(y_true)}")
-    print(f"    - Zero count: {np.sum(y_true == 0)} / {len(y_true)}")
+    # # DEBUG: Check y_true values (should be in scaled space of target_col_for_model)
+    # print("  - DEBUG: Checking y_true values (scaled):")
+    # print(f"    - Min: {y_true.min():.4f}")
+    # print(f"    - Max: {y_true.max():.4f}")
+    # print(f"    - Mean: {y_true.mean():.4f}")
+    # print(f"    - Non-zero count: {np.sum(y_true != 0)} / {len(y_true)}")
+    # print(f"    - Zero count: {np.sum(y_true == 0)} / {len(y_true)}")
     
     # CRITICAL: Inverse transform predictions and true values back to original scale
     # For direct multi-step forecasting, y_true and y_pred have shape (N_samples, horizon)
     # We need to flatten them for inverse transform, then reshape back if needed
-    print("  - Inverse transforming predictions to supervised target scale...")
-    print(f"  - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+    # print("  - Inverse transforming predictions to supervised target scale...")
+    # print(f"  - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
     
-    # Flatten for inverse transform (StandardScaler expects 1D or 2D with single feature)
-    y_true_flat = y_true.reshape(-1, 1) if y_true.ndim > 1 else y_true.reshape(-1, 1)
-    y_pred_flat = y_pred.reshape(-1, 1) if y_pred.ndim > 1 else y_pred.reshape(-1, 1)
+    # # Flatten for inverse transform (StandardScaler expects 1D or 2D with single feature)
+    # y_true_flat = y_true.reshape(-1, 1) if y_true.ndim > 1 else y_true.reshape(-1, 1)
+    # y_pred_flat = y_pred.reshape(-1, 1) if y_pred.ndim > 1 else y_pred.reshape(-1, 1)
     
-    y_true_supervised_flat = inverse_transform_scaling(y_true_flat, scaler, target_col=target_col_for_model)
-    y_pred_supervised_flat = inverse_transform_scaling(y_pred_flat, scaler, target_col=target_col_for_model)
+    # y_true_supervised_flat = inverse_transform_scaling(y_true_flat, scaler, target_col=target_col_for_model)
+    # y_pred_supervised_flat = inverse_transform_scaling(y_pred_flat, scaler, target_col=target_col_for_model)
     
-    # Reshape back to (N_samples, horizon) if multi-step
-    if y_true.ndim > 1:
-        y_true_supervised = y_true_supervised_flat.reshape(y_true.shape)
-        y_pred_supervised = y_pred_supervised_flat.reshape(y_pred.shape)
-    else:
-        y_true_supervised = y_true_supervised_flat
-        y_pred_supervised = y_pred_supervised_flat
+    # # Reshape back to (N_samples, horizon) if multi-step
+    # if y_true.ndim > 1:
+    #     y_true_supervised = y_true_supervised_flat.reshape(y_true.shape)
+    #     y_pred_supervised = y_pred_supervised_flat.reshape(y_pred.shape)
+    # else:
+    #     y_true_supervised = y_true_supervised_flat
+    #     y_pred_supervised = y_pred_supervised_flat
 
-    # If residual learning is enabled, reconstruct absolute Total CBM by
-    # adding back the baseline that was subtracted during target creation.
-    if use_residual and y_test_baseline is not None:
-        print("  - Reconstructing absolute Total CBM from residuals + baseline...")
-        baseline_flat = y_test_baseline.reshape(-1)
-        y_true_resid_flat = y_true_supervised.reshape(-1)
-        y_pred_resid_flat = y_pred_supervised.reshape(-1)
+    # # If residual learning is enabled, reconstruct absolute Total CBM by
+    # # adding back the baseline that was subtracted during target creation.
+    # if use_residual and y_test_baseline is not None:
+    #     print("  - Reconstructing absolute Total CBM from residuals + baseline...")
+    #     baseline_flat = y_test_baseline.reshape(-1)
+    #     y_true_resid_flat = y_true_supervised.reshape(-1)
+    #     y_pred_resid_flat = y_pred_supervised.reshape(-1)
 
-        y_true_original = y_true_resid_flat + baseline_flat
-        y_pred_original = y_pred_resid_flat + baseline_flat
-    else:
-        # No residuals: supervised target is already the absolute series
-        # Flatten for plotting/evaluation
-        y_true_original = y_true_supervised.reshape(-1)
-        y_pred_original = y_pred_supervised.reshape(-1)
+    #     y_true_original = y_true_resid_flat + baseline_flat
+    #     y_pred_original = y_pred_resid_flat + baseline_flat
+    # else:
+    #     # No residuals: supervised target is already the absolute series
+    #     # Flatten for plotting/evaluation
+    #     y_true_original = y_true_supervised.reshape(-1)
+    #     y_pred_original = y_pred_supervised.reshape(-1)
     
-    # DEBUG: Check y_true_original values (should be in original scale)
-    print("  - DEBUG: Checking y_true_original values (after inverse transform):")
-    print(f"    - Min: {y_true_original.min():.4f}")
-    print(f"    - Max: {y_true_original.max():.4f}")
-    print(f"    - Mean: {y_true_original.mean():.4f}")
-    print(f"    - Non-zero count: {np.sum(y_true_original != 0)} / {len(y_true_original)}")
-    print(f"    - Zero count: {np.sum(y_true_original == 0)} / {len(y_true_original)}")
-    print(f"    - First 10 values: {y_true_original[:10]}")
+    # # DEBUG: Check y_true_original values (should be in original scale)
+    # print("  - DEBUG: Checking y_true_original values (after inverse transform):")
+    # print(f"    - Min: {y_true_original.min():.4f}")
+    # print(f"    - Max: {y_true_original.max():.4f}")
+    # print(f"    - Mean: {y_true_original.mean():.4f}")
+    # print(f"    - Non-zero count: {np.sum(y_true_original != 0)} / {len(y_true_original)}")
+    # print(f"    - Zero count: {np.sum(y_true_original == 0)} / {len(y_true_original)}")
+    # print(f"    - First 10 values: {y_true_original[:10]}")
     
     # Save training metadata (including a compact text summary of this log)
     print("\n[9/9] Saving training metadata...")
@@ -1152,9 +1165,9 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
         f"Number of categories: {num_categories}",
         f"Category mapping: {cat2id}",
         f"Best validation loss: {trainer.best_val_loss:.4f}",
-        f"Test loss: {test_loss:.4f}",
+        #f"Test loss: {test_loss:.4f}",
         f"Training time (seconds): {training_time:.2f}",
-        f"Test samples: {len(y_true)}",
+        #f"Test samples: {len(y_true)}",
     ]
     metadata = {
         'training_config': {
@@ -1173,9 +1186,9 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
             'target_col': data_config['target_col'],
             'daily_aggregation': True,  # Flag indicating daily aggregation was used
             'scaling': {
-                'method': 'StandardScaler',
-                'scaler_mean': float(scaler.mean_[0]),
-                'scaler_scale': float(scaler.scale_[0])
+                'method': 'RobustScaler',
+                #'scaler_mean': float(scaler.mean_[0]),
+                #'scaler_scale': float(scaler.scale_[0])
             }
         },
         'window_config': dict(window_config),
@@ -1183,7 +1196,7 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
             'final_train_loss': train_losses[-1] if train_losses else None,
             'final_val_loss': val_losses[-1] if val_losses else None,
             'best_val_loss': trainer.best_val_loss,
-            'test_loss': float(test_loss),
+            #'test_loss': float(test_loss),
             'training_time_seconds': training_time
         },
         'log_summary': "\n".join(log_summary_lines),
@@ -1203,31 +1216,31 @@ def train_single_model(data, config, category_filter=None, output_suffix=""):
     plot_path = os.path.join(output_dir, "test_predictions.png")
     
     # Use a reasonable number of samples for plotting
-    n_samples = min(100, len(y_true_original))
+    # n_samples = min(100, len(y_true_original))
     
     # DEBUG: Verify values being passed to plot_difference
-    y_true_plot = y_true_original[:n_samples]
-    y_pred_plot = y_pred_original[:n_samples]
-    print(f"  - DEBUG: Values being passed to plot_difference:")
-    print(f"    - y_true_plot shape: {y_true_plot.shape}")
-    print(f"    - y_true_plot min: {y_true_plot.min():.4f}, max: {y_true_plot.max():.4f}")
-    print(f"    - y_true_plot first 5: {y_true_plot[:5]}")
-    print(f"    - y_true_plot non-zero: {np.sum(y_true_plot != 0)} / {len(y_true_plot)}")
+    # y_true_plot = y_true_original[:n_samples]
+    # y_pred_plot = y_pred_original[:n_samples]
+    # print(f"  - DEBUG: Values being passed to plot_difference:")
+    # print(f"    - y_true_plot shape: {y_true_plot.shape}")
+    # print(f"    - y_true_plot min: {y_true_plot.min():.4f}, max: {y_true_plot.max():.4f}")
+    # print(f"    - y_true_plot first 5: {y_true_plot[:5]}")
+    # print(f"    - y_true_plot non-zero: {np.sum(y_true_plot != 0)} / {len(y_true_plot)}")
     
-    plot_difference(
-        y_true_plot,
-        y_pred_plot,
-        save_path=plot_path,
-        show=False
-    )
-    print(f"  - Prediction plot saved to: {plot_path}")
+    # plot_difference(
+    #     y_true_plot,
+    #     y_pred_plot,
+    #     save_path=plot_path,
+    #     show=False
+    # )
+    # print(f"  - Prediction plot saved to: {plot_path}")
     
     result = {
         'output_dir': output_dir,
         'model_dir': save_dir,
         'plot_path': plot_path,
         'training_time': training_time,
-        'test_loss': test_loss,
+        #'test_loss': test_loss,
         'category_filter': category_filter
     }
     
@@ -1387,8 +1400,8 @@ def main():
         print(f"\n{i}. {cat_name}:")
         print(f"   - Output directory: {result['output_dir']}")
         print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
-        print(f"   - Test predictions plot: {result['plot_path']}")
-        print(f"   - Test loss: {result['test_loss']:.4f}")
+        # print(f"   - Test predictions plot: {result['plot_path']}")
+        # print(f"   - Test loss: {result['test_loss']:.4f}")
         print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
     print("=" * 80)
 

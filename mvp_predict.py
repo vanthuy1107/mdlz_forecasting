@@ -25,6 +25,7 @@ from config import load_config, load_holidays
 from src.data import (
     DataReader,
     ForecastDataset,
+    RollingGroupScaler,
     slicing_window_category,
     encode_categories,
     add_holiday_features,
@@ -785,14 +786,14 @@ def load_model_for_prediction(model_path: str, config):
         with open(scaler_path, 'rb') as f:
             scaler = pickle.load(f)
         print(f"  - Scaler loaded from: {scaler_path}")
-        print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
+        # print(f"    Mean: {scaler.mean_[0]:.4f}, Std: {scaler.scale_[0]:.4f}")
     else:
         print(f"  [WARNING] Scaler not found at {scaler_path}, predictions will be in scaled space")
     
     return model, device, scaler, trained_category_filter, trained_cat2id
 
 
-def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=None):
+def prepare_prediction_data(data, config, cat2id, scaler : RollingGroupScaler, trained_cat2id=None):
     """
     Prepare data for prediction using the same preprocessing as training.
     
@@ -996,7 +997,8 @@ def prepare_prediction_data(data, config, cat2id, scaler=None, trained_cat2id=No
     # Apply scaling if scaler is provided (matches training pipeline)
     if scaler is not None:
         print(f"  - Applying scaling to {data_config['target_col']} values...")
-        data = apply_scaling(data, scaler, target_col=data_config['target_col'])
+        data = scaler.transform(data)
+        #data = apply_scaling(data, scaler, target_col=data_config['target_col'])
     
     return data
 
@@ -2187,8 +2189,10 @@ def main():
         if len(y_true_tf) > 0 and len(y_pred_tf) > 0:
             if scaler is not None:
                 print("  - Inverse transforming scaled predictions to original scale...")
-                y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
-                y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+                # y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
+                # y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+                y_true_tf_unscaled = scaler.inverse_transform_y(y_true_tf, cat_pred)
+                y_pred_tf_unscaled = scaler.inverse_transform_y(y_pred_tf, cat_pred)
                 # Clip negative predictions to 0 (QTY cannot be negative)
                 negative_count = np.sum(y_pred_tf_unscaled < 0)
                 if negative_count > 0:
@@ -2453,9 +2457,10 @@ def main():
     # Inverse transform predictions if scaler is available
     if scaler is not None and len(recursive_results) > 0:
         print("  - Inverse transforming recursive predictions to original scale...")
-        recursive_results['predicted_unscaled'] = inverse_transform_scaling(
-            recursive_results['predicted'].values, scaler
-        )
+        # recursive_results['predicted_unscaled'] = inverse_transform_scaling(
+        #     recursive_results['predicted'].values, scaler
+        # )
+        recursive_results['predicted_unscaled'] = scaler.inverse_transform_y(recursive_results['predicted'].values,)
     else:
         recursive_results['predicted_unscaled'] = recursive_results['predicted'] if len(recursive_results) > 0 else []
 

@@ -1,6 +1,7 @@
 """Data loading, preprocessing, and dataset utilities."""
 from .loader import DataReader
 from .dataset import ForecastDataset
+from .scaler import RollingGroupScaler
 from .preprocessing import (
     slicing_window,
     slicing_window_multivariate,
