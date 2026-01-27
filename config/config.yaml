@@ -21,10 +21,10 @@ data:
   #                       statistical heuristics (e.g., moving average) instead of LSTM.
   #                       These are excluded from training if specified.
   major_categories:
-    # - "DRY"
+    - "DRY"
     # - "FRESH"
     # - "TET"
-    - "MOONCAKE"
+    # - "MOONCAKE"
   minor_categories:
     # - "POSM"
     # - "OTHER"
@@ -178,9 +178,9 @@ category_specific_params:
 
 # Output Configuration
 output:
-  output_dir: "../outputs"
+  output_dir: "./outputs"
   save_model: true
-  model_dir: "../outputs/models"
+  model_dir: "./outputs/models"
   
   # Visualization
   visualize:

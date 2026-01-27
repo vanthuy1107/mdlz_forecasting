@@ -135,7 +135,51 @@ def combine_yearly_data(
     saved_files = {}
     total_files_loaded = 0
     failed_files = []
-    
+
+    # Load masterdata for BRAND lookup by SKU (if available)
+    masterdata_df = None
+    # Build path relative to this script's directory so it works regardless of current working directory
+    script_dir = Path(__file__).resolve().parent
+    masterdata_path = script_dir / "masterdata" / "masterdata category-brand.xlsx"
+    if masterdata_path.exists():
+        try:
+            print(f"\nLoading masterdata for BRAND mapping from: {masterdata_path}")
+            masterdata_df = pd.read_excel(masterdata_path)
+
+            # Normalize column names (strip spaces, uppercase for matching)
+            masterdata_df.columns = masterdata_df.columns.str.strip()
+            cols_upper = {c.upper(): c for c in masterdata_df.columns}
+
+            # Try to detect SKU and BRAND columns case-insensitively
+            sku_col = None
+            brand_col = None
+            for key, orig in cols_upper.items():
+                if key == "SKU":
+                    sku_col = orig
+                if key.startswith("BRAND"):
+                    brand_col = orig
+
+            if sku_col is None or brand_col is None:
+                print(
+                    f"[WARNING] Masterdata missing required SKU/BRAND columns. "
+                    f"Detected columns: {list(masterdata_df.columns)}"
+                )
+                masterdata_df = None
+            else:
+                # Normalize key columns as strings and trim whitespace
+                masterdata_df[sku_col] = masterdata_df[sku_col].astype(str).str.strip()
+                masterdata_df[brand_col] = masterdata_df[brand_col].astype(str).str.strip()
+
+                # Keep only distinct SKU-BRAND pairs with standardized names
+                masterdata_df = masterdata_df[[sku_col, brand_col]].drop_duplicates()
+                masterdata_df = masterdata_df.rename(columns={sku_col: "SKU", brand_col: "BRAND"})
+                print(f"  Masterdata loaded: {len(masterdata_df):,} unique SKU-BRAND pairs")
+        except Exception as e:
+            print(f"[WARNING] Failed to load masterdata file '{masterdata_path}': {e}")
+            masterdata_df = None
+    else:
+        print(f"[INFO] Masterdata file for BRAND mapping not found at: {masterdata_path}")
+
     # Process each year separately
     for year in sorted(years):
         if year not in files_by_year:
@@ -201,7 +245,28 @@ def combine_yearly_data(
             print(f"  Date range: {date_range}")
         else:
             print(f"  [WARNING] Time column '{time_col}' not found. Available columns: {list(year_combined.columns)}")
-        
+
+        # Join BRAND from masterdata by SKU (if available)
+        if masterdata_df is not None and "SKU" in year_combined.columns:
+            # Normalize SKU in fact data to string and trim spaces to avoid type/format mismatches
+            year_combined["SKU"] = year_combined["SKU"].astype(str).str.strip()
+
+            rows_before_join = len(year_combined)
+            year_combined = year_combined.merge(
+                masterdata_df,
+                on="SKU",
+                how="left",
+            )
+            matched_rows = year_combined["BRAND"].notna().sum()
+            print(
+                f"  Joined BRAND by SKU: {matched_rows:,} rows with BRAND out of {rows_before_join:,}"
+            )
+        else:
+            if masterdata_df is None:
+                print("  [INFO] BRAND masterdata not loaded; skipping BRAND join.")
+            else:
+                print("  [WARNING] SKU column not found in data; cannot join BRAND.")
+
         # Filter: keep only rows where CATEGORY != "TEST" and CATEGORY != "OFFBOM"
         if 'CATEGORY' in year_combined.columns:
             rows_before = len(year_combined)
@@ -211,8 +276,8 @@ def combine_yearly_data(
         else:
             print(f"  [WARNING] CATEGORY column not found. Cannot filter by CATEGORY.")
         
-        # Group by columns: ACTUALSHIPDATE, TYPENAME, WHSEID, CATEGORY
-        groupby_cols = [time_col, 'TYPENAME', 'WHSEID', 'CATEGORY']
+        # Group by columns: ACTUALSHIPDATE, WHSEID, CATEGORY, BRAND (if available)
+        groupby_cols = [time_col, 'WHSEID', 'CATEGORY', 'BRAND']
         available_cols = [col for col in groupby_cols if col in year_combined.columns]
         
         if len(available_cols) < len(groupby_cols):
@@ -292,7 +357,7 @@ def combine_yearly_data(
                 # hidden states of downstream sequence models (e.g., LSTMs), we enforce
                 # a full calendar over the observed date span. We take the Cartesian
                 # product of:
-                #   - all unique CATEGORY values (and, if available, TYPENAME, WHSEID)
+                #   - all unique CATEGORY values (and, if available, WHSEID, BRAND)
                 #   - a complete daily date range between min(date) and max(date)
                 #
                 # Any missing intersections are synthesized as "zero-volume" rows. This
@@ -300,7 +365,7 @@ def combine_yearly_data(
                 # and mitigates hidden-state "memory snaps" caused by skipped timestamps.
                 # ------------------------------------------------------------------
                 if time_col in year_combined.columns and 'CATEGORY' in year_combined.columns:
-                    print("  Applying Full Calendar Reindexing (date x CATEGORY x TYPENAME x WHSEID)...")
+                    print("  Applying Full Calendar Reindexing (date x CATEGORY x WHSEID x BRAND)...")
 
                     # Ensure datetime for date range construction
                     date_dt = pd.to_datetime(year_combined[time_col])
@@ -314,7 +379,7 @@ def combine_yearly_data(
 
                         # Key dimensions for the Cartesian product
                         key_cols = ['CATEGORY']
-                        for col in ['TYPENAME', 'WHSEID']:
+                        for col in ['WHSEID', 'BRAND']:
                             if col in year_combined.columns:
                                 key_cols.append(col)
 
