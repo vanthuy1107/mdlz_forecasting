@@ -39,6 +39,7 @@ from src.data.preprocessing import (
     get_vietnam_holidays,
     add_day_of_week_cyclical_features,
     add_eom_features,
+    add_mid_month_peak_features,
     add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
@@ -937,6 +938,16 @@ def prepare_prediction_data_old(data, config, cat2id, scaler=None, trained_cat2i
         is_eom_col="is_EOM",
         days_until_month_end_col="days_until_month_end",
         eom_window_days=3
+    )
+    
+    # Add mid-month peak features (23rd-25th surge)
+    print("  - Adding mid-month peak features (mid_month_peak_tier, is_mid_month_peak, days_to_mid_month_peak)...")
+    data = add_mid_month_peak_features(
+        data,
+        time_col=time_col,
+        mid_month_peak_tier_col="mid_month_peak_tier",
+        is_mid_month_peak_col="is_mid_month_peak",
+        days_to_peak_col="days_to_mid_month_peak"
     )
     
     # Add lunar calendar features (before aggregation)

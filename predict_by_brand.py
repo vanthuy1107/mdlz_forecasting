@@ -56,6 +56,7 @@ from src.data.preprocessing import (
     get_vietnam_holidays,
     add_day_of_week_cyclical_features,
     add_eom_features,
+    add_mid_month_peak_features,
     add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
@@ -276,6 +277,15 @@ def predict_brand_model(
         is_eom_col="is_EOM",
         days_until_month_end_col="days_until_month_end",
         eom_window_days=3
+    )
+    
+    print("  - Adding mid-month peak features...")
+    brand_data = add_mid_month_peak_features(
+        brand_data,
+        time_col=time_col,
+        mid_month_peak_tier_col="mid_month_peak_tier",
+        is_mid_month_peak_col="is_mid_month_peak",
+        days_to_peak_col="days_to_mid_month_peak"
     )
     
     print("  - Adding lunar calendar features...")

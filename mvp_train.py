@@ -38,6 +38,7 @@ from src.data import (
 from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
+    add_mid_month_peak_features,
     add_weekday_volume_tier_features,
     add_is_monday_feature,
     apply_sunday_to_monday_carryover,
@@ -899,6 +900,16 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         is_eom_col="is_EOM",
         days_until_month_end_col="days_until_month_end",
         eom_window_days=3
+    )
+    
+    # Feature engineering: Add mid-month peak features (23rd-25th surge)
+    print("  - Adding mid-month peak features (mid_month_peak_tier, is_mid_month_peak, days_to_mid_month_peak)...")
+    filtered_data = add_mid_month_peak_features(
+        filtered_data,
+        time_col=time_col,
+        mid_month_peak_tier_col="mid_month_peak_tier",
+        is_mid_month_peak_col="is_mid_month_peak",
+        days_to_peak_col="days_to_mid_month_peak"
     )
     
     # Feature engineering: Add lunar calendar features

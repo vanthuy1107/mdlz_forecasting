@@ -583,6 +583,70 @@ def add_eom_features(
     return df
 
 
+def add_mid_month_peak_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    mid_month_peak_tier_col: str = "mid_month_peak_tier",
+    is_mid_month_peak_col: str = "is_mid_month_peak",
+    days_to_peak_col: str = "days_to_mid_month_peak"
+) -> pd.DataFrame:
+    """
+    Add mid-month peak features to capture the 23rd-25th volume surge pattern.
+    
+    Based on observed patterns:
+    - Volume builds up starting from the 23rd
+    - Volume peaks on 24th and 25th (highest volume days)
+    - Volume declines after the 25th
+    
+    Creates:
+    - mid_month_peak_tier: Numeric tier representing the volume pattern
+      * 3 = 24th-25th (peak days, highest volume)
+      * 2 = 23rd (building up to peak)
+      * 1 = 26th-27th (declining after peak)
+      * 0 = other days (neutral)
+    - is_mid_month_peak: Binary flag (1 for 24th-25th, 0 otherwise)
+    - days_to_mid_month_peak: Distance to the 24th (negative before, positive after)
+      * Helps model learn the gradient leading to and from the peak
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        mid_month_peak_tier_col: Name for mid_month_peak_tier column.
+        is_mid_month_peak_col: Name for is_mid_month_peak binary flag column.
+        days_to_peak_col: Name for days_to_mid_month_peak column.
+    
+    Returns:
+        DataFrame with added mid-month peak features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of month (1-31)
+    day_of_month = df[time_col].dt.day
+    
+    # Create mid_month_peak_tier feature
+    # 3 = 24th-25th (peak days)
+    # 2 = 23rd (building up)
+    # 1 = 26th-27th (declining)
+    # 0 = other days (neutral)
+    df[mid_month_peak_tier_col] = 0  # Default for other days
+    df.loc[day_of_month == 23, mid_month_peak_tier_col] = 2  # Building up
+    df.loc[(day_of_month == 24) | (day_of_month == 25), mid_month_peak_tier_col] = 3  # Peak
+    df.loc[(day_of_month == 26) | (day_of_month == 27), mid_month_peak_tier_col] = 1  # Declining
+    
+    # Create binary indicator for peak days (24th and 25th)
+    df[is_mid_month_peak_col] = ((day_of_month == 24) | (day_of_month == 25)).astype(int)
+    
+    # Create distance to peak feature (distance to 24th)
+    # Negative values = before peak, positive = after peak, 0 = on 24th
+    df[days_to_peak_col] = day_of_month - 24
+    
+    return df
+
+
 def encode_categories(df: pd.DataFrame, cat_col: str = "CATEGORY") -> Tuple[pd.DataFrame, dict, int]:
     """
     Encode categorical column to integer IDs.
