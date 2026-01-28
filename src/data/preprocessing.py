@@ -591,18 +591,20 @@ def add_mid_month_peak_features(
     days_to_peak_col: str = "days_to_mid_month_peak"
 ) -> pd.DataFrame:
     """
-    Add mid-month peak features to capture the 23rd-25th volume surge pattern.
+    Add mid-month peak features to capture the 19th-25th volume surge pattern.
     
     Based on observed patterns:
-    - Volume builds up starting from the 23rd
+    - Volume starts building up from the 19th
+    - Volume gradually increases from 19th through 23rd
     - Volume peaks on 24th and 25th (highest volume days)
     - Volume declines after the 25th
     
     Creates:
     - mid_month_peak_tier: Numeric tier representing the volume pattern
-      * 3 = 24th-25th (peak days, highest volume)
-      * 2 = 23rd (building up to peak)
-      * 1 = 26th-27th (declining after peak)
+      * 4 = 24th-25th (peak days, highest volume)
+      * 3 = 23rd (strong build-up to peak)
+      * 2 = 21st-22nd (moderate build-up)
+      * 1 = 19th-20th (early build-up) and 26th-30th (declining after peak)
       * 0 = other days (neutral)
     - is_mid_month_peak: Binary flag (1 for 24th-25th, 0 otherwise)
     - days_to_mid_month_peak: Distance to the 24th (negative before, positive after)
@@ -627,15 +629,18 @@ def add_mid_month_peak_features(
     # Extract day of month (1-31)
     day_of_month = df[time_col].dt.day
     
-    # Create mid_month_peak_tier feature
-    # 3 = 24th-25th (peak days)
-    # 2 = 23rd (building up)
-    # 1 = 26th-27th (declining)
+    # Create mid_month_peak_tier feature with gradual build-up from 19th
+    # 4 = 24th-25th (peak days)
+    # 3 = 23rd (strong build-up)
+    # 2 = 21st-22nd (moderate build-up)
+    # 1 = 19th-20th (early build-up) and 26th-30th (declining)
     # 0 = other days (neutral)
     df[mid_month_peak_tier_col] = 0  # Default for other days
-    df.loc[day_of_month == 23, mid_month_peak_tier_col] = 2  # Building up
-    df.loc[(day_of_month == 24) | (day_of_month == 25), mid_month_peak_tier_col] = 3  # Peak
-    df.loc[(day_of_month == 26) | (day_of_month == 27), mid_month_peak_tier_col] = 1  # Declining
+    df.loc[(day_of_month == 19) | (day_of_month == 20), mid_month_peak_tier_col] = 1  # Early build-up
+    df.loc[(day_of_month == 21) | (day_of_month == 22), mid_month_peak_tier_col] = 2  # Moderate build-up
+    df.loc[day_of_month == 23, mid_month_peak_tier_col] = 3  # Strong build-up
+    df.loc[(day_of_month == 24) | (day_of_month == 25), mid_month_peak_tier_col] = 4  # Peak
+    df.loc[(day_of_month >= 26) & (day_of_month <= 30), mid_month_peak_tier_col] = 1  # Declining
     
     # Create binary indicator for peak days (24th and 25th)
     df[is_mid_month_peak_col] = ((day_of_month == 24) | (day_of_month == 25)).astype(int)
@@ -643,6 +648,236 @@ def add_mid_month_peak_features(
     # Create distance to peak feature (distance to 24th)
     # Negative values = before peak, positive = after peak, 0 = on 24th
     df[days_to_peak_col] = day_of_month - 24
+    
+    return df
+
+
+def add_early_month_low_volume_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    early_month_low_tier_col: str = "early_month_low_tier",
+    is_early_month_low_col: str = "is_early_month_low",
+    days_from_month_start_col: str = "days_from_month_start"
+) -> pd.DataFrame:
+    """
+    Add early month low volume features to capture beginning-of-month patterns.
+    
+    Based on observed patterns:
+    - 1st through 5th of each month have the lowest volume
+    - This captures the monthly cycle where volume is low at the start
+    
+    Creates:
+    - early_month_low_tier: Numeric tier representing the volume pattern
+      * 0 = 1st-5th (lowest volume days)
+      * 1 = Other days (normal volume)
+    - is_early_month_low: Binary flag (1 for 1st-5th, 0 otherwise)
+    - days_from_month_start: Days from the start of the month (0 on 1st, 1 on 2nd, etc.)
+      * Helps model learn the gradient from low volume at start
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        early_month_low_tier_col: Name for early_month_low_tier column.
+        is_early_month_low_col: Name for is_early_month_low binary flag column.
+        days_from_month_start_col: Name for days_from_month_start column.
+    
+    Returns:
+        DataFrame with added early month low volume features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract day of month (1-31)
+    day_of_month = df[time_col].dt.day
+    
+    # Create early_month_low_tier feature
+    # 0 = 1st-5th (lowest volume)
+    # 1 = Other days (normal)
+    df[early_month_low_tier_col] = 1  # Default for normal days
+    df.loc[day_of_month <= 5, early_month_low_tier_col] = 0  # Low volume (1st through 5th)
+    
+    # Create binary indicator for early month low volume days (1st-5th)
+    df[is_early_month_low_col] = (day_of_month <= 5).astype(int)
+    
+    # Create days from month start feature (0-based: 0 on 1st, 1 on 2nd, etc.)
+    df[days_from_month_start_col] = day_of_month - 1
+    
+    return df
+
+
+def add_high_volume_month_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    high_volume_month_tier_col: str = "high_volume_month_tier",
+    is_high_volume_month_col: str = "is_high_volume_month",
+    is_low_volume_month_col: str = "is_low_volume_month",
+    month_col: str = "month",
+    lunar_month_col: str = "lunar_month"
+) -> pd.DataFrame:
+    """
+    Add volume month features to capture seasonal volume patterns.
+    
+    Based on observed patterns:
+    - Gregorian December has higher volume
+    - Lunar July and August have higher volume
+    - Lunar December has lowest volume
+    - This captures annual seasonality trends
+    
+    Creates:
+    - high_volume_month_tier: Numeric tier representing volume level by month
+      * 2 = Gregorian December OR Lunar July/August (high volume months)
+      * 1 = Other months (normal volume)
+      * 0 = Lunar December (low volume month)
+    - is_high_volume_month: Binary flag (1 for high volume months, 0 otherwise)
+    - is_low_volume_month: Binary flag (1 for Lunar December, 0 otherwise)
+    - month: Gregorian month number (1-12) extracted from time column
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        high_volume_month_tier_col: Name for high_volume_month_tier column.
+        is_high_volume_month_col: Name for is_high_volume_month binary flag column.
+        is_low_volume_month_col: Name for is_low_volume_month binary flag column.
+        month_col: Name for Gregorian month column (1-12).
+        lunar_month_col: Name of lunar month column (must exist in df).
+    
+    Returns:
+        DataFrame with added volume month features.
+    """
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Extract Gregorian month (1-12)
+    df[month_col] = df[time_col].dt.month
+    
+    # Check if lunar_month column exists
+    if lunar_month_col not in df.columns:
+        raise ValueError(
+            f"Lunar month column '{lunar_month_col}' not found in DataFrame. "
+            "Please ensure add_lunar_calendar_features() is called before add_high_volume_month_features()."
+        )
+    
+    # Identify high volume months:
+    # - Gregorian December (month == 12)
+    # - Lunar July (lunar_month == 7)
+    # - Lunar August (lunar_month == 8)
+    is_gregorian_december = (df[month_col] == 12)
+    is_lunar_july_august = df[lunar_month_col].isin([7, 8])
+    is_high_volume = is_gregorian_december | is_lunar_july_august
+    
+    # Identify low volume months:
+    # - Lunar December (lunar_month == 12)
+    is_lunar_december = (df[lunar_month_col] == 12)
+    is_low_volume = is_lunar_december
+    
+    # Create high_volume_month_tier feature
+    # 2 = High volume months (Gregorian Dec OR Lunar July/Aug)
+    # 1 = Normal volume (default)
+    # 0 = Low volume months (Lunar Dec)
+    df[high_volume_month_tier_col] = 1  # Default for normal months
+    df.loc[is_high_volume, high_volume_month_tier_col] = 2  # High volume months
+    df.loc[is_low_volume, high_volume_month_tier_col] = 0  # Low volume months
+    
+    # Create binary indicator for high volume months
+    df[is_high_volume_month_col] = is_high_volume.astype(int)
+    
+    # Create binary indicator for low volume months
+    df[is_low_volume_month_col] = is_low_volume.astype(int)
+    
+    return df
+
+
+def add_pre_holiday_surge_features(
+    df: pd.DataFrame,
+    time_col: str = "ACTUALSHIPDATE",
+    pre_holiday_surge_tier_col: str = "pre_holiday_surge_tier",
+    is_pre_holiday_surge_col: str = "is_pre_holiday_surge",
+    days_before_surge: int = 7
+) -> pd.DataFrame:
+    """
+    Add pre-holiday surge features to capture high volume before major holidays.
+    
+    Based on observed patterns:
+    - Volume increases in the days leading up to Tet (Lunar New Year)
+    - Volume increases in the days leading up to Mid-Autumn Festival
+    - People stock up before major holidays
+    
+    Creates:
+    - pre_holiday_surge_tier: Numeric tier representing proximity to major holiday
+      * 3 = 1-3 days before holiday (highest surge)
+      * 2 = 4-7 days before holiday (moderate surge)
+      * 1 = 8-10 days before holiday (early surge)
+      * 0 = Other days (normal)
+    - is_pre_holiday_surge: Binary flag (1 if within surge period, 0 otherwise)
+    
+    Args:
+        df: DataFrame with time column.
+        time_col: Name of time column (should be datetime or date).
+        pre_holiday_surge_tier_col: Name for pre_holiday_surge_tier column.
+        is_pre_holiday_surge_col: Name for is_pre_holiday_surge binary flag column.
+        days_before_surge: Number of days before holiday to consider as surge period (default: 7).
+    
+    Returns:
+        DataFrame with added pre-holiday surge features.
+    """
+    from datetime import date, timedelta
+    from config import load_holidays
+    
+    df = df.copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df[time_col] = pd.to_datetime(df[time_col])
+    
+    # Get date range from data
+    min_date = df[time_col].min().date()
+    max_date = df[time_col].max().date()
+    
+    # Load holidays (model_holidays has Tet and Mid-Autumn)
+    holidays_data = load_holidays(holiday_type="model")
+    
+    # Collect major holidays (Tet and Mid-Autumn only)
+    major_holidays = []
+    for year, year_holidays in holidays_data.items():
+        if 'tet' in year_holidays:
+            major_holidays.extend(year_holidays['tet'])
+        if 'mid_autumn' in year_holidays:
+            major_holidays.extend(year_holidays['mid_autumn'])
+    
+    # Initialize columns
+    df[pre_holiday_surge_tier_col] = 0  # Default: no surge
+    df[is_pre_holiday_surge_col] = 0
+    
+    # For each row, calculate distance to nearest major holiday
+    for idx, row in df.iterrows():
+        current_date = row[time_col].date()
+        
+        # Find nearest upcoming major holiday
+        upcoming_holidays = [h for h in major_holidays if h > current_date]
+        
+        if len(upcoming_holidays) > 0:
+            nearest_holiday = min(upcoming_holidays, key=lambda h: (h - current_date).days)
+            days_until_holiday = (nearest_holiday - current_date).days
+            
+            # Set tier based on proximity to holiday
+            if 1 <= days_until_holiday <= 3:
+                # 1-3 days before: highest surge
+                df.at[idx, pre_holiday_surge_tier_col] = 3
+                df.at[idx, is_pre_holiday_surge_col] = 1
+            elif 4 <= days_until_holiday <= 7:
+                # 4-7 days before: moderate surge
+                df.at[idx, pre_holiday_surge_tier_col] = 2
+                df.at[idx, is_pre_holiday_surge_col] = 1
+            elif 8 <= days_until_holiday <= 10:
+                # 8-10 days before: early surge
+                df.at[idx, pre_holiday_surge_tier_col] = 1
+                df.at[idx, is_pre_holiday_surge_col] = 1
     
     return df
 

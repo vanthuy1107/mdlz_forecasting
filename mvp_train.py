@@ -39,6 +39,9 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_mid_month_peak_features,
+    add_early_month_low_volume_features,
+    add_high_volume_month_features,
+    add_pre_holiday_surge_features,
     add_weekday_volume_tier_features,
     add_is_monday_feature,
     apply_sunday_to_monday_carryover,
@@ -912,7 +915,17 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         days_to_peak_col="days_to_mid_month_peak"
     )
     
-    # Feature engineering: Add lunar calendar features
+    # Feature engineering: Add early month low volume features (1st-3rd lowest)
+    print("  - Adding early month low volume features (early_month_low_tier, is_early_month_low, days_from_month_start)...")
+    filtered_data = add_early_month_low_volume_features(
+        filtered_data,
+        time_col=time_col,
+        early_month_low_tier_col="early_month_low_tier",
+        is_early_month_low_col="is_early_month_low",
+        days_from_month_start_col="days_from_month_start"
+    )
+    
+    # Feature engineering: Add lunar calendar features (MUST be before high_volume_month_features)
     print("  - Adding lunar calendar features (lunar_month, lunar_day)...")
     filtered_data = add_lunar_calendar_features(
         filtered_data,
@@ -920,7 +933,29 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         lunar_month_col="lunar_month",
         lunar_day_col="lunar_day"
     )
-
+    
+    # Feature engineering: Add volume month features (High: Gregorian Dec + Lunar July/Aug, Low: Lunar Dec)
+    print("  - Adding volume month features (high_volume_month_tier, is_high_volume_month, is_low_volume_month)...")
+    filtered_data = add_high_volume_month_features(
+        filtered_data,
+        time_col=time_col,
+        high_volume_month_tier_col="high_volume_month_tier",
+        is_high_volume_month_col="is_high_volume_month",
+        is_low_volume_month_col="is_low_volume_month",
+        month_col="month",
+        lunar_month_col="lunar_month"
+    )
+    
+    # Feature engineering: Add pre-holiday surge features (high volume before Tet and Mid-Autumn)
+    print("  - Adding pre-holiday surge features (pre_holiday_surge_tier, is_pre_holiday_surge)...")
+    filtered_data = add_pre_holiday_surge_features(
+        filtered_data,
+        time_col=time_col,
+        pre_holiday_surge_tier_col="pre_holiday_surge_tier",
+        is_pre_holiday_surge_col="is_pre_holiday_surge",
+        days_before_surge=10
+    )
+    
     # Feature engineering: Lunar cyclical encodings (sine/cosine)
     print("  - Adding lunar cyclical features (sine/cosine)...")
     filtered_data = add_lunar_cyclical_features(

@@ -19,11 +19,6 @@ model_holidays:
       - [2023, 1, 26]
     mid_autumn:
       - [2023, 9, 29]
-    independence:
-      - [2023, 9, 2]
-    labor:
-      - [2023, 4, 30]
-      - [2023, 5, 1]
   2024:
     tet:
       - [2024, 2, 8]
@@ -35,11 +30,7 @@ model_holidays:
       - [2024, 2, 14]
     mid_autumn:
       - [2024, 9, 17]
-    independence:
-      - [2024, 9, 2]
-    labor:
-      - [2024, 4, 30]
-      - [2024, 5, 1]
+
   2025:
     tet:
       - [2025, 1, 27]
@@ -51,11 +42,6 @@ model_holidays:
       - [2025, 2, 2]
     mid_autumn:
       - [2025, 10, 6]
-    independence:
-      - [2025, 9, 2]
-    labor:
-      - [2025, 4, 30]
-      - [2025, 5, 1]
   2026:
     tet:
       - [2026, 2, 14]  # Saturday - Pre-Tet
@@ -69,15 +55,6 @@ model_holidays:
       - [2026, 2, 22]  # Sunday - Weekend wrap-up
     mid_autumn:
       - [2026, 9, 25]  # Full Moon (15/08 Lunar)
-    independence:
-      - [2026, 9, 1]
-      - [2026, 9, 2]
-    labor:
-      - [2026, 4, 30]
-      - [2026, 5, 1]
-    hung_kings:
-      - [2026, 4, 26]  # Observed
-      - [2026, 4, 27]  # Observed
 
 # Canonical Business Holiday Calendar (days off)
 # Used for:
@@ -134,8 +111,6 @@ business_holidays:
     new_year:
       - [2024, 12, 31]
     tet:
-      - [2025, 1, 24]
-      - [2025, 1, 25]
       - [2025, 1, 26]
       - [2025, 1, 27]
       - [2025, 1, 28]

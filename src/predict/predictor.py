@@ -355,10 +355,20 @@ def predict_direct_multistep(
     holidays = get_vietnam_holidays(start_date, extended_end)
     holiday_set = set(holidays)
     
+    # DEBUG: Print holidays for January 2025
+    jan_2025_holidays = [h for h in holidays if h.year == 2025 and h.month == 1]
+    if len(jan_2025_holidays) > 0:
+        print(f"\n  [DEBUG] January 2025 holidays loaded: {sorted(jan_2025_holidays)}")
+        print(f"  [DEBUG] Total holidays in range: {len(holidays)}")
+    
     predictions = []
     for i, pred_date in enumerate(prediction_dates):
         is_holiday = pred_date in holiday_set
         is_sunday = pred_date.weekday() == 6
+        
+        # DEBUG: Print for specific dates
+        if pred_date.year == 2025 and pred_date.month == 1 and 25 <= pred_date.day <= 31:
+            print(f"  [DEBUG] Date {pred_date}: is_holiday={is_holiday}, is_sunday={is_sunday}, raw_pred={float(pred_scaled[i]):.2f}")
         
         # Hard logic for holiday suppression: force zero-volume on holidays
         # This prevents "Holiday Blindness" where model predicts high volumes on non-operational days

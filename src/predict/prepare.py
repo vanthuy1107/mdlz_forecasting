@@ -17,6 +17,9 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_mid_month_peak_features,
+    add_early_month_low_volume_features,
+    add_high_volume_month_features,
+    add_pre_holiday_surge_features,
     add_weekday_volume_tier_features,
     add_is_monday_feature,
     apply_sunday_to_monday_carryover,
@@ -138,13 +141,45 @@ def prepare_prediction_data(
         days_to_peak_col="days_to_mid_month_peak"
     )
     
-    # Add lunar calendar features (before aggregation)
+    # Add early month low volume features (1st-3rd lowest)
+    print("  - Adding early month low volume features (early_month_low_tier, is_early_month_low, days_from_month_start)...")
+    data = add_early_month_low_volume_features(
+        data,
+        time_col=time_col,
+        early_month_low_tier_col="early_month_low_tier",
+        is_early_month_low_col="is_early_month_low",
+        days_from_month_start_col="days_from_month_start"
+    )
+    
+    # Add lunar calendar features (before aggregation - MUST be before high_volume_month_features)
     print("  - Adding lunar calendar features (lunar_month, lunar_day)...")
     data = _add_lunar_calendar_features(
         data,
         time_col=time_col,
         lunar_month_col="lunar_month",
         lunar_day_col="lunar_day"
+    )
+    
+    # Add volume month features (High: Gregorian Dec + Lunar July/Aug, Low: Lunar Dec)
+    print("  - Adding volume month features (high_volume_month_tier, is_high_volume_month, is_low_volume_month)...")
+    data = add_high_volume_month_features(
+        data,
+        time_col=time_col,
+        high_volume_month_tier_col="high_volume_month_tier",
+        is_high_volume_month_col="is_high_volume_month",
+        is_low_volume_month_col="is_low_volume_month",
+        month_col="month",
+        lunar_month_col="lunar_month"
+    )
+
+    # Add pre-holiday surge features (high volume before Tet and Mid-Autumn)
+    print("  - Adding pre-holiday surge features (pre_holiday_surge_tier, is_pre_holiday_surge)...")
+    data = add_pre_holiday_surge_features(
+        data,
+        time_col=time_col,
+        pre_holiday_surge_tier_col="pre_holiday_surge_tier",
+        is_pre_holiday_surge_col="is_pre_holiday_surge",
+        days_before_surge=10
     )
 
     # Lunar cyclical encodings (sine/cosine) to mirror training-time features

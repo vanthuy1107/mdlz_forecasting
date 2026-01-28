@@ -57,6 +57,9 @@ from src.data.preprocessing import (
     add_day_of_week_cyclical_features,
     add_eom_features,
     add_mid_month_peak_features,
+    add_early_month_low_volume_features,
+    add_high_volume_month_features,
+    add_pre_holiday_surge_features,
     add_weekday_volume_tier_features,
     apply_sunday_to_monday_carryover,
     add_operational_status_flags,
@@ -288,12 +291,41 @@ def predict_brand_model(
         days_to_peak_col="days_to_mid_month_peak"
     )
     
+    print("  - Adding early month low volume features...")
+    brand_data = add_early_month_low_volume_features(
+        brand_data,
+        time_col=time_col,
+        early_month_low_tier_col="early_month_low_tier",
+        is_early_month_low_col="is_early_month_low",
+        days_from_month_start_col="days_from_month_start"
+    )
+    
     print("  - Adding lunar calendar features...")
     brand_data = add_lunar_calendar_features(
         brand_data,
         time_col=time_col,
         lunar_month_col="lunar_month",
         lunar_day_col="lunar_day"
+    )
+    
+    print("  - Adding volume month features...")
+    brand_data = add_high_volume_month_features(
+        brand_data,
+        time_col=time_col,
+        high_volume_month_tier_col="high_volume_month_tier",
+        is_high_volume_month_col="is_high_volume_month",
+        is_low_volume_month_col="is_low_volume_month",
+        month_col="month",
+        lunar_month_col="lunar_month"
+    )
+    
+    print("  - Adding pre-holiday surge features...")
+    brand_data = add_pre_holiday_surge_features(
+        brand_data,
+        time_col=time_col,
+        pre_holiday_surge_tier_col="pre_holiday_surge_tier",
+        is_pre_holiday_surge_col="is_pre_holiday_surge",
+        days_before_surge=10
     )
     
     print("  - Adding lunar cyclical features...")
@@ -370,6 +402,17 @@ def predict_brand_model(
         print("  - Creating is_peak_loss_window feature (default=0 for non-MOONCAKE)...")
         brand_data['is_peak_loss_window'] = 0
     
+    # Apply Sunday-to-Monday demand carryover (same as training and mvp_predict)
+    print("  - Applying Sunday-to-Monday demand carryover...")
+    brand_data = apply_sunday_to_monday_carryover(
+        brand_data,
+        time_col=time_col,
+        cat_col=cat_col,
+        target_col=target_col,
+        actual_col=target_col
+    )
+    print("    - Monday's target now includes Sunday's demand (captures backlog accumulation)")
+    
     # Apply scaling if scaler exists
     if scaler is not None:
         print("  - Applying scaling...")
@@ -434,8 +477,88 @@ def predict_brand_model(
             predictions_df[['predicted']]
         ).flatten()
     
+    # CRITICAL: Re-apply holiday filtering AFTER inverse transformation
+    # Because holidays were set to 0 in scaled space, inverse_transform changes them to non-zero
+    print("  - Re-applying holiday filtering after inverse transformation...")
+    from src.data.preprocessing import get_vietnam_holidays
+    extended_end = end_date + timedelta(days=365)
+    holidays = get_vietnam_holidays(start_date, extended_end)
+    holiday_set = set(holidays)
+    
+    # Set holidays and Sundays to 0
+    for idx in predictions_df.index:
+        pred_date = predictions_df.loc[idx, 'date']
+        if isinstance(pred_date, pd.Timestamp):
+            pred_date = pred_date.date()
+        
+        is_holiday = pred_date in holiday_set
+        is_sunday = pred_date.weekday() == 6
+        
+        if is_holiday or is_sunday:
+            predictions_df.loc[idx, 'predicted'] = 0.0
+    
+    print(f"    - Set {len([d for d in predictions_df['date'] if (d.date() if isinstance(d, pd.Timestamp) else d) in holiday_set])} holiday predictions to 0")
+    print(f"    - Set {len([d for d in predictions_df['date'] if d.weekday() == 6])} Sunday predictions to 0")
+    
     # Ensure non-negative predictions: negative or < 1 → 0 (volume cannot be negative or fractional)
     predictions_df['predicted'] = np.where(predictions_df['predicted'] < 1, 0, predictions_df['predicted'])
+    
+    # Apply pre-holiday surge multiplier (post-processing business rule)
+    print("  - Applying pre-holiday surge multiplier...")
+    from config import load_holidays
+    holidays_data = load_holidays(holiday_type="model")
+    
+    # Collect major holidays (Tet and Mid-Autumn only)
+    major_holidays = []
+    for year, year_holidays in holidays_data.items():
+        if 'tet' in year_holidays:
+            major_holidays.extend(year_holidays['tet'])
+        if 'mid_autumn' in year_holidays:
+            major_holidays.extend(year_holidays['mid_autumn'])
+    
+    surge_count = 0
+    for idx in predictions_df.index:
+        pred_date = predictions_df.loc[idx, 'date']
+        if isinstance(pred_date, pd.Timestamp):
+            pred_date = pred_date.date()
+        
+        # Find nearest upcoming major holiday
+        upcoming_holidays = [h for h in major_holidays if h > pred_date]
+        
+        if len(upcoming_holidays) > 0:
+            nearest_holiday = min(upcoming_holidays, key=lambda h: (h - pred_date).days)
+            days_until_holiday = (nearest_holiday - pred_date).days
+            
+            # Apply multiplier based on proximity to holiday
+            multiplier = 1.0  # Default: no adjustment
+            
+            if 1 <= days_until_holiday <= 3:
+                # 1-3 days before: +80% surge
+                multiplier = 2.5
+            elif 4 <= days_until_holiday <= 7:
+                # 4-7 days before: +50% surge
+                multiplier = 1.5
+            elif 8 <= days_until_holiday <= 10:
+                # 8-10 days before: +20% surge
+                multiplier = 1.2
+            
+            if multiplier > 1.0:
+                original_value = predictions_df.loc[idx, 'predicted']
+                predictions_df.loc[idx, 'predicted'] = original_value * multiplier
+                surge_count += 1
+    
+    print(f"    - Applied surge multiplier to {surge_count} pre-holiday dates")
+    
+    # Apply Sunday-to-Monday carryover post-processing (same as mvp_predict.py)
+    # This sets Sunday predictions to 0 and adds Sunday's value to Monday
+    print("  - Applying Sunday-to-Monday carryover to predictions...")
+    from mvp_predict import apply_sunday_to_monday_carryover_predictions
+    predictions_df = apply_sunday_to_monday_carryover_predictions(
+        predictions_df,
+        date_col='date',
+        pred_col='predicted'
+    )
+    print("    - Sunday predictions set to 0, values moved to Monday")
     
     # Add category and brand columns, then enforce column order: date, CATEGORY, BRAND, predicted
     predictions_df['CATEGORY'] = category
@@ -1015,13 +1138,13 @@ def main():
         
         # Print accuracy summary by brand
         if brand_accuracy_summaries:
-            print(f"\n{'=' * 80}")
+            print(f"\n{'=' * 120}")
             print("ACCURACY SUMMARY BY BRAND")
-            print(f"{'=' * 80}")
+            print(f"{'=' * 120}")
             print(f"Category: {category}")
             print(f"Prediction period: {start_date} to {end_date}")
-            print(f"\n{'Brand':<20} {'Days':<8} {'MAE':<12} {'RMSE':<12} {'MAPE':<12} {'Vol.Acc%':<12}")
-            print("-" * 80)
+            print(f"\n{'Brand':<20} {'Days':<8} {'MAE':<12} {'RMSE':<12} {'MAPE':<12} {'Predicted':<15} {'Actual':<15} {'Vol.Acc%':<12}")
+            print("-" * 120)
             
             for brand in brands_to_predict:
                 if brand in brand_accuracy_summaries:
@@ -1032,9 +1155,11 @@ def main():
                     mae_str = f"{summary['mae']:.2f}" if summary['mae'] is not None else "N/A"
                     rmse_str = f"{summary['rmse']:.2f}" if summary['rmse'] is not None else "N/A"
                     mape_str = f"{summary['mape']:.2f}%" if summary['mape'] is not None else "N/A"
+                    pred_str = f"{summary['total_predicted']:,.2f}" if summary['total_predicted'] is not None else "N/A"
+                    actual_str = f"{summary['total_actual']:,.2f}" if summary['total_actual'] is not None else "N/A"
                     acc_str = f"{summary['accuracy_pct']:.2f}%" if summary['accuracy_pct'] is not None else "N/A"
                     
-                    print(f"{brand:<20} {days_str:<8} {mae_str:<12} {rmse_str:<12} {mape_str:<12} {acc_str:<12}")
+                    print(f"{brand:<20} {days_str:<8} {mae_str:<12} {rmse_str:<12} {mape_str:<12} {pred_str:<15} {actual_str:<15} {acc_str:<12}")
             
             # Calculate overall category accuracy (only when at least one brand has actuals)
             dfs_with_actuals = [df for df in all_predictions_with_actuals if not df['actual'].isna().all()]
@@ -1054,18 +1179,17 @@ def main():
                     else:
                         overall_accuracy = None
                     
-                    print("-" * 80)
-                    print(f"{'OVERALL':<20} {len(valid_rows):<8} {overall_mae:<12.2f} {overall_rmse:<12.2f} {'N/A':<12} ", end="")
-                    if overall_accuracy is not None:
-                        print(f"{overall_accuracy:<12.2f}%")
-                    else:
-                        print("N/A")
+                    print("-" * 120)
+                    pred_str = f"{overall_total_pred:,.2f}"
+                    actual_str = f"{overall_total_actual:,.2f}"
+                    acc_str = f"{overall_accuracy:.2f}%" if overall_accuracy is not None else "N/A"
+                    print(f"{'OVERALL':<20} {len(valid_rows):<8} {overall_mae:<12.2f} {overall_rmse:<12.2f} {'N/A':<12} {pred_str:<15} {actual_str:<15} {acc_str:<12}")
                     
                     print(f"\nTotal Predicted: {overall_total_pred:,.2f}")
                     print(f"Total Actual: {overall_total_actual:,.2f}")
                     print(f"Total Error: {overall_error:,.2f}")
         
-        print(f"\n{'=' * 80}")
+        print(f"\n{'=' * 120}")
     
     return 0 if overall_success else 1
 

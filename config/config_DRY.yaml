@@ -16,7 +16,7 @@ model:
 # Training Configuration - Lower learning rate for stability
 training:
   batch_size: 64
-  epochs: 30
+  epochs: 20
   learning_rate: 0.0005  # Lower LR for smooth convergence
   weight_decay: 1e-5     # Light regularization
   scheduler:
