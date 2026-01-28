@@ -503,3 +503,228 @@ def quantile_loss(
     loss_fn = QuantileLoss(quantile=quantile, reduction=reduction, active_season_weight=active_season_weight, peak_loss_window_weight=peak_loss_window_weight, august_boost_weight=august_boost_weight)
     return loss_fn(y_pred, y_true, category_ids=category_ids, inputs=inputs, is_active_season=is_active_season, is_peak_loss_window=is_peak_loss_window, is_august=is_august)
 
+
+class AsymmetricMSELoss(nn.Module):
+    """
+    Asymmetric MSE Loss for FMCG Supply Chain Forecasting.
+    
+    In supply chain management, the cost of under-forecasting (stock-outs) is typically
+    higher than the cost of over-forecasting (excess inventory). This loss function
+    applies asymmetric penalties:
+    
+    - Under-forecast (y_true > y_pred): Higher penalty (α * MSE)
+    - Over-forecast (y_true < y_pred): Lower penalty (β * MSE)
+    
+    Where α > β, typically α/β ≈ 2-5 for FMCG operations.
+    
+    Mathematical Formula:
+    L(y, ŷ) = {
+        α * (y - ŷ)²    if y > ŷ  (under-forecast: penalize heavily)
+        β * (ŷ - y)²    if y ≤ ŷ  (over-forecast: penalize lightly)
+    }
+    
+    This encourages the model to be slightly conservative (predict a bit higher)
+    to avoid costly stock-outs during peak demand periods.
+    
+    Peak Season Boosting:
+    During high-volatility months (TET/Mid-Autumn), we apply additional weight
+    multipliers to both penalties to ensure accurate forecasts during critical periods.
+    
+    Args:
+        under_penalty: Penalty weight for under-forecasting (α, default: 3.0).
+        over_penalty: Penalty weight for over-forecasting (β, default: 1.0).
+        reduction: Reduction method: 'mean', 'sum', or 'none' (default: 'mean').
+        peak_season_boost: Additional multiplier for peak season periods (default: 1.0).
+    
+    Example:
+        >>> loss_fn = AsymmetricMSELoss(under_penalty=3.0, over_penalty=1.0)
+        >>> # If actual = 100, predicted = 80 (under-forecast by 20)
+        >>> # Loss = 3.0 * (100 - 80)² = 3.0 * 400 = 1200
+        >>> 
+        >>> # If actual = 100, predicted = 120 (over-forecast by 20)
+        >>> # Loss = 1.0 * (120 - 100)² = 1.0 * 400 = 400
+        >>> # Ratio: 1200/400 = 3:1 (under-forecast penalty is 3x higher)
+    """
+    
+    def __init__(
+        self,
+        under_penalty: float = 3.0,
+        over_penalty: float = 1.0,
+        reduction: str = 'mean',
+        peak_season_boost: float = 1.0,
+    ):
+        """
+        Initialize Asymmetric MSE Loss.
+        
+        Args:
+            under_penalty: Weight for under-forecasting (default: 3.0).
+            over_penalty: Weight for over-forecasting (default: 1.0).
+            reduction: Reduction method: 'mean', 'sum', or 'none'.
+            peak_season_boost: Multiplier for peak season periods.
+        """
+        super(AsymmetricMSELoss, self).__init__()
+        self.under_penalty = under_penalty
+        self.over_penalty = over_penalty
+        self.reduction = reduction
+        self.peak_season_boost = peak_season_boost
+        
+        if under_penalty < over_penalty:
+            import warnings
+            warnings.warn(
+                f"under_penalty ({under_penalty}) < over_penalty ({over_penalty}). "
+                f"For FMCG, under-forecasting should be penalized more heavily. "
+                f"Consider setting under_penalty > over_penalty."
+            )
+    
+    def forward(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        is_peak_season: Optional[torch.Tensor] = None,
+        category_ids: Optional[torch.Tensor] = None,
+        category_loss_weights: Optional[Dict[int, float]] = None,
+    ) -> torch.Tensor:
+        """
+        Compute asymmetric MSE loss with optional peak season boosting.
+        
+        Args:
+            y_pred: Predicted values (batch, horizon) or (batch,).
+            y_true: True values (same shape as y_pred).
+            is_peak_season: Optional binary tensor indicating peak season (1) or not (0).
+                           Shape should match y_true.
+            category_ids: Optional category IDs for per-category loss weighting.
+            category_loss_weights: Optional dict mapping category_id -> loss_weight.
+        
+        Returns:
+            Asymmetric MSE loss value.
+        """
+        # Ensure same shape
+        if y_pred.shape != y_true.shape:
+            raise ValueError(f"Shape mismatch: y_pred {y_pred.shape} vs y_true {y_true.shape}")
+        
+        # Calculate error
+        error = y_true - y_pred
+        squared_error = error ** 2
+        
+        # Apply asymmetric penalties
+        # Under-forecast: error > 0 (actual > predicted) → higher penalty
+        # Over-forecast: error <= 0 (actual <= predicted) → lower penalty
+        asymmetric_loss = torch.where(
+            error > 0,
+            self.under_penalty * squared_error,  # Under-forecast penalty (α * MSE)
+            self.over_penalty * squared_error,   # Over-forecast penalty (β * MSE)
+        )
+        
+        # Apply peak season boosting if provided
+        if is_peak_season is not None:
+            # Ensure is_peak_season matches y_true shape
+            if is_peak_season.ndim == 1 and y_true.ndim == 2:
+                is_peak_season = is_peak_season.unsqueeze(-1).expand_as(y_true)
+            elif is_peak_season.ndim == 2 and y_true.ndim == 1:
+                is_peak_season = is_peak_season[:, 0] if is_peak_season.shape[1] > 0 else is_peak_season.mean(dim=1)
+            
+            # Apply peak season boost: multiply loss by peak_season_boost during peak periods
+            peak_weight = torch.where(
+                is_peak_season > 0.5,  # Peak season indicator
+                torch.tensor(self.peak_season_boost, device=y_true.device),
+                torch.tensor(1.0, device=y_true.device)
+            )
+            asymmetric_loss = asymmetric_loss * peak_weight
+        
+        # Apply category-specific loss weights if provided
+        if category_ids is not None and category_loss_weights is not None:
+            # Ensure category_ids is 1D
+            if category_ids.dim() > 1:
+                category_ids = category_ids.squeeze(-1)
+            category_ids = category_ids.long()
+            
+            # Create weight tensor matching y_true shape
+            category_weight = torch.ones_like(y_true, device=y_true.device)
+            
+            # Apply category-specific weights
+            for cat_id, loss_weight in category_loss_weights.items():
+                cat_mask = category_ids == cat_id
+                if cat_mask.any():
+                    # For multi-step forecasting, expand mask to match y_true shape
+                    if y_true.ndim == 2:
+                        cat_mask_expanded = cat_mask.unsqueeze(-1).expand_as(y_true)
+                    else:
+                        cat_mask_expanded = cat_mask
+                    category_weight[cat_mask_expanded] = loss_weight
+            
+            asymmetric_loss = asymmetric_loss * category_weight
+        
+        # Apply reduction
+        if self.reduction == 'mean':
+            return torch.mean(asymmetric_loss)
+        elif self.reduction == 'sum':
+            return torch.sum(asymmetric_loss)
+        elif self.reduction == 'none':
+            return asymmetric_loss
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}. Must be 'mean', 'sum', or 'none'.")
+
+
+def asymmetric_mse_loss(
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    under_penalty: float = 3.0,
+    over_penalty: float = 1.0,
+    reduction: str = 'mean',
+    is_peak_season: Optional[torch.Tensor] = None,
+    peak_season_boost: float = 1.0,
+    category_ids: Optional[torch.Tensor] = None,
+    category_loss_weights: Optional[Dict[int, float]] = None,
+) -> torch.Tensor:
+    """
+    Asymmetric MSE Loss function for FMCG Supply Chain Forecasting.
+    
+    Convenience function that creates and calls AsymmetricMSELoss.
+    
+    In supply chain, the cost of under-forecasting (stock-outs) is typically
+    higher than over-forecasting (excess inventory). This loss applies asymmetric
+    penalties to encourage conservative forecasts.
+    
+    Args:
+        y_pred: Predicted values.
+        y_true: True values.
+        under_penalty: Weight for under-forecasting (default: 3.0).
+        over_penalty: Weight for over-forecasting (default: 1.0).
+        reduction: Reduction method: 'mean', 'sum', or 'none'.
+        is_peak_season: Optional binary tensor for peak season periods.
+        peak_season_boost: Multiplier for peak season (default: 1.0).
+        category_ids: Optional category IDs.
+        category_loss_weights: Optional dict mapping category_id -> loss_weight.
+    
+    Returns:
+        Asymmetric MSE loss value.
+    
+    Example:
+        >>> # Standard usage (3:1 penalty ratio)
+        >>> loss = asymmetric_mse_loss(pred, actual, under_penalty=3.0, over_penalty=1.0)
+        >>> 
+        >>> # High penalty for critical categories (5:1 ratio)
+        >>> loss = asymmetric_mse_loss(pred, actual, under_penalty=5.0, over_penalty=1.0)
+        >>> 
+        >>> # With peak season boosting (TET/Mid-Autumn: 2x weight)
+        >>> loss = asymmetric_mse_loss(
+        ...     pred, actual, 
+        ...     under_penalty=3.0, 
+        ...     is_peak_season=peak_indicator,
+        ...     peak_season_boost=2.0
+        ... )
+    """
+    loss_fn = AsymmetricMSELoss(
+        under_penalty=under_penalty,
+        over_penalty=over_penalty,
+        reduction=reduction,
+        peak_season_boost=peak_season_boost,
+    )
+    return loss_fn(
+        y_pred,
+        y_true,
+        is_peak_season=is_peak_season,
+        category_ids=category_ids,
+        category_loss_weights=category_loss_weights,
+    )
+

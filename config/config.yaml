@@ -97,7 +97,14 @@ window:
 # NOTE: Each category can override architecture in config_{CATEGORY}.yaml
 #       Example: TET uses hidden_size=256, n_layers=3; POSM uses hidden_size=32
 model:
-  name: "RNNWithCategory"  # or "RNNForecastor"
+  # Model architecture type
+  # Options: 
+  #   - "RNNWithCategory": Single-input LSTM with category embedding (legacy)
+  #   - "RNNForecastor": Baseline RNN without category conditioning (legacy)
+  #   - "HybridLSTM": Multi-input dual-branch architecture (NEW - recommended)
+  name: "RNNWithCategory"  # Change to "HybridLSTM" to use the new architecture
+  
+  # Common parameters (used by all model types)
   num_categories: null  # Will be set dynamically from data (always 1 in category-specific mode)
   cat_emb_dim: 5
   input_dim: 15  # Updated dynamically in code to match feature_cols length
@@ -106,6 +113,66 @@ model:
   output_dim: 30  # Base default: direct multi-step prediction (can be overridden per category)
   dropout_prob: 0.2  # Base default (can be overridden per category)
   use_layer_norm: true  # Apply LayerNorm on final hidden state before output
+  
+  # HybridLSTM-specific parameters (only used when name="HybridLSTM")
+  # These define the dual-branch architecture with separate temporal and static paths
+  hybrid:
+    # Feature split: which features go to which branch
+    # Temporal features: Sequential historical data (goes to LSTM branch)
+    # Static features: Metadata and domain knowledge (goes to Dense branch)
+    temporal_features:
+      - "Total CBM"  # Historical volume sequence
+      - "rolling_mean_7d_expanding"
+      - "rolling_mean_30d_expanding"
+      - "momentum_3d_vs_14d_expanding"
+    
+    static_features:
+      # Cyclical temporal encoding (calendar features)
+      - "month_sin"
+      - "month_cos"
+      - "dayofmonth_sin"
+      - "dayofmonth_cos"
+      - "day_of_week_sin"
+      - "day_of_week_cos"
+      # Holiday and event features
+      - "holiday_indicator"
+      - "days_until_next_holiday"
+      - "days_since_holiday"
+      # Operational constraints
+      - "is_weekend"
+      - "Is_Monday"
+      - "is_EOM"
+      - "days_until_month_end"
+      - "weekday_volume_tier"
+      - "is_high_volume_weekday"
+      # Statistical metadata (expanding window - no leakage)
+      - "weekday_avg_expanding"
+      - "category_avg_expanding"
+      # Lunar calendar features (for seasonal categories)
+      - "lunar_month"
+      - "lunar_day"
+      # Brand-level features (optional, if using brand-level forecasting)
+      # - "brand_tier_expanding"
+    
+    # Branch B (Dense Path) architecture
+    dense_hidden_sizes: [64, 32]  # MLP layers for static features (e.g., [64, 32])
+    
+    # Fusion layer architecture
+    fusion_hidden_sizes: [64]  # Integration layers after concatenation (e.g., [64])
+    
+    # Loss function for HybridLSTM
+    # Options:
+    #   - "MSE": Standard mean squared error
+    #   - "asymmetric_mse": Asymmetric MSE with higher penalty for under-forecasting (recommended)
+    #   - "spike_aware_mse": Spike-aware MSE with category weighting (legacy)
+    #   - "quantile": Quantile loss for P90 forecasting
+    loss_function: "asymmetric_mse"
+    
+    # Asymmetric loss parameters (only used if loss_function="asymmetric_mse")
+    asymmetric_loss:
+      under_penalty: 3.0  # Weight for under-forecasting (stock-out penalty)
+      over_penalty: 1.0   # Weight for over-forecasting (excess inventory penalty)
+      peak_season_boost: 2.0  # Additional multiplier for peak seasons (TET/Mid-Autumn)
 
 # Training Configuration (Base defaults)
 # NOTE: Each category can override training parameters in config_{CATEGORY}.yaml
