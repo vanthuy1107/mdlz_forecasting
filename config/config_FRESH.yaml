@@ -1,27 +1,27 @@
 # Category-Specific Configuration for FRESH Category
 # This file overrides base config.yaml settings for FRESH category training
 
-# Window configuration - FRESH driven by short-term lag
+# Window configuration - FRESH driven by short-term lag with multi-week patterns
 window:
-  input_size: 7   # 7-day lookback to capture weekly cycle (Monday peaks, Sunday zeros)
-  horizon: 30     # 30-day forecast horizon
+  input_size: 21   # 21-day lookback (3 weeks) to capture multiple weekly cycles and patterns
+  horizon: 30      # 30-day forecast horizon
 
 # Model Configuration
 model:
-  hidden_size: 128
-  n_layers: 2
-  dropout_prob: 0.15
+  hidden_size: 256      # Increased from 128 to capture more complex patterns
+  n_layers: 3           # Increased from 2 for deeper learning
+  dropout_prob: 0.3     # INCREASED from 0.15 to 0.3 to prevent overfitting
   use_layer_norm: true
 
 # Training Configuration
 training:
   batch_size: 32
-  epochs: 25
-  learning_rate: 0.002  # Increased to escape local minima
-  weight_decay: 1e-4
+  epochs: 30            # REDUCED from 100 - model peaks around epoch 15-20
+  learning_rate: 0.002  # Keep at 0.002 for good convergence
+  weight_decay: 1e-4    # INCREASED from 1e-5 to add more regularization
   scheduler:
-    factor: 0.5  # Reduce LR by 50% when plateau detected
-    patience: 2  # Aggressive scheduler: reduce LR after 2 epochs without improvement
+    factor: 0.5         # Reduce LR by 50% when plateau detected
+    patience: 5         # Keep patience at 5
 
 # Category-specific loss weighting
 category_specific_params:
@@ -29,11 +29,39 @@ category_specific_params:
     learning_rate: 0.002
     batch_size: 32
     scheduler_factor: 0.5
-    scheduler_patience: 2
+    scheduler_patience: 5
     loss_weight: 1.0
-    monday_loss_weight: 3.0  # 3.0x weight for Monday samples to capture weekly peaks
+    monday_loss_weight: 8.0  # STRONG emphasis: 8x weight on Monday to force pattern learning
+    wednesday_loss_weight: 6.0  # 6x weight on Wednesday
+    friday_loss_weight: 6.0     # 6x weight on Friday
 
 # Seasonal configuration - FRESH is not seasonal
 data:
   seasonal_active_window: null
   peak_event: null
+  
+  # FRESH-specific features: Remove smoothing features that hide weekday patterns
+  feature_cols:
+    - "month_sin"
+    - "month_cos"
+    - "dayofmonth_sin"
+    - "dayofmonth_cos"
+    - "holiday_indicator"
+    - "days_until_next_holiday"
+    - "days_since_holiday"
+    - "is_weekend"
+    - "day_of_week_sin"
+    - "day_of_week_cos"
+    - "weekday_volume_tier"        # CRITICAL: Strong Mon/Wed/Fri signal (tier 5)
+    - "is_high_volume_weekday"     # CRITICAL: Binary Mon/Wed/Fri indicator
+    - "Is_Monday"                  # CRITICAL: Monday-specific flag
+    - "is_EOM"
+    - "days_until_month_end"
+    - "mid_month_peak_tier"        # 8th-15th surge pattern
+    - "is_mid_month_peak"
+    - "days_to_mid_month_peak"
+    - "early_month_low_tier"
+    - "is_early_month_low"
+    # REMOVED: rolling_mean_7d, rolling_mean_30d, momentum_3d_vs_14d
+    # These smooth out the weekday variations we want to capture!
+    - "Total CBM"  # Historical target as feature

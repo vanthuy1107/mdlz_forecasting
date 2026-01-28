@@ -924,13 +924,16 @@ def prepare_prediction_data_old(data, config, cat2id, scaler=None, trained_cat2i
         day_of_week_cos_col="day_of_week_cos"
     )
     
-    # Add weekday volume tier features
-    print("  - Adding weekday volume tier features (weekday_volume_tier, is_high_volume_weekday)...")
+    # Add weekday volume tier features (category-specific)
+    # Note: This function is deprecated, but updated for consistency
+    # Default to "default" pattern as this function doesn't have category context
+    print("  - Adding weekday volume tier features (using default Wed/Fri high pattern)...")
     data = add_weekday_volume_tier_features(
         data,
         time_col=time_col,
         weekday_volume_tier_col="weekday_volume_tier",
-        is_high_volume_weekday_col="is_high_volume_weekday"
+        is_high_volume_weekday_col="is_high_volume_weekday",
+        weekday_pattern="default"  # Default pattern (deprecated function)
     )
     
     # Add End-of-Month (EOM) surge features
@@ -943,14 +946,17 @@ def prepare_prediction_data_old(data, config, cat2id, scaler=None, trained_cat2i
         eom_window_days=3
     )
     
-    # Add mid-month peak features (23rd-25th surge)
-    print("  - Adding mid-month peak features (mid_month_peak_tier, is_mid_month_peak, days_to_mid_month_peak)...")
+    # Add mid-month peak features (category-specific)
+    # Note: This function is deprecated, but updated for consistency
+    # Default to "default" pattern as this function doesn't have category context
+    print("  - Adding mid-month peak features (using default 24th-25th surge pattern)...")
     data = add_mid_month_peak_features(
         data,
         time_col=time_col,
         mid_month_peak_tier_col="mid_month_peak_tier",
         is_mid_month_peak_col="is_mid_month_peak",
-        days_to_peak_col="days_to_mid_month_peak"
+        days_to_peak_col="days_to_mid_month_peak",
+        peak_pattern="default"  # Default pattern (deprecated function)
     )
     
     # Add early month low volume features (1st-3rd lowest)

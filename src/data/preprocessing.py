@@ -476,26 +476,38 @@ def add_weekday_volume_tier_features(
     df: pd.DataFrame,
     time_col: str = "ACTUALSHIPDATE",
     weekday_volume_tier_col: str = "weekday_volume_tier",
-    is_high_volume_weekday_col: str = "is_high_volume_weekday"
+    is_high_volume_weekday_col: str = "is_high_volume_weekday",
+    weekday_pattern: str = "default"
 ) -> pd.DataFrame:
     """
     Add weekday volume tier features to capture weekly demand patterns.
     
-    Based on observed patterns:
+    Supports two patterns:
+    
+    DEFAULT pattern:
     - Wednesday (day_of_week=2) and Friday (day_of_week=4) have higher volume
     - Tuesday (day_of_week=1) and Thursday (day_of_week=3) have lower volume
-    - Among high-volume days, Friday is lower than Wednesday
+    - Among high-volume days, Wednesday is highest, Friday is high
+    
+    FRESH pattern:
+    - Monday (day_of_week=0), Wednesday (day_of_week=2), and Friday (day_of_week=4) have 25-50% higher volume
+    - Tuesday (day_of_week=1) and Thursday (day_of_week=3) are baseline/normal volume
+    - Saturday and Sunday have minimal/zero volume
     
     Creates:
-    - weekday_volume_tier: Numeric tier (2=Wednesday highest, 1=Friday high, 
-      0=Tuesday/Thursday low, -1=Monday/Saturday/Sunday neutral)
-    - is_high_volume_weekday: Binary (1 for Wednesday/Friday, 0 otherwise)
+    - weekday_volume_tier: Numeric tier representing the volume pattern
+      * Default: 2=Wednesday highest, 1=Friday high, 0=Tuesday/Thursday low, -1=Monday/Saturday/Sunday neutral
+      * Fresh: 5=Mon/Wed/Fri (25-50% higher - STRONG), 0=Tue/Thu (baseline), -3=Sat/Sun (minimal)
+    - is_high_volume_weekday: Binary flag for high-volume weekdays
+      * Default: 1 for Wednesday/Friday, 0 otherwise
+      * Fresh: 1 for Monday/Wednesday/Friday, 0 otherwise
     
     Args:
         df: DataFrame with time column.
         time_col: Name of time column (should be datetime or date).
         weekday_volume_tier_col: Name for weekday_volume_tier column.
         is_high_volume_weekday_col: Name for is_high_volume_weekday column.
+        weekday_pattern: Pattern type - "default" (Wed/Fri high) or "fresh" (Mon/Wed/Fri high).
     
     Returns:
         DataFrame with added weekday volume tier features.
@@ -509,19 +521,36 @@ def add_weekday_volume_tier_features(
     # Extract day of week (0=Monday, 6=Sunday)
     day_of_week = df[time_col].dt.dayofweek
     
-    # Create weekday_volume_tier feature
-    # 2 = Wednesday (highest volume)
-    # 1 = Friday (high volume, but lower than Wednesday)
-    # 0 = Tuesday, Thursday (low volume)
-    # -1 = Saturday (lower than Tuesday/Thursday), Monday, Sunday (neutral/other)
-    df[weekday_volume_tier_col] = -1  # Default for Monday, Saturday, Sunday
-    df.loc[day_of_week == 2, weekday_volume_tier_col] = 2  # Wednesday (highest)
-    df.loc[day_of_week == 4, weekday_volume_tier_col] = 1  # Friday (high)
-    df.loc[day_of_week == 1, weekday_volume_tier_col] = 0  # Tuesday (low)
-    df.loc[day_of_week == 3, weekday_volume_tier_col] = 0  # Thursday (low)
-    
-    # Create binary indicator for high volume weekdays (Wednesday and Friday)
-    df[is_high_volume_weekday_col] = ((day_of_week == 2) | (day_of_week == 4)).astype(int)
+    if weekday_pattern.lower() == "fresh":
+        # FRESH pattern: Monday, Wednesday, Friday have 25-50% higher volume than normal days
+        # Using stronger tier values to emphasize the weekday pattern for FRESH
+        # 5 = Monday, Wednesday, Friday (25-50% higher volume - STRONG SIGNAL)
+        # 0 = Tuesday, Thursday (baseline/normal volume)
+        # -3 = Saturday, Sunday (minimal/zero volume)
+        df[weekday_volume_tier_col] = -3  # Default for Saturday, Sunday (strong negative)
+        df.loc[day_of_week == 0, weekday_volume_tier_col] = 5  # Monday (STRONG: 25-50% higher)
+        df.loc[day_of_week == 2, weekday_volume_tier_col] = 5  # Wednesday (STRONG: 25-50% higher)
+        df.loc[day_of_week == 4, weekday_volume_tier_col] = 5  # Friday (STRONG: 25-50% higher)
+        df.loc[day_of_week == 1, weekday_volume_tier_col] = 0  # Tuesday (baseline)
+        df.loc[day_of_week == 3, weekday_volume_tier_col] = 0  # Thursday (baseline)
+        
+        # Binary indicator for high volume weekdays (Monday, Wednesday, Friday)
+        df[is_high_volume_weekday_col] = ((day_of_week == 0) | (day_of_week == 2) | (day_of_week == 4)).astype(int)
+        
+    else:
+        # DEFAULT pattern: Wednesday and Friday have higher volume
+        # 2 = Wednesday (highest volume)
+        # 1 = Friday (high volume, but lower than Wednesday)
+        # 0 = Tuesday, Thursday (low volume)
+        # -1 = Saturday (lower than Tuesday/Thursday), Monday, Sunday (neutral/other)
+        df[weekday_volume_tier_col] = -1  # Default for Monday, Saturday, Sunday
+        df.loc[day_of_week == 2, weekday_volume_tier_col] = 2  # Wednesday (highest)
+        df.loc[day_of_week == 4, weekday_volume_tier_col] = 1  # Friday (high)
+        df.loc[day_of_week == 1, weekday_volume_tier_col] = 0  # Tuesday (low)
+        df.loc[day_of_week == 3, weekday_volume_tier_col] = 0  # Thursday (low)
+        
+        # Binary indicator for high volume weekdays (Wednesday and Friday)
+        df[is_high_volume_weekday_col] = ((day_of_week == 2) | (day_of_week == 4)).astype(int)
     
     return df
 
@@ -588,26 +617,36 @@ def add_mid_month_peak_features(
     time_col: str = "ACTUALSHIPDATE",
     mid_month_peak_tier_col: str = "mid_month_peak_tier",
     is_mid_month_peak_col: str = "is_mid_month_peak",
-    days_to_peak_col: str = "days_to_mid_month_peak"
+    days_to_peak_col: str = "days_to_mid_month_peak",
+    peak_pattern: str = "default"
 ) -> pd.DataFrame:
     """
-    Add mid-month peak features to capture the 19th-25th volume surge pattern.
+    Add mid-month peak features to capture volume surge patterns.
     
-    Based on observed patterns:
+    Supports two patterns:
+    
+    DEFAULT pattern (19th-25th surge):
     - Volume starts building up from the 19th
     - Volume gradually increases from 19th through 23rd
     - Volume peaks on 24th and 25th (highest volume days)
     - Volume declines after the 25th
     
+    FRESH pattern (8th-15th surge):
+    - Volume starts building up from the 8th
+    - Volume gradually increases from 8th through 9th
+    - Volume peaks on 10th, 11th, 12th (highest volume days)
+    - Volume remains strong through 13th-15th
+    - Volume declines from 16th onwards
+    
     Creates:
     - mid_month_peak_tier: Numeric tier representing the volume pattern
-      * 4 = 24th-25th (peak days, highest volume)
-      * 3 = 23rd (strong build-up to peak)
-      * 2 = 21st-22nd (moderate build-up)
-      * 1 = 19th-20th (early build-up) and 26th-30th (declining after peak)
+      * 4 = peak days (highest volume)
+      * 3 = strong build-up to peak
+      * 2 = moderate build-up
+      * 1 = early build-up and declining after peak
       * 0 = other days (neutral)
-    - is_mid_month_peak: Binary flag (1 for 24th-25th, 0 otherwise)
-    - days_to_mid_month_peak: Distance to the 24th (negative before, positive after)
+    - is_mid_month_peak: Binary flag (1 for peak days, 0 otherwise)
+    - days_to_mid_month_peak: Distance to the primary peak day (negative before, positive after)
       * Helps model learn the gradient leading to and from the peak
     
     Args:
@@ -616,6 +655,7 @@ def add_mid_month_peak_features(
         mid_month_peak_tier_col: Name for mid_month_peak_tier column.
         is_mid_month_peak_col: Name for is_mid_month_peak binary flag column.
         days_to_peak_col: Name for days_to_mid_month_peak column.
+        peak_pattern: Pattern type - "default" (24th-25th peak) or "fresh" (8th-15th peak).
     
     Returns:
         DataFrame with added mid-month peak features.
@@ -629,25 +669,46 @@ def add_mid_month_peak_features(
     # Extract day of month (1-31)
     day_of_month = df[time_col].dt.day
     
-    # Create mid_month_peak_tier feature with gradual build-up from 19th
-    # 4 = 24th-25th (peak days)
-    # 3 = 23rd (strong build-up)
-    # 2 = 21st-22nd (moderate build-up)
-    # 1 = 19th-20th (early build-up) and 26th-30th (declining)
-    # 0 = other days (neutral)
-    df[mid_month_peak_tier_col] = 0  # Default for other days
-    df.loc[(day_of_month == 19) | (day_of_month == 20), mid_month_peak_tier_col] = 1  # Early build-up
-    df.loc[(day_of_month == 21) | (day_of_month == 22), mid_month_peak_tier_col] = 2  # Moderate build-up
-    df.loc[day_of_month == 23, mid_month_peak_tier_col] = 3  # Strong build-up
-    df.loc[(day_of_month == 24) | (day_of_month == 25), mid_month_peak_tier_col] = 4  # Peak
-    df.loc[(day_of_month >= 26) & (day_of_month <= 30), mid_month_peak_tier_col] = 1  # Declining
+    # Initialize with zeros
+    df[mid_month_peak_tier_col] = 0
     
-    # Create binary indicator for peak days (24th and 25th)
-    df[is_mid_month_peak_col] = ((day_of_month == 24) | (day_of_month == 25)).astype(int)
-    
-    # Create distance to peak feature (distance to 24th)
-    # Negative values = before peak, positive = after peak, 0 = on 24th
-    df[days_to_peak_col] = day_of_month - 24
+    if peak_pattern.lower() == "fresh":
+        # FRESH pattern: Peak from 8th-15th, with center on 11th
+        # 4 = 10th-12th (peak days, highest volume)
+        # 3 = 9th and 13th-15th (strong volume, build-up and sustained high volume)
+        # 2 = 8th (moderate build-up)
+        # 1 = 16th-18th (declining after peak)
+        # 0 = other days (neutral)
+        df.loc[day_of_month == 8, mid_month_peak_tier_col] = 2  # Moderate build-up
+        df.loc[day_of_month == 9, mid_month_peak_tier_col] = 3  # Strong build-up
+        df.loc[(day_of_month >= 10) & (day_of_month <= 12), mid_month_peak_tier_col] = 4  # Peak (10th, 11th, 12th)
+        df.loc[(day_of_month >= 13) & (day_of_month <= 15), mid_month_peak_tier_col] = 3  # Strong sustained volume
+        df.loc[(day_of_month >= 16) & (day_of_month <= 18), mid_month_peak_tier_col] = 1  # Declining
+        
+        # Binary indicator for peak days (10th, 11th, 12th)
+        df[is_mid_month_peak_col] = ((day_of_month >= 10) & (day_of_month <= 12)).astype(int)
+        
+        # Distance to peak (distance to 11th - center of peak period)
+        df[days_to_peak_col] = day_of_month - 11
+        
+    else:
+        # DEFAULT pattern: Peak from 19th-25th, with center on 24th-25th
+        # 4 = 24th-25th (peak days)
+        # 3 = 23rd (strong build-up)
+        # 2 = 21st-22nd (moderate build-up)
+        # 1 = 19th-20th (early build-up) and 26th-30th (declining)
+        # 0 = other days (neutral)
+        df.loc[(day_of_month == 19) | (day_of_month == 20), mid_month_peak_tier_col] = 1  # Early build-up
+        df.loc[(day_of_month == 21) | (day_of_month == 22), mid_month_peak_tier_col] = 2  # Moderate build-up
+        df.loc[day_of_month == 23, mid_month_peak_tier_col] = 3  # Strong build-up
+        df.loc[(day_of_month == 24) | (day_of_month == 25), mid_month_peak_tier_col] = 4  # Peak
+        df.loc[(day_of_month >= 26) & (day_of_month <= 30), mid_month_peak_tier_col] = 1  # Declining
+        
+        # Binary indicator for peak days (24th and 25th)
+        df[is_mid_month_peak_col] = ((day_of_month == 24) | (day_of_month == 25)).astype(int)
+        
+        # Distance to peak (distance to 24th)
+        df[days_to_peak_col] = day_of_month - 24
     
     return df
 
@@ -663,14 +724,14 @@ def add_early_month_low_volume_features(
     Add early month low volume features to capture beginning-of-month patterns.
     
     Based on observed patterns:
-    - 1st through 5th of each month have the lowest volume
+    - 1st through 10th of each month have the lowest volume
     - This captures the monthly cycle where volume is low at the start
     
     Creates:
     - early_month_low_tier: Numeric tier representing the volume pattern
-      * 0 = 1st-5th (lowest volume days)
+      * 0 = 1st-10th (lowest volume days)
       * 1 = Other days (normal volume)
-    - is_early_month_low: Binary flag (1 for 1st-5th, 0 otherwise)
+    - is_early_month_low: Binary flag (1 for 1st-10th, 0 otherwise)
     - days_from_month_start: Days from the start of the month (0 on 1st, 1 on 2nd, etc.)
       * Helps model learn the gradient from low volume at start
     
@@ -694,13 +755,13 @@ def add_early_month_low_volume_features(
     day_of_month = df[time_col].dt.day
     
     # Create early_month_low_tier feature
-    # 0 = 1st-5th (lowest volume)
+    # 0 = 1st-10th (lowest volume)
     # 1 = Other days (normal)
     df[early_month_low_tier_col] = 1  # Default for normal days
-    df.loc[day_of_month <= 5, early_month_low_tier_col] = 0  # Low volume (1st through 5th)
+    df.loc[day_of_month <= 10, early_month_low_tier_col] = 0  # Low volume (1st through 10th)
     
-    # Create binary indicator for early month low volume days (1st-5th)
-    df[is_early_month_low_col] = (day_of_month <= 5).astype(int)
+    # Create binary indicator for early month low volume days (1st-10th)
+    df[is_early_month_low_col] = (day_of_month <= 10).astype(int)
     
     # Create days from month start feature (0-based: 0 on 1st, 1 on 2nd, etc.)
     df[days_from_month_start_col] = day_of_month - 1
@@ -858,8 +919,19 @@ def add_pre_holiday_surge_features(
     for idx, row in df.iterrows():
         current_date = row[time_col].date()
         
-        # Find nearest upcoming major holiday
-        upcoming_holidays = [h for h in major_holidays if h > current_date]
+        # Find nearest upcoming major holiday (filter out NaT values and ensure proper date comparison)
+        upcoming_holidays = []
+        for h in major_holidays:
+            if pd.notna(h):
+                try:
+                    # Convert to date object if it's a Timestamp
+                    h_date = h.date() if isinstance(h, pd.Timestamp) else h
+                    # Additional check: ensure h_date is not None or NaT after conversion
+                    if h_date is not None and pd.notna(h_date) and h_date > current_date:
+                        upcoming_holidays.append(h_date)
+                except (AttributeError, TypeError):
+                    # Skip any problematic holiday dates
+                    continue
         
         if len(upcoming_holidays) > 0:
             nearest_holiday = min(upcoming_holidays, key=lambda h: (h - current_date).days)

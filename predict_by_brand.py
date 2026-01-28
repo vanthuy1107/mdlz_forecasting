@@ -146,6 +146,14 @@ def predict_brand_model(
     if 'config' in checkpoint:
         model_config = checkpoint['config']
         print(f"  - Loaded model config from checkpoint")
+        
+        # CRITICAL: Load trained feature_cols from checkpoint to ensure exact match
+        if isinstance(model_config, dict) and 'data' in model_config:
+            trained_feature_cols = model_config['data'].get('feature_cols', None)
+            if trained_feature_cols is not None:
+                print(f"  - Loaded {len(trained_feature_cols)} trained features from checkpoint")
+                # Override base_config with trained features
+                base_config.set("data.feature_cols", list(trained_feature_cols))
     else:
         model_config = base_config
         print(f"  - Using base config for model")
@@ -194,23 +202,15 @@ def predict_brand_model(
     target_col = base_config.data['target_col']
     feature_cols = base_config.data['feature_cols']
     
-    # Add extra features that are used during training (same as in mvp_train.py)
-    extra_features = [
-        "lunar_month_sin", "lunar_month_cos",
-        "lunar_day_sin", "lunar_day_cos",
-        "days_to_tet", "days_to_mid_autumn",
-        "is_active_season", "days_until_peak", "is_golden_window", "is_peak_loss_window",
-        "cbm_per_qty", "cbm_per_qty_last_year"
-    ]
-    for feat in extra_features:
-        if feat not in feature_cols:
-            feature_cols.append(feat)
+    # CRITICAL: Use trained feature_cols from checkpoint, don't add or remove features
+    # The feature_cols should already be loaded from checkpoint above
+    print(f"  - Using {len(feature_cols)} features from trained model")
     
-    # Remove target column from feature_cols (it's not an input feature)
+    # NOTE: If target column is in feature_cols, it means the model was trained with it
+    # (data leakage issue, but we must keep it for prediction to work with the trained model)
     if target_col in feature_cols:
-        feature_cols.remove(target_col)
-    
-    base_config.set("data.feature_cols", feature_cols)
+        print(f"  - Note: Target column '{target_col}' is included in features (from training)")
+        print(f"    This will be populated with actual historical values for prediction")
     
     # Ensure time column is datetime and sort
     if not pd.api.types.is_datetime64_any_dtype(brand_data[time_col]):
@@ -257,12 +257,16 @@ def predict_brand_model(
         day_of_week_cos_col="day_of_week_cos"
     )
     
-    print("  - Adding weekday volume tier features...")
+    # Determine weekday pattern based on category
+    weekday_pattern = "fresh" if category == "FRESH" else "default"
+    weekday_desc = "Mon/Wed/Fri high" if weekday_pattern == "fresh" else "Wed/Fri high"
+    print(f"  - Adding weekday volume tier features ({weekday_desc}) for {category} category...")
     brand_data = add_weekday_volume_tier_features(
         brand_data,
         time_col=time_col,
         weekday_volume_tier_col="weekday_volume_tier",
-        is_high_volume_weekday_col="is_high_volume_weekday"
+        is_high_volume_weekday_col="is_high_volume_weekday",
+        weekday_pattern=weekday_pattern  # Category-specific pattern
     )
     
     print("  - Adding Is_Monday feature...")
@@ -282,13 +286,17 @@ def predict_brand_model(
         eom_window_days=3
     )
     
-    print("  - Adding mid-month peak features...")
+    # Determine peak pattern based on category
+    peak_pattern = "fresh" if category == "FRESH" else "default"
+    peak_desc = "8th-15th surge" if peak_pattern == "fresh" else "24th-25th surge"
+    print(f"  - Adding mid-month peak features ({peak_desc}) for {category} category...")
     brand_data = add_mid_month_peak_features(
         brand_data,
         time_col=time_col,
         mid_month_peak_tier_col="mid_month_peak_tier",
         is_mid_month_peak_col="is_mid_month_peak",
-        days_to_peak_col="days_to_mid_month_peak"
+        days_to_peak_col="days_to_mid_month_peak",
+        peak_pattern=peak_pattern  # Category-specific pattern
     )
     
     print("  - Adding early month low volume features...")

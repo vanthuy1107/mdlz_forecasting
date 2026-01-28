@@ -104,13 +104,17 @@ def prepare_prediction_data(
         day_of_week_cos_col="day_of_week_cos"
     )
     
-    # Add weekday volume tier features
-    print("  - Adding weekday volume tier features (weekday_volume_tier, is_high_volume_weekday)...")
+    # Add weekday volume tier features (category-specific)
+    # Determine weekday pattern based on category
+    weekday_pattern = "fresh" if current_category == "FRESH" else "default"
+    weekday_desc = "Mon/Wed/Fri high" if weekday_pattern == "fresh" else "Wed/Fri high"
+    print(f"  - Adding weekday volume tier features ({weekday_desc}) for {current_category or 'all'} category...")
     data = add_weekday_volume_tier_features(
         data,
         time_col=time_col,
         weekday_volume_tier_col="weekday_volume_tier",
-        is_high_volume_weekday_col="is_high_volume_weekday"
+        is_high_volume_weekday_col="is_high_volume_weekday",
+        weekday_pattern=weekday_pattern  # Category-specific pattern
     )
     
     # Add Is_Monday feature to help model learn Monday peak patterns
@@ -131,14 +135,18 @@ def prepare_prediction_data(
         eom_window_days=3
     )
     
-    # Add mid-month peak features (23rd-25th surge)
-    print("  - Adding mid-month peak features (mid_month_peak_tier, is_mid_month_peak, days_to_mid_month_peak)...")
+    # Add mid-month peak features (category-specific)
+    # Determine peak pattern based on category
+    peak_pattern = "fresh" if current_category == "FRESH" else "default"
+    peak_desc = "8th-15th surge" if peak_pattern == "fresh" else "24th-25th surge"
+    print(f"  - Adding mid-month peak features ({peak_desc}) for {current_category or 'all'} category...")
     data = add_mid_month_peak_features(
         data,
         time_col=time_col,
         mid_month_peak_tier_col="mid_month_peak_tier",
         is_mid_month_peak_col="is_mid_month_peak",
-        days_to_peak_col="days_to_mid_month_peak"
+        days_to_peak_col="days_to_mid_month_peak",
+        peak_pattern=peak_pattern  # Category-specific pattern
     )
     
     # Add early month low volume features (1st-3rd lowest)
