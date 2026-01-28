@@ -9,6 +9,12 @@ Each brand model is loaded from:
 Predictions are saved to:
 - outputs/DRY_BRANDNAME/predictions_YYYY.csv
 
+The script can also:
+- Compare predictions with actual values
+- Calculate error metrics (error, abs_error, MAE, RMSE, MAPE, accuracy)
+- Upload results to Google Sheets "History_Brand" sheet
+- Print accuracy summary by brand
+
 Usage:
     # Use categories from config.data.major_categories and dates from config.inference
     python predict_by_brand.py
@@ -18,6 +24,9 @@ Usage:
 
     # Predict only for DRY with explicit date range
     python predict_by_brand.py --category DRY --start 2025-01-01 --end 2025-12-31
+    
+    # Predict with Google Sheets upload
+    python predict_by_brand.py --category DRY --upload-sheets
 """
 import torch
 import torch.nn as nn
@@ -63,6 +72,9 @@ from src.predict import (
 
 # Import utility functions from train_by_brand.py
 from train_by_brand import get_available_brands, filter_data_by_brand
+
+# Import Google Sheets upload functions
+from src.utils import upload_to_google_sheets, GSPREAD_AVAILABLE
 
 
 def predict_brand_model(
@@ -412,9 +424,13 @@ def predict_brand_model(
             predictions_df[['predicted']]
         ).flatten()
     
-    # Add category and brand columns
+    # Ensure non-negative predictions: negative or < 1 → 0 (volume cannot be negative or fractional)
+    predictions_df['predicted'] = np.where(predictions_df['predicted'] < 1, 0, predictions_df['predicted'])
+    
+    # Add category and brand columns, then enforce column order: date, CATEGORY, BRAND, predicted
     predictions_df['CATEGORY'] = category
     predictions_df['BRAND'] = brand
+    predictions_df = predictions_df[['date', 'CATEGORY', 'BRAND', 'predicted']]
     
     # Save predictions
     if save_predictions:
@@ -436,6 +452,124 @@ def predict_brand_model(
     print(f"  - Total volume: {predictions_df['predicted'].sum():.2f}")
     
     return predictions_df
+
+
+def add_actuals_to_predictions(
+    predictions_df: pd.DataFrame,
+    actual_data: pd.DataFrame,
+    category: str,
+    brand: str,
+    time_col: str = "ACTUALSHIPDATE",
+    target_col: str = "Total CBM",
+    cat_col: str = "CATEGORY",
+    brand_col: str = "BRAND"
+) -> pd.DataFrame:
+    """
+    Add actual values to predictions and calculate error metrics.
+    
+    Args:
+        predictions_df: DataFrame with predictions (must have 'date' and 'predicted' columns)
+        actual_data: DataFrame with actual historical data
+        category: Category name to filter
+        brand: Brand name to filter
+        time_col: Time column name in actual data
+        target_col: Target column name in actual data
+        cat_col: Category column name in actual data
+        brand_col: Brand column name in actual data
+    
+    Returns:
+        DataFrame with added columns: actual, error, abs_error
+    """
+    # Filter actual data to this category and brand
+    actual_filtered = actual_data[
+        (actual_data[cat_col] == category) & 
+        (actual_data[brand_col] == brand)
+    ].copy()
+    
+    # Ensure time column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(actual_filtered[time_col]):
+        actual_filtered[time_col] = pd.to_datetime(actual_filtered[time_col])
+    
+    # Create a lookup dict: date -> actual value
+    actual_filtered['date_only'] = actual_filtered[time_col].dt.date
+    actual_lookup = dict(zip(actual_filtered['date_only'], actual_filtered[target_col]))
+    
+    # Convert predictions date column to date objects if needed
+    if isinstance(predictions_df['date'].iloc[0], str):
+        predictions_df['date'] = pd.to_datetime(predictions_df['date']).dt.date
+    elif pd.api.types.is_datetime64_any_dtype(predictions_df['date']):
+        predictions_df['date'] = pd.to_datetime(predictions_df['date']).dt.date
+    
+    # Add actual values
+    predictions_df['actual'] = predictions_df['date'].map(actual_lookup)
+    
+    # Calculate error metrics only where actual values exist
+    predictions_df['error'] = predictions_df['predicted'] - predictions_df['actual']
+    predictions_df['abs_error'] = predictions_df['error'].abs()
+    
+    # Enforce column order: date, CATEGORY, BRAND, predicted, actual, error, abs_error
+    predictions_df = predictions_df[['date', 'CATEGORY', 'BRAND', 'predicted', 'actual', 'error', 'abs_error']]
+    return predictions_df
+
+
+def calculate_brand_accuracy_summary(predictions_with_actuals: pd.DataFrame) -> Dict:
+    """
+    Calculate accuracy metrics for a single brand's predictions.
+    
+    Args:
+        predictions_with_actuals: DataFrame with predicted, actual, error, abs_error columns
+    
+    Returns:
+        Dictionary with accuracy metrics
+    """
+    # Filter to rows where actual values are available
+    valid_rows = predictions_with_actuals.dropna(subset=['actual'])
+    
+    if len(valid_rows) == 0:
+        return {
+            'num_predictions': len(predictions_with_actuals),
+            'num_with_actuals': 0,
+            'mae': None,
+            'rmse': None,
+            'mape': None,
+            'total_predicted': predictions_with_actuals['predicted'].sum(),
+            'total_actual': None,
+            'total_error': None,
+            'accuracy_pct': None
+        }
+    
+    # Calculate metrics
+    mae = valid_rows['abs_error'].mean()
+    rmse = np.sqrt((valid_rows['error'] ** 2).mean())
+    
+    # Calculate MAPE (avoid division by zero)
+    non_zero_actuals = valid_rows[valid_rows['actual'] != 0]
+    if len(non_zero_actuals) > 0:
+        mape = (non_zero_actuals['abs_error'] / non_zero_actuals['actual'].abs()).mean() * 100
+    else:
+        mape = None
+    
+    total_predicted = valid_rows['predicted'].sum()
+    total_actual = valid_rows['actual'].sum()
+    total_error = total_predicted - total_actual
+    
+    # Calculate accuracy percentage (based on total volumes)
+    if total_actual != 0:
+        accuracy_pct = (1 - abs(total_error) / abs(total_actual)) * 100
+    else:
+        accuracy_pct = None
+    
+    return {
+        'num_predictions': len(predictions_with_actuals),
+        'num_with_actuals': len(valid_rows),
+        'mae': mae,
+        'rmse': rmse,
+        'mape': mape,
+        'total_predicted': total_predicted,
+        'total_actual': total_actual,
+        'total_error': total_error,
+        'accuracy_pct': accuracy_pct
+    }
 
 
 def main():
@@ -488,6 +622,16 @@ def main():
         '--combine-output',
         action='store_true',
         help='Combine all brand predictions into a single file'
+    )
+    parser.add_argument(
+        '--no-upload-sheets',
+        action='store_true',
+        help='Skip uploading predictions to Google Sheets "History_Brand" sheet'
+    )
+    parser.add_argument(
+        '--spreadsheet-id',
+        type=str,
+        help='Google Sheets spreadsheet ID (defaults to env GOOGLE_SHEET_ID or hardcoded default)'
     )
     
     args = parser.parse_args()
@@ -550,44 +694,80 @@ def main():
         print(f"  - Prediction period: {start_date} to {end_date}")
         print(f"  - Total days: {(end_date - start_date).days + 1}")
         
-        # Load data
+        # Load data (same pattern as mvp_predict.py: history from dataset/data_cat, prediction period from path)
         print(f"\n[2/4] Loading data...")
         data_config = category_config.data
+        time_col = data_config['time_col']
+        data_reader = DataReader(
+            data_dir=data_config['data_dir'],
+            file_pattern=data_config['file_pattern']
+        )
         
-        # Determine data file
+        # Determine data file for prediction period
         if args.data_file:
             data_file = args.data_file
         else:
             data_file = category_config.inference.get('prediction_data_path')
+        
+        if data_file and os.path.exists(data_file):
+            # mvp_predict-style: always load history from data_dir, then prediction period from path
+            historical_year = start_date.year - 1
+            historical_years = [historical_year - 1, historical_year]  # e.g. [2023, 2024] for 2025
+            print(f"  - Loading historical data from {data_config['data_dir']} for years: {historical_years}")
+            try:
+                ref_data = data_reader.load(years=historical_years)
+            except FileNotFoundError:
+                print("[WARNING] Combined year files not found, trying pattern-based loading...")
+                ref_data = data_reader.load_by_file_pattern(
+                    years=historical_years,
+                    file_prefix=data_config.get('file_prefix', 'Outboundreports')
+                )
+            if len(ref_data) > 0 and time_col in ref_data.columns:
+                try:
+                    ref_data[time_col] = pd.to_datetime(ref_data[time_col], format="mixed", dayfirst=True)
+                except TypeError:
+                    ref_data[time_col] = pd.to_datetime(ref_data[time_col], dayfirst=True)
+                ref_dates = ref_data[time_col]
+                print(f"  - Historical data: {len(ref_data)} rows, {ref_dates.min().date()} to {ref_dates.max().date()}")
+            
+            print(f"  - Loading prediction period from: {data_file}")
+            prediction_data = pd.read_csv(data_file)
+            if time_col not in prediction_data.columns:
+                raise ValueError(f"Prediction file missing time column '{time_col}'")
+            prediction_data[time_col] = pd.to_datetime(prediction_data[time_col], format="mixed", dayfirst=True)
+            prediction_data = prediction_data[
+                (prediction_data[time_col].dt.date >= start_date) &
+                (prediction_data[time_col].dt.date <= end_date)
+            ].copy()
+            print(f"  - Prediction period ({start_date} to {end_date}): {len(prediction_data)} rows")
+            
+            data = pd.concat([ref_data, prediction_data], ignore_index=True)
+            if time_col in data.columns and not pd.api.types.is_datetime64_any_dtype(data[time_col]):
+                try:
+                    data[time_col] = pd.to_datetime(data[time_col], format="mixed", dayfirst=True)
+                except TypeError:
+                    data[time_col] = pd.to_datetime(data[time_col], dayfirst=True)
+            data = data.sort_values(time_col).reset_index(drop=True)
+            print(f"  - Combined (history + prediction): {len(data)} samples")
+        else:
+            # No prediction_data_path: load from data_dir using config years (legacy behaviour)
             if not data_file:
-                # Try to construct from years
                 years = [start_date.year]
                 if end_date.year != start_date.year:
                     years.append(end_date.year)
                 data_config['years'] = years
-        
-        if data_file and os.path.exists(data_file):
-            print(f"  - Loading from: {data_file}")
-            data = pd.read_csv(data_file)
-        else:
-            # Load from data_dir using DataReader
-            data_reader = DataReader(
-                data_dir=data_config['data_dir'],
-                file_pattern=data_config['file_pattern']
-            )
-            
             years = data_config['years']
             try:
                 data = data_reader.load(years=years)
             except FileNotFoundError:
                 print("[WARNING] Combined year files not found, trying pattern-based loading...")
-                file_prefix = data_config.get('file_prefix', 'Outboundreports')
                 data = data_reader.load_by_file_pattern(
                     years=years,
-                    file_prefix=file_prefix
+                    file_prefix=data_config.get('file_prefix', 'Outboundreports')
                 )
+            print(f"  - Loaded from data_dir: {len(data)} samples")
         
-        print(f"  - Loaded {len(data)} samples")
+        print(f"  - Total data: {len(data)} samples")
         
         # Ensure BRAND column exists; if not, fall back to historical data with BRAND (data_cat)
         brand_col_name = args.brand_col
@@ -668,6 +848,8 @@ def main():
         print(f"{'=' * 80}")
         
         all_predictions = []
+        all_predictions_with_actuals = []
+        brand_accuracy_summaries = {}
         successful = 0
         failed = 0
         
@@ -688,6 +870,34 @@ def main():
                     save_predictions=True
                 )
                 all_predictions.append(predictions_df)
+                
+                # Add actuals to predictions
+                print(f"\n  - Adding actual values to predictions for accuracy calculation...")
+                predictions_with_actuals = add_actuals_to_predictions(
+                    predictions_df=predictions_df.copy(),
+                    actual_data=data,
+                    category=category,
+                    brand=brand,
+                    time_col=data_config['time_col'],
+                    target_col=data_config['target_col'],
+                    cat_col=data_config['cat_col'],
+                    brand_col=args.brand_col
+                )
+                all_predictions_with_actuals.append(predictions_with_actuals)
+                
+                # Calculate accuracy summary for this brand
+                accuracy_summary = calculate_brand_accuracy_summary(predictions_with_actuals)
+                brand_accuracy_summaries[brand] = accuracy_summary
+                
+                # Print quick summary
+                if accuracy_summary['num_with_actuals'] > 0:
+                    print(f"  - Actuals found: {accuracy_summary['num_with_actuals']}/{accuracy_summary['num_predictions']} days")
+                    print(f"  - MAE: {accuracy_summary['mae']:.2f}, RMSE: {accuracy_summary['rmse']:.2f}")
+                    if accuracy_summary['accuracy_pct'] is not None:
+                        print(f"  - Volume Accuracy: {accuracy_summary['accuracy_pct']:.2f}%")
+                else:
+                    print(f"  - No actual values found for prediction period")
+                
                 successful += 1
             except Exception as e:
                 print(f"\n[ERROR] Failed to predict brand '{brand}': {e}")
@@ -696,17 +906,28 @@ def main():
                 failed += 1
                 overall_success = False
         
-        # Combine predictions if requested
-        if args.combine_output and all_predictions:
+        # Re-save per-brand CSVs with actual, error, abs_error (overwrite raw predictions)
+        year_start = start_date.year
+        year_end = end_date.year
+        pred_filename = f"predictions_{year_start}.csv" if year_start == year_end else f"predictions_{year_start}_{year_end}.csv"
+        for pred_with_actuals in all_predictions_with_actuals:
+            brand = pred_with_actuals['BRAND'].iloc[0]
+            brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
+            brand_csv_path = base_output_dir / brand_output_name / pred_filename
+            brand_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            pred_with_actuals.to_csv(brand_csv_path, index=False)
+        if all_predictions_with_actuals:
+            print(f"\n  - Per-brand CSVs updated with actual, error, abs_error columns")
+        
+        # Combine predictions if requested (use version with actual, error, abs_error)
+        if args.combine_output and all_predictions_with_actuals:
             print(f"\n{'=' * 80}")
             print("Combining predictions...")
             print(f"{'=' * 80}")
             
-            combined_df = pd.concat(all_predictions, ignore_index=True)
+            combined_df = pd.concat(all_predictions_with_actuals, ignore_index=True)
             combined_df = combined_df.sort_values(['date', 'BRAND']).reset_index(drop=True)
             
-            year_start = start_date.year
-            year_end = end_date.year
             if year_start == year_end:
                 combined_filename = f"{category}_all_brands_predictions_{year_start}.csv"
             else:
@@ -714,9 +935,56 @@ def main():
             
             combined_output_path = base_output_dir / combined_filename
             combined_df.to_csv(combined_output_path, index=False)
-            print(f"  - Combined predictions saved to: {combined_output_path}")
+            print(f"  - Combined predictions saved to: {combined_output_path} (includes actual, error, abs_error)")
             print(f"  - Total rows: {len(combined_df)}")
             print(f"  - Brands: {combined_df['BRAND'].unique().tolist()}")
+        
+        # Upload to Google Sheets by default (unless --no-upload-sheets is provided)
+        if not args.no_upload_sheets and all_predictions_with_actuals:
+            print(f"\n{'=' * 80}")
+            print("Uploading to Google Sheets")
+            print(f"{'=' * 80}")
+            
+            # Combine all brand predictions with actuals
+            combined_with_actuals = pd.concat(all_predictions_with_actuals, ignore_index=True)
+            combined_with_actuals = combined_with_actuals.sort_values(['date', 'BRAND']).reset_index(drop=True)
+            
+            # Get spreadsheet ID
+            if args.spreadsheet_id:
+                spreadsheet_id = args.spreadsheet_id
+            else:
+                spreadsheet_id = os.getenv(
+                    "GOOGLE_SHEET_ID",
+                    "1I8JEqZbWGZNOsebzOBfeHKJ7Z7jA1zcfX8JhjqGSowE"
+                )
+            
+            credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "key.json")
+            
+            print(f"  - Spreadsheet ID: {spreadsheet_id}")
+            print(f"  - Sheet name: History_Brand")
+            print(f"  - Total rows to upload: {len(combined_with_actuals)}")
+            print(f"  - Brands: {combined_with_actuals['BRAND'].unique().tolist()}")
+            
+            # Upload to Google Sheets
+            if GSPREAD_AVAILABLE:
+                # For History_Brand we want to CLEAR existing data and overwrite
+                # with the latest prediction results instead of merging.
+                upload_success = upload_to_google_sheets(
+                    saved_files={},
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_name="History_Brand",
+                    credentials_path=credentials_path,
+                    data_df=combined_with_actuals,
+                    update_mode=False,
+                    merge_keys=None
+                )
+                
+                if upload_success:
+                    print(f"\n  [SUCCESS] Successfully uploaded to Google Sheets!")
+                else:
+                    print(f"\n  [ERROR] Failed to upload to Google Sheets")
+            else:
+                print(f"\n  [WARNING] Google Sheets library not available. Install with: pip install gspread google-auth")
         
         # Print summary for this category
         print(f"\n{'=' * 80}")
@@ -734,6 +1002,58 @@ def main():
                 brand = pred_df['BRAND'].iloc[0]
                 total_volume = pred_df['predicted'].sum()
                 print(f"  - {brand}: {len(pred_df)} days, total volume = {total_volume:.2f}")
+        
+        # Print accuracy summary by brand
+        if brand_accuracy_summaries:
+            print(f"\n{'=' * 80}")
+            print("ACCURACY SUMMARY BY BRAND")
+            print(f"{'=' * 80}")
+            print(f"Category: {category}")
+            print(f"Prediction period: {start_date} to {end_date}")
+            print(f"\n{'Brand':<20} {'Days':<8} {'MAE':<12} {'RMSE':<12} {'MAPE':<12} {'Vol.Acc%':<12}")
+            print("-" * 80)
+            
+            for brand in brands_to_predict:
+                if brand in brand_accuracy_summaries:
+                    summary = brand_accuracy_summaries[brand]
+                    
+                    # Format values
+                    days_str = f"{summary['num_with_actuals']}/{summary['num_predictions']}"
+                    mae_str = f"{summary['mae']:.2f}" if summary['mae'] is not None else "N/A"
+                    rmse_str = f"{summary['rmse']:.2f}" if summary['rmse'] is not None else "N/A"
+                    mape_str = f"{summary['mape']:.2f}%" if summary['mape'] is not None else "N/A"
+                    acc_str = f"{summary['accuracy_pct']:.2f}%" if summary['accuracy_pct'] is not None else "N/A"
+                    
+                    print(f"{brand:<20} {days_str:<8} {mae_str:<12} {rmse_str:<12} {mape_str:<12} {acc_str:<12}")
+            
+            # Calculate overall category accuracy (only when at least one brand has actuals)
+            dfs_with_actuals = [df for df in all_predictions_with_actuals if not df['actual'].isna().all()]
+            all_with_actuals_combined = pd.concat(dfs_with_actuals, ignore_index=True) if dfs_with_actuals else pd.DataFrame()
+            
+            if len(all_with_actuals_combined) > 0:
+                valid_rows = all_with_actuals_combined.dropna(subset=['actual'])
+                if len(valid_rows) > 0:
+                    overall_mae = valid_rows['abs_error'].mean()
+                    overall_rmse = np.sqrt((valid_rows['error'] ** 2).mean())
+                    overall_total_pred = valid_rows['predicted'].sum()
+                    overall_total_actual = valid_rows['actual'].sum()
+                    overall_error = overall_total_pred - overall_total_actual
+                    
+                    if overall_total_actual != 0:
+                        overall_accuracy = (1 - abs(overall_error) / abs(overall_total_actual)) * 100
+                    else:
+                        overall_accuracy = None
+                    
+                    print("-" * 80)
+                    print(f"{'OVERALL':<20} {len(valid_rows):<8} {overall_mae:<12.2f} {overall_rmse:<12.2f} {'N/A':<12} ", end="")
+                    if overall_accuracy is not None:
+                        print(f"{overall_accuracy:<12.2f}%")
+                    else:
+                        print("N/A")
+                    
+                    print(f"\nTotal Predicted: {overall_total_pred:,.2f}")
+                    print(f"Total Actual: {overall_total_actual:,.2f}")
+                    print(f"Total Error: {overall_error:,.2f}")
         
         print(f"\n{'=' * 80}")
     

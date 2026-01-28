@@ -150,14 +150,17 @@ def combine_yearly_data(
             masterdata_df.columns = masterdata_df.columns.str.strip()
             cols_upper = {c.upper(): c for c in masterdata_df.columns}
 
-            # Try to detect SKU and BRAND columns case-insensitively
+            # Detect SKU, BRAND, and CATEGORY columns (masterdata uses CATEGORY; legacy used GROUP OF CAGO)
             sku_col = None
             brand_col = None
+            cat_col = None
             for key, orig in cols_upper.items():
                 if key == "SKU":
                     sku_col = orig
                 if key.startswith("BRAND"):
                     brand_col = orig
+                if key == "CATEGORY" or "GROUP" in key or "CAGO" in key:
+                    cat_col = orig
 
             if sku_col is None or brand_col is None:
                 print(
@@ -170,15 +173,30 @@ def combine_yearly_data(
                 masterdata_df[sku_col] = masterdata_df[sku_col].astype(str).str.strip()
                 masterdata_df[brand_col] = masterdata_df[brand_col].astype(str).str.strip()
 
-                # Keep only distinct SKU-BRAND pairs with standardized names
-                masterdata_df = masterdata_df[[sku_col, brand_col]].drop_duplicates()
+                # Build masterdata with SKU, BRAND, and CATEGORY (from masterdata CATEGORY column)
+                use_cols = [sku_col, brand_col]
+                if cat_col is not None:
+                    masterdata_df[cat_col] = masterdata_df[cat_col].astype(str).str.strip().str.upper()
+                    use_cols.append(cat_col)
+                masterdata_df = masterdata_df[use_cols].drop_duplicates()
                 masterdata_df = masterdata_df.rename(columns={sku_col: "SKU", brand_col: "BRAND"})
-                print(f"  Masterdata loaded: {len(masterdata_df):,} unique SKU-BRAND pairs")
+                if cat_col is not None:
+                    masterdata_df = masterdata_df.rename(columns={cat_col: "CATEGORY_MASTER"})
+                else:
+                    masterdata_df["CATEGORY_MASTER"] = pd.NA
+                # One row per SKU so merge does not duplicate rows
+                masterdata_df = masterdata_df.drop_duplicates(subset=["SKU"], keep="first")
+                print(f"  Masterdata loaded: {len(masterdata_df):,} unique SKU-BRAND(-CATEGORY) pairs")
         except Exception as e:
             print(f"[WARNING] Failed to load masterdata file '{masterdata_path}': {e}")
             masterdata_df = None
     else:
         print(f"[INFO] Masterdata file for BRAND mapping not found at: {masterdata_path}")
+
+    # Buffer to hold rows whose actual shipment year differs from the file/year bucket.
+    # Example: some 2024 files may, after time adjustment, contain ACTUALSHIPDATE in 2025.
+    # Such rows will be moved into the correct year's dataset.
+    extra_rows_by_year: Dict[int, List[pd.DataFrame]] = defaultdict(list)
 
     # Process each year separately
     for year in sorted(years):
@@ -188,7 +206,7 @@ def combine_yearly_data(
         
         year_files = files_by_year[year]
         print(f"\n[Year {year}] Found {len(year_files)} file(s):")
-        
+
         year_data = []
         for filepath in year_files:
             try:
@@ -201,6 +219,13 @@ def combine_yearly_data(
             except Exception as e:
                 print(f"✗ ERROR: {e}")
                 failed_files.append((filepath, str(e)))
+
+        # Attach any rows that were carried over from other years into this one
+        if extra_rows_by_year.get(year):
+            carried_count = sum(len(df) for df in extra_rows_by_year[year])
+            print(f"  Adding {carried_count} carried-over row(s) whose ACTUALSHIPDATE year is {year}")
+            year_data.extend(extra_rows_by_year[year])
+            extra_rows_by_year[year] = []
         
         if not year_data:
             print(f"  [SKIP] No data loaded for year {year}")
@@ -240,27 +265,59 @@ def combine_yearly_data(
             # Add day of month column (1, 2, 3, ..., 31)
             print(f"  Adding day of month column...")
             year_combined['Day'] = date_dt.dt.day
-            
+
+            # After all time adjustments, verify that rows actually belong to this loop year.
+            actual_years = pd.to_datetime(year_combined[time_col]).dt.year
+            mismatch_mask = actual_years != year
+            if mismatch_mask.any():
+                # Some rows belong to a different calendar year than the one we are processing.
+                mismatch_counts = actual_years[mismatch_mask].value_counts().to_dict()
+                print(f"  [INFO] Found {mismatch_mask.sum()} row(s) whose ACTUALSHIPDATE year != {year}: {mismatch_counts}")
+
+                for dest_year, count in mismatch_counts.items():
+                    if dest_year in years:
+                        # Move these rows into the correct year's buffer so they will be
+                        # appended when that year is processed.
+                        moved_rows = year_combined.loc[mismatch_mask & (actual_years == dest_year)].copy()
+                        extra_rows_by_year[dest_year].append(moved_rows)
+                        print(f"    - Moving {count} row(s) to year {dest_year}")
+                    else:
+                        # If the detected year is outside the configured list, keep them here
+                        print(
+                            f"    [WARNING] {count} row(s) have ACTUALSHIPDATE year {dest_year}, "
+                            f"which is not in target years {years}; keeping in {year} file."
+                        )
+
+                # Keep only rows whose ACTUALSHIPDATE year matches current loop year
+                year_combined = year_combined.loc[~mismatch_mask].reset_index(drop=True)
+
             date_range = f"{year_combined[time_col].min()} to {year_combined[time_col].max()}"
             print(f"  Date range: {date_range}")
         else:
             print(f"  [WARNING] Time column '{time_col}' not found. Available columns: {list(year_combined.columns)}")
 
-        # Join BRAND from masterdata by SKU (if available)
+        # Join BRAND and CATEGORY from masterdata by SKU — keep only rows whose SKU exists in masterdata
         if masterdata_df is not None and "SKU" in year_combined.columns:
-            # Normalize SKU in fact data to string and trim spaces to avoid type/format mismatches
             year_combined["SKU"] = year_combined["SKU"].astype(str).str.strip()
 
-            rows_before_join = len(year_combined)
+            rows_before = len(year_combined)
             year_combined = year_combined.merge(
                 masterdata_df,
                 on="SKU",
-                how="left",
+                how="inner",
             )
-            matched_rows = year_combined["BRAND"].notna().sum()
+            rows_after = len(year_combined)
+            dropped = rows_before - rows_after
             print(
-                f"  Joined BRAND by SKU: {matched_rows:,} rows with BRAND out of {rows_before_join:,}"
+                f"  Joined masterdata (SKU, BRAND, CATEGORY): kept {rows_after:,} rows with SKU in masterdata, "
+                f"dropped {dropped:,} rows with SKU not in masterdata"
             )
+            # Use CATEGORY from masterdata when present (else keep source CATEGORY)
+            if "CATEGORY_MASTER" in year_combined.columns:
+                year_combined["CATEGORY"] = year_combined["CATEGORY_MASTER"].fillna(
+                    year_combined["CATEGORY"] if "CATEGORY" in year_combined.columns else pd.NA
+                )
+                year_combined = year_combined.drop(columns=["CATEGORY_MASTER"])
         else:
             if masterdata_df is None:
                 print("  [INFO] BRAND masterdata not loaded; skipping BRAND join.")
@@ -378,6 +435,8 @@ def combine_yearly_data(
                         full_dates = pd.date_range(start=min_date, end=max_date, freq='D')
 
                         # Key dimensions for the Cartesian product
+                        # IMPORTANT: we preserve the existing (CATEGORY, WHSEID, BRAND) combinations
+                        # and only expand across dates. We DO NOT cross-mix brands across categories.
                         key_cols = ['CATEGORY']
                         for col in ['WHSEID', 'BRAND']:
                             if col in year_combined.columns:
@@ -385,22 +444,28 @@ def combine_yearly_data(
 
                         unique_keys = year_combined[key_cols].drop_duplicates()
 
-                        # Build full MultiIndex: Date x Keys
-                        index_arrays = [full_dates] + [unique_keys[col].unique() for col in key_cols]
-                        index_names = [time_col] + key_cols
-                        full_index = pd.MultiIndex.from_product(index_arrays, names=index_names)
+                        # Build full calendar DataFrame: Date x (existing key combinations)
+                        dates_df = pd.DataFrame({time_col: full_dates})
+                        dates_df['__key'] = 1
+                        unique_keys['__key'] = 1
+                        # Use Python date objects for ACTUALSHIPDATE to match grouped data type
+                        if pd.api.types.is_datetime64_any_dtype(dates_df[time_col]):
+                            dates_df[time_col] = dates_df[time_col].dt.date
+                        full_calendar = dates_df.merge(unique_keys, on='__key').drop(columns='__key')
 
-                        # Reindex to the full calendar, creating zero-volume rows where missing
-                        year_combined = year_combined.set_index(index_names)
-                        year_combined = year_combined.reindex(full_index)
+                        # Left-join original aggregated data onto the full calendar
+                        year_combined = full_calendar.merge(
+                            year_combined,
+                            on=[time_col] + key_cols,
+                            how='left',
+                        )
 
                         # Fill volume-like measures with zeros, keep other fields as-is/NaN
                         for col in ['Total QTY', 'Total CBM']:
                             if col in year_combined.columns:
                                 year_combined[col] = year_combined[col].fillna(0)
 
-                        # Restore columns and recompute calendar helpers
-                        year_combined = year_combined.reset_index()
+                        # Recompute calendar helper columns
                         date_dt = pd.to_datetime(year_combined[time_col])
                         year_combined['Week'] = (date_dt.dt.dayofweek + 1).astype(str) + '.' + date_dt.dt.day_name()
                         year_combined['Day'] = date_dt.dt.day
@@ -451,14 +516,15 @@ def combine_yearly_data(
 
 def create_monthly_summary(saved_files: Dict[int, Path], time_col: str = "ACTUALSHIPDATE") -> pd.DataFrame:
     """
-    Create monthly summary by aggregating data by Year, CATEGORY, and Month.
+    Create monthly summary by aggregating data by Year, CATEGORY, BRAND (if present), and Month.
+    Uses lt-adjusted dates from the combined year files (UTC+7, date moved to next day if time >= 17:00).
     
     Args:
         saved_files: Dictionary mapping year to file path.
         time_col: Name of time column.
     
     Returns:
-        DataFrame with columns: Year, CATEGORY, Total QTY, Total CBM, Month
+        DataFrame with columns: Year, CATEGORY, BRAND (if in data), Total QTY, Total CBM, Month
     """
     print(f"\n[Monthly Summary] Creating monthly summary from {len(saved_files)} year file(s)...")
     all_data = []
@@ -475,7 +541,7 @@ def create_monthly_summary(saved_files: Dict[int, Path], time_col: str = "ACTUAL
     combined_df = pd.concat(all_data, ignore_index=True)
     print(f"[Monthly Summary] Total rows: {len(combined_df):,}")
     
-    # Convert time column to datetime if needed
+    # Convert time column to datetime if needed (data is already lt-adjusted in combine_yearly_data)
     if time_col in combined_df.columns:
         if not pd.api.types.is_datetime64_any_dtype(combined_df[time_col]):
             combined_df[time_col] = pd.to_datetime(combined_df[time_col])
@@ -490,10 +556,15 @@ def create_monthly_summary(saved_files: Dict[int, Path], time_col: str = "ACTUAL
             print("[Monthly Summary] ERROR: Cannot create monthly summary without time column")
             return pd.DataFrame()
     
-    # Check required columns
+    # Group-by dimensions: Year, CATEGORY, BRAND (if present), Month
     required_cols = ['Year', 'CATEGORY', 'Month']
-    agg_cols = {}
+    if 'BRAND' in combined_df.columns:
+        groupby_cols = ['Year', 'CATEGORY', 'BRAND', 'Month']
+        print(f"[Monthly Summary] Including BRAND in summary (lt-adjusted dates from combined files)")
+    else:
+        groupby_cols = [col for col in required_cols if col in combined_df.columns]
     
+    agg_cols = {}
     if 'Total QTY' in combined_df.columns:
         agg_cols['Total QTY'] = 'sum'
     if 'Total CBM' in combined_df.columns:
@@ -503,11 +574,9 @@ def create_monthly_summary(saved_files: Dict[int, Path], time_col: str = "ACTUAL
         print("[Monthly Summary] WARNING: No aggregation columns found (Total QTY, Total CBM)")
         return pd.DataFrame()
     
-    # Group by Year, CATEGORY, and Month
-    groupby_cols = [col for col in required_cols if col in combined_df.columns]
-    
-    if len(groupby_cols) < len(required_cols):
-        missing = set(required_cols) - set(groupby_cols)
+    groupby_cols = [c for c in groupby_cols if c in combined_df.columns]
+    if not all(c in combined_df.columns for c in required_cols):
+        missing = set(required_cols) - set(combined_df.columns)
         print(f"[Monthly Summary] ERROR: Missing required columns: {missing}")
         return pd.DataFrame()
     
@@ -517,12 +586,19 @@ def create_monthly_summary(saved_files: Dict[int, Path], time_col: str = "ACTUAL
     # Group and aggregate
     summary = combined_df.groupby(groupby_cols, as_index=False)[list(agg_cols.keys())].sum()
     
-    # Reorder columns: Year, CATEGORY, Total QTY, Total CBM, Month
-    column_order = ['Year', 'CATEGORY'] + list(agg_cols.keys()) + ['Month']
+    # Reorder columns: Year, CATEGORY, BRAND (if present), Total QTY, Total CBM, Month
+    column_order = ['Year', 'CATEGORY']
+    if 'BRAND' in summary.columns:
+        column_order.append('BRAND')
+    column_order.extend(list(agg_cols.keys()))
+    column_order.append('Month')
     summary = summary[[col for col in column_order if col in summary.columns]]
     
-    # Sort by Year, Month, CATEGORY
-    summary = summary.sort_values(['Year', 'Month', 'CATEGORY']).reset_index(drop=True)
+    # Sort by Year, Month, CATEGORY, BRAND (if present)
+    sort_cols = ['Year', 'Month', 'CATEGORY']
+    if 'BRAND' in summary.columns:
+        sort_cols.append('BRAND')
+    summary = summary.sort_values(sort_cols).reset_index(drop=True)
     
     print(f"[Monthly Summary] Created summary with {len(summary):,} rows")
     return summary

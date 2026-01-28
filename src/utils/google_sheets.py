@@ -127,7 +127,7 @@ def upload_to_google_sheets(
             print(f"[Google Sheets] Found existing sheet: {sheet_name}")
         except gspread.exceptions.WorksheetNotFound:
             print(f"[Google Sheets] Creating new sheet: {sheet_name}...")
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=10000, cols=30)
         
         # Get data to upload
         if data_df is not None:
@@ -160,8 +160,8 @@ def upload_to_google_sheets(
                 if sheet_name == "ResultByMonth":
                     merge_keys = ['Year', 'CATEGORY', 'Month']
                 elif sheet_name == "SummaryByMonth":
-                    # Summary-by-month rows: one per (CATEGORY, Month)
-                    merge_keys = ['CATEGORY', 'Month']
+                    # Summary-by-month rows: one per (Year, CATEGORY, BRAND, Month)
+                    merge_keys = ['Year', 'CATEGORY', 'BRAND', 'Month']
                 elif sheet_name == "Result":
                     # Daily results: one row per (date, CATEGORY)
                     merge_keys = ['date', 'CATEGORY']
@@ -299,6 +299,19 @@ def upload_to_google_sheets(
                         row_values.append(val)
             values.append(row_values)
         
+        # Ensure worksheet has enough rows and columns
+        required_rows = len(values)
+        required_cols = len(values[0]) if values else 20
+        current_rows = worksheet.row_count
+        current_cols = worksheet.col_count
+        
+        if required_rows > current_rows or required_cols > current_cols:
+            new_rows = max(required_rows, current_rows, 1000)
+            new_cols = max(required_cols, current_cols, 30)
+            print(f"[Google Sheets] Resizing sheet from {current_rows}x{current_cols} to {new_rows}x{new_cols}...")
+            worksheet.resize(rows=new_rows, cols=new_cols)
+            time.sleep(1.0)  # Give API time to process resize
+        
         # Clear existing data and upload new data with retry logic
         if not update_mode:
             print(f"[Google Sheets] Clearing existing data in sheet '{sheet_name}'...")
@@ -322,49 +335,18 @@ def upload_to_google_sheets(
         time.sleep(1.0)
         
         print(f"[Google Sheets] Uploading {len(values):,} rows (including header)...")
-        # Batch updates in chunks to avoid quota issues
-        # Google Sheets API limit is typically 10000 cells per request
-        # Using smaller batches to be safe and add delays between requests
-        batch_size = 1000  # Conservative batch size
-        if len(values) > batch_size:
-            # Upload in batches
-            for i in range(0, len(values), batch_size):
-                batch = values[i:i + batch_size]
-                batch_num = (i // batch_size) + 1
-                total_batches = ((len(values) - 1) // batch_size) + 1
-                start_row = i + 1  # Google Sheets is 1-indexed
-                
-                print(f"  Uploading batch {batch_num}/{total_batches} (starting at row {start_row}, {len(batch)} rows)...")
-                
-                # Create a closure-safe function for retry with default arguments
-                def upload_batch(b=batch, sr=start_row):
-                    # Use A1 notation for the starting cell
-                    start_cell = f'A{sr}'
-                    return worksheet.update(start_cell, b, value_input_option='USER_ENTERED')
-                
-                retry_with_backoff(
-                    upload_batch,
-                    max_retries=5,
-                    initial_delay=2.0,
-                    max_delay=60.0
-                )
-                # Add delay between batches to avoid rate limiting
-                if i + batch_size < len(values):
-                    time.sleep(2.0)  # Increased delay between batches
-        else:
-            # Small dataset, upload all at once
-            retry_with_backoff(
-                lambda: worksheet.update(values, value_input_option='USER_ENTERED'),
-                max_retries=5,
-                initial_delay=2.0,
-                max_delay=60.0
-            )
+        retry_with_backoff(
+            lambda: worksheet.update(values, value_input_option='USER_ENTERED'),
+            max_retries=5,
+            initial_delay=2.0,
+            max_delay=60.0
+        )
         
-        print(f"[Google Sheets] ✓ Successfully uploaded {len(combined_df):,} rows to sheet '{sheet_name}'")
+        print(f"[Google Sheets] Successfully uploaded {len(combined_df):,} rows to sheet '{sheet_name}'")
         return True
         
     except Exception as e:
-        print(f"\n[Google Sheets] ✗ Error uploading to Google Sheets: {e}")
+        print(f"\n[Google Sheets] Error uploading to Google Sheets: {e}")
         import traceback
         traceback.print_exc()
         return False
