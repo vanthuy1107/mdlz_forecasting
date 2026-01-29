@@ -990,14 +990,16 @@ def prepare_prediction_data_old(data, config, cat2id, scaler=None, trained_cat2i
         lunar_month_col="lunar_month"
     )
     
-    # Add pre-holiday surge features (high volume before Tet and Mid-Autumn)
-    print("  - Adding pre-holiday surge features (pre_holiday_surge_tier, is_pre_holiday_surge)...")
+    # Add holiday impact features
+    # Note: This function is deprecated, using default pattern
+    print("  - Adding holiday features (using default pre-holiday surge pattern)...")
     data = add_pre_holiday_surge_features(
         data,
         time_col=time_col,
         pre_holiday_surge_tier_col="pre_holiday_surge_tier",
         is_pre_holiday_surge_col="is_pre_holiday_surge",
-        days_before_surge=10
+        days_before_surge=10,
+        holiday_pattern="default"  # Default pattern (deprecated function)
     )
     
     # Lunar cyclical encodings (sine/cosine) to mirror training-time features

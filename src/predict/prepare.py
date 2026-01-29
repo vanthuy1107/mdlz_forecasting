@@ -180,14 +180,18 @@ def prepare_prediction_data(
         lunar_month_col="lunar_month"
     )
 
-    # Add pre-holiday surge features (high volume before Tet and Mid-Autumn)
-    print("  - Adding pre-holiday surge features (pre_holiday_surge_tier, is_pre_holiday_surge)...")
+    # Add holiday impact features (category-specific behavior)
+    # Determine holiday pattern based on category
+    holiday_pattern = "fresh" if current_category == "FRESH" else "default"
+    holiday_desc = "post-holiday surge" if holiday_pattern == "fresh" else "pre-holiday surge"
+    print(f"  - Adding holiday features ({holiday_desc}) for {current_category or 'all'} category...")
     data = add_pre_holiday_surge_features(
         data,
         time_col=time_col,
         pre_holiday_surge_tier_col="pre_holiday_surge_tier",
         is_pre_holiday_surge_col="is_pre_holiday_surge",
-        days_before_surge=10
+        days_before_surge=10,
+        holiday_pattern=holiday_pattern  # Category-specific pattern
     )
 
     # Lunar cyclical encodings (sine/cosine) to mirror training-time features

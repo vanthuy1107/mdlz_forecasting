@@ -528,7 +528,7 @@ def add_weekday_volume_tier_features(
         # 0 = Tuesday, Thursday (baseline/normal volume)
         # -3 = Saturday, Sunday (minimal/zero volume)
         df[weekday_volume_tier_col] = -3  # Default for Saturday, Sunday (strong negative)
-        df.loc[day_of_week == 0, weekday_volume_tier_col] = 5  # Monday (STRONG: 25-50% higher)
+        df.loc[day_of_week == 0, weekday_volume_tier_col] = 6  # Monday (STRONG: 25-50% higher)
         df.loc[day_of_week == 2, weekday_volume_tier_col] = 5  # Wednesday (STRONG: 25-50% higher)
         df.loc[day_of_week == 4, weekday_volume_tier_col] = 5  # Friday (STRONG: 25-50% higher)
         df.loc[day_of_week == 1, weekday_volume_tier_col] = 0  # Tuesday (baseline)
@@ -859,23 +859,28 @@ def add_pre_holiday_surge_features(
     time_col: str = "ACTUALSHIPDATE",
     pre_holiday_surge_tier_col: str = "pre_holiday_surge_tier",
     is_pre_holiday_surge_col: str = "is_pre_holiday_surge",
-    days_before_surge: int = 7
+    days_before_surge: int = 7,
+    holiday_pattern: str = "default"
 ) -> pd.DataFrame:
     """
-    Add pre-holiday surge features to capture high volume before major holidays.
+    Add holiday-related volume features (category-specific behavior).
     
-    Based on observed patterns:
-    - Volume increases in the days leading up to Tet (Lunar New Year)
-    - Volume increases in the days leading up to Mid-Autumn Festival
-    - People stock up before major holidays
+    Supports two patterns:
+    
+    DEFAULT pattern (DRY goods):
+    - Volume INCREASES before holidays (Tet, Mid-Autumn) as people stock up
+    - Positive tiers for pre-holiday period
+    
+    FRESH pattern (perishable goods):
+    - Volume DECREASES before holidays (people travel, less ordering)
+    - Volume INCREASES after holidays (people return, restock)
+    - Negative tiers for pre-holiday, positive for post-holiday
     
     Creates:
-    - pre_holiday_surge_tier: Numeric tier representing proximity to major holiday
-      * 3 = 1-3 days before holiday (highest surge)
-      * 2 = 4-7 days before holiday (moderate surge)
-      * 1 = 8-10 days before holiday (early surge)
-      * 0 = Other days (normal)
-    - is_pre_holiday_surge: Binary flag (1 if within surge period, 0 otherwise)
+    - pre_holiday_surge_tier: Numeric tier representing holiday proximity impact
+      * Default: +3 (1-3d before), +2 (4-7d before), +1 (8-10d before), 0 (other)
+      * Fresh: -3 (1-3d before), -2 (4-7d before), -1 (8-10d before), +2 (1-3d after), +1 (4-7d after), 0 (other)
+    - is_pre_holiday_surge: Binary flag (1 if within holiday impact period, 0 otherwise)
     
     Args:
         df: DataFrame with time column.
@@ -883,9 +888,10 @@ def add_pre_holiday_surge_features(
         pre_holiday_surge_tier_col: Name for pre_holiday_surge_tier column.
         is_pre_holiday_surge_col: Name for is_pre_holiday_surge binary flag column.
         days_before_surge: Number of days before holiday to consider as surge period (default: 7).
+        holiday_pattern: Pattern type - "default" (pre-holiday surge) or "fresh" (post-holiday surge).
     
     Returns:
-        DataFrame with added pre-holiday surge features.
+        DataFrame with added holiday impact features.
     """
     from datetime import date, timedelta
     from config import load_holidays
@@ -917,39 +923,72 @@ def add_pre_holiday_surge_features(
     
     # For each row, calculate distance to nearest major holiday
     for idx, row in df.iterrows():
+        # Skip rows with NaT dates
+        if pd.isna(row[time_col]):
+            continue
+            
         current_date = row[time_col].date()
         
-        # Find nearest upcoming major holiday (filter out NaT values and ensure proper date comparison)
-        upcoming_holidays = []
+        # Find nearest major holiday (past or future) for FRESH pattern
+        all_holidays = []
         for h in major_holidays:
             if pd.notna(h):
                 try:
                     # Convert to date object if it's a Timestamp
                     h_date = h.date() if isinstance(h, pd.Timestamp) else h
                     # Additional check: ensure h_date is not None or NaT after conversion
-                    if h_date is not None and pd.notna(h_date) and h_date > current_date:
-                        upcoming_holidays.append(h_date)
+                    if h_date is not None and pd.notna(h_date):
+                        all_holidays.append(h_date)
                 except (AttributeError, TypeError):
                     # Skip any problematic holiday dates
                     continue
         
-        if len(upcoming_holidays) > 0:
-            nearest_holiday = min(upcoming_holidays, key=lambda h: (h - current_date).days)
-            days_until_holiday = (nearest_holiday - current_date).days
+        if len(all_holidays) > 0:
+            # Find nearest holiday (before or after)
+            nearest_holiday = min(all_holidays, key=lambda h: abs((h - current_date).days))
+            days_diff = (nearest_holiday - current_date).days  # Negative if holiday passed, positive if upcoming
             
-            # Set tier based on proximity to holiday
-            if 1 <= days_until_holiday <= 3:
-                # 1-3 days before: highest surge
-                df.at[idx, pre_holiday_surge_tier_col] = 3
-                df.at[idx, is_pre_holiday_surge_col] = 1
-            elif 4 <= days_until_holiday <= 7:
-                # 4-7 days before: moderate surge
-                df.at[idx, pre_holiday_surge_tier_col] = 2
-                df.at[idx, is_pre_holiday_surge_col] = 1
-            elif 8 <= days_until_holiday <= 10:
-                # 8-10 days before: early surge
-                df.at[idx, pre_holiday_surge_tier_col] = 1
-                df.at[idx, is_pre_holiday_surge_col] = 1
+            if holiday_pattern.lower() == "fresh":
+                # FRESH pattern: Decline before, surge after holidays
+                if 1 <= days_diff <= 3:
+                    # 1-3 days BEFORE: Strong decline (people traveling)
+                    df.at[idx, pre_holiday_surge_tier_col] = -3
+                    df.at[idx, is_pre_holiday_surge_col] = 1
+                elif 4 <= days_diff <= 7:
+                    # 4-7 days BEFORE: Moderate decline
+                    df.at[idx, pre_holiday_surge_tier_col] = -2
+                    df.at[idx, is_pre_holiday_surge_col] = 1
+                elif 8 <= days_diff <= 10:
+                    # 8-10 days BEFORE: Early decline
+                    df.at[idx, pre_holiday_surge_tier_col] = -1
+                    df.at[idx, is_pre_holiday_surge_col] = 1
+                elif -3 <= days_diff <= -1:
+                    # 1-3 days AFTER: Strong surge (people restocking)
+                    df.at[idx, pre_holiday_surge_tier_col] = 3
+                    df.at[idx, is_pre_holiday_surge_col] = 1
+                elif -7 <= days_diff <= -4:
+                    # 4-7 days AFTER: Moderate surge
+                    df.at[idx, pre_holiday_surge_tier_col] = 2
+                    df.at[idx, is_pre_holiday_surge_col] = 1
+                elif -10 <= days_diff <= -8:
+                    # 8-10 days AFTER: Early surge
+                    df.at[idx, pre_holiday_surge_tier_col] = 1
+                    df.at[idx, is_pre_holiday_surge_col] = 1
+            else:
+                # DEFAULT pattern: Surge before holidays (DRY goods)
+                if days_diff > 0:  # Only for upcoming holidays
+                    if 1 <= days_diff <= 3:
+                        # 1-3 days before: highest surge
+                        df.at[idx, pre_holiday_surge_tier_col] = 3
+                        df.at[idx, is_pre_holiday_surge_col] = 1
+                    elif 4 <= days_diff <= 7:
+                        # 4-7 days before: moderate surge
+                        df.at[idx, pre_holiday_surge_tier_col] = 2
+                        df.at[idx, is_pre_holiday_surge_col] = 1
+                    elif 8 <= days_diff <= 10:
+                        # 8-10 days before: early surge
+                        df.at[idx, pre_holiday_surge_tier_col] = 1
+                        df.at[idx, is_pre_holiday_surge_col] = 1
     
     return df
 

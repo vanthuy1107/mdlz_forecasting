@@ -327,13 +327,17 @@ def predict_brand_model(
         lunar_month_col="lunar_month"
     )
     
-    print("  - Adding pre-holiday surge features...")
+    # Determine holiday pattern based on category
+    holiday_pattern = "fresh" if category == "FRESH" else "default"
+    holiday_desc = "post-holiday surge" if holiday_pattern == "fresh" else "pre-holiday surge"
+    print(f"  - Adding holiday features ({holiday_desc}) for {category} category...")
     brand_data = add_pre_holiday_surge_features(
         brand_data,
         time_col=time_col,
         pre_holiday_surge_tier_col="pre_holiday_surge_tier",
         is_pre_holiday_surge_col="is_pre_holiday_surge",
-        days_before_surge=10
+        days_before_surge=10,
+        holiday_pattern=holiday_pattern  # Category-specific pattern
     )
     
     print("  - Adding lunar cyclical features...")

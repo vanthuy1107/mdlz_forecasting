@@ -954,14 +954,18 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         lunar_month_col="lunar_month"
     )
     
-    # Feature engineering: Add pre-holiday surge features (high volume before Tet and Mid-Autumn)
-    print("  - Adding pre-holiday surge features (pre_holiday_surge_tier, is_pre_holiday_surge)...")
+    # Feature engineering: Add holiday impact features (category-specific behavior)
+    # Determine holiday pattern based on category
+    holiday_pattern = "fresh" if category_filter == "FRESH" else "default"
+    holiday_desc = "post-holiday surge" if holiday_pattern == "fresh" else "pre-holiday surge"
+    print(f"  - Adding holiday features ({holiday_desc}) for {category_filter} category...")
     filtered_data = add_pre_holiday_surge_features(
         filtered_data,
         time_col=time_col,
         pre_holiday_surge_tier_col="pre_holiday_surge_tier",
         is_pre_holiday_surge_col="is_pre_holiday_surge",
-        days_before_surge=10
+        days_before_surge=10,
+        holiday_pattern=holiday_pattern  # Category-specific pattern
     )
     
     # Feature engineering: Lunar cyclical encodings (sine/cosine)
