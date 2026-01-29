@@ -58,19 +58,19 @@ def plot_difference(
 
 def plot_monthly_forecast(
     df,
-    category,
-    category_name,
+    brand,
+    brand_name,
     month_str,
     output_dir: str = "outputs/plots",
     show: bool = False
 ):
     """
-    Plot monthly forecast for a specific category.
+    Plot monthly forecast for a specific brand.
     
     Args:
-        df: DataFrame with columns ['date', 'predicted', 'actual', 'category']
-        category: Category ID to filter
-        category_name: Category name for plot title and filename
+        df: DataFrame with columns ['date', 'predicted', 'actual', 'brand']
+        brand: brand ID to filter
+        brand_name: brand name for plot title and filename
         month_str: Month string (e.g., '2025-01', '2025-02')
         output_dir: Base output directory
         show: Whether to display the plot
@@ -78,17 +78,17 @@ def plot_monthly_forecast(
     import pandas as pd
     from pathlib import Path
     
-    # Filter data for this category and month
-    mask = (df['category'] == category) & (df['date'].dt.to_period('M').astype(str) == month_str)
+    # Filter data for this brand and month
+    mask = (df['brand'] == brand) & (df['date'].dt.to_period('M').astype(str) == month_str)
     df_filtered = df[mask].sort_values('date')
     
     if len(df_filtered) == 0:
-        print(f"    [WARNING] No data for category={category} ({category_name}), month={month_str}")
+        print(f"    [WARNING] No data for brand={brand} ({brand_name}), month={month_str}")
         return
     
-    # Create output directory using category name
-    cat_output_dir = Path(output_dir) / category_name
-    cat_output_dir.mkdir(parents=True, exist_ok=True)
+    # Create output directory using brand name
+    brand_output_dir = Path(output_dir) / brand_name
+    brand_output_dir.mkdir(parents=True, exist_ok=True)
     
     # Plot
     plt.figure(figsize=(14, 6))
@@ -107,7 +107,7 @@ def plot_monthly_forecast(
     # Format x-axis
     plt.xticks(x_pos[::max(1, len(x_pos)//10)], date_labels[::max(1, len(x_pos)//10)], rotation=45)
     
-    plt.title(f"Monthly Forecast - {category_name} - {month_str}")
+    plt.title(f"Monthly Forecast - {brand_name} - {month_str}")
     plt.xlabel("Date")
     plt.ylabel("Volume (CBM)")
     plt.legend(fontsize=10)
@@ -125,9 +125,9 @@ def plot_monthly_forecast(
     
     plt.tight_layout()
     
-    # Save figure using category name
-    filename = f"{category_name}_{month_str}.png"
-    filepath = cat_output_dir / filename
+    # Save figure using brand name
+    filename = f"{brand_name}_{month_str}.png"
+    filepath = brand_output_dir / filename
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
     print(f"    - Saved: {filepath}")
     
@@ -135,6 +135,8 @@ def plot_monthly_forecast(
         plt.show()
     else:
         plt.close()
+
+        
 def plot_learning_curve(
     train_losses: Union[list, np.ndarray],
     val_losses: Union[list, np.ndarray],

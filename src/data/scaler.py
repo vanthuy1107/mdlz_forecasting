@@ -1,15 +1,5 @@
 """
-Chức năng:
-  - Chuẩn hóa dữ liệu theo group (category)
-  - Support rolling window scaling
-
-Class:
-  - RollingGroupScaler: Per-group scaler với lookback window
-
-Features:
-  - RobustScaler (quantile_range=(10,90))
-  - Rolling-origin scaling
-  - Inverse transform support
+Rolling Group-wise Robust Scaler
 """
 from sklearn.preprocessing import RobustScaler
 import pandas as pd

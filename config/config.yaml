@@ -34,15 +34,15 @@ data:
     # - "days_to_tet"
     # - "cbm_per_qty"
     # - "cbm_per_qty_last_year"
-    - "Total CBM"
+    - "CUBE_OUT"
   
   # Target column
-  target_col: "Total CBM"
+  target_col: "CUBE_OUT"
   
   # Category column
-  cat_col: "CATEGORY"
-  cat_id_col: "CATEGORY_ID"
-  time_col: "ACTUALSHIPDATE"
+  brand_col: "BRAND"
+  brand_id_col: "BRAND_ID"
+  time_col: "DATE"
 
 # Window configuration
 # Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
@@ -53,9 +53,9 @@ window:
 
 # Model Configuration
 model:
-  name: "RNNWithCategory"  # or "RNNForecastor"
-  num_categories: null  # Will be set dynamically from data
-  cat_emb_dim: 4
+  name: "RNNForecastor"  # or "RNNForecastor"
+  num_brands: null  # Will be set dynamically from data
+  brand_emb_dim: 4
   input_dim: 15  # Updated dynamically in code to match feature_cols length
   hidden_size: 64
   n_layers: 2
@@ -71,8 +71,6 @@ training:
   learning_rate: 0.001
   optimizer: "Adam"
   
-  # Loss function
-  loss: "MSE"  # or "spike_aware_mse"
   
   # Learning rate scheduler
   scheduler:
@@ -104,18 +102,6 @@ inference:
   n_samples_for_plot: 100
   save_predictions: true
   
-  # Category selection for prediction now reuses data.category_mode and
-  # data.category_filter so train & prediction share one setting.
-
-  # Prediction horizon (time range and data file for inference script)
-  # These values are used by mvp_predict.py so you can easily change
-  # which period to forecast without editing code.
-  #
-  # The script automatically uses rolling prediction when the date range exceeds
-  # window.horizon (e.g., 30 days). For example, setting prediction_start to
-  # "2025-01-01" and prediction_end to "2025-12-31" will automatically predict
-  # the full year by looping through chunks of horizon days, updating the window
-  # with predictions from each chunk for the next chunk.
   test_data_path: "dataset/data_2025.csv"  # CSV with future period to predict
   test_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
   test_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges

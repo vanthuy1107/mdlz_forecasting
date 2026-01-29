@@ -16,41 +16,39 @@ if str(project_root) not in sys.path:
 from config import load_holidays
 
 
-def slicing_window_category(
+def slicing_window(
     df,
     input_size,
     horizon,
     feature_cols,
     target_col,
-    cat_col,
+    brand_col,
     time_col,
     label_start_date=None,
     label_end_date=None,
     return_dates=False
 ):
     """
-    Tạo sliding windows từ dữ liệu time series.
-    
+    Slice time series data into input-output windows for model training.
     Args:
-        df: DataFrame chứa dữ liệu
-        input_size: kích thước cửa sổ input
-        horizon: số ngày dự đoán
-        feature_cols: danh sách tên cột features
-        target_col: danh sách tên cột target
-        cat_col: tên cột category
-        time_col: tên cột thời gian
-        label_start_date: ngày bắt đầu cho label
-        label_end_date: ngày kết thúc cho label
-        return_dates: nếu True, trả về thêm mảng dates tương ứng với label_date
-    
+        df: DataFrame containing time series data.
+        input_size: Number of time steps in input sequence.
+        horizon: Number of time steps to predict.
+        feature_cols: List of feature column names.
+        target_col: Name of target column.
+        brand_col: Name of brand column.
+        time_col: Name of time column.
+        label_start_date: Optional start date for labels (inclusive).
+        label_end_date: Optional end date for labels (inclusive).
+        return_dates: If True, return label dates along with data.
     Returns:
-        Nếu return_dates=False: (X, y, cats)
-        Nếu return_dates=True: (X, y, cats, dates)
+        Tuple of (X, y, brands, dates) if return_dates is True,
+        else (X, y, brands).
     """
 
-    X, y, cats, dates = [], [], [], []
+    X, y, brands, dates = [], [], [], []
 
-    for cat, g in df.groupby(cat_col, sort=False):
+    for brand, g in df.groupby(brand_col, sort=False):
         g = g.sort_values(time_col).reset_index(drop=True)
 
         X_data = g[feature_cols].values
@@ -78,92 +76,18 @@ def slicing_window_category(
             # collect
             X.append(X_seq)
             y.append(y_future)
-            cats.append(cat)
+            brands.append(brand)
             dates.append(label_date)
 
     X = np.array(X)
     y = np.array(y)
-    cats = np.array(cats)
+    brands = np.array(brands)
     dates = np.array(dates) if return_dates else None
     
     if return_dates:
-        return X, y, cats, dates
+        return X, y, brands, dates
     else:
-        return X, y, cats
-
-
-def get_us_holidays(start_date: date, end_date: date) -> List[date]:
-    """
-    Get list of US holidays between start_date and end_date.
-    
-    Includes major US holidays that typically affect shipping patterns:
-    - New Year's Day
-    - Martin Luther King Jr. Day (3rd Monday of January)
-    - Presidents' Day (3rd Monday of February)
-    - Memorial Day (last Monday of May)
-    - Independence Day
-    - Labor Day (1st Monday of September)
-    - Columbus Day (2nd Monday of October)
-    - Veterans Day
-    - Thanksgiving (4th Thursday of November)
-    - Christmas Day
-    
-    Args:
-        start_date: Start date for holiday range.
-        end_date: End date for holiday range.
-    
-    Returns:
-        List of holiday dates.
-    """
-    holidays = []
-    current = start_date
-    
-    while current <= end_date:
-        year = current.year
-        
-        # Fixed date holidays
-        holidays.append(date(year, 1, 1))   # New Year's Day
-        holidays.append(date(year, 7, 4))   # Independence Day
-        holidays.append(date(year, 11, 11))  # Veterans Day
-        holidays.append(date(year, 12, 25))  # Christmas Day
-        
-        # Helper function to get nth weekday of a month
-        def get_nth_weekday(year, month, weekday, n):
-            """Get nth occurrence of weekday in month (0=Monday, 6=Sunday)."""
-            first_day = date(year, month, 1)
-            days_until_weekday = (weekday - first_day.weekday()) % 7
-            if days_until_weekday == 0 and first_day.weekday() != weekday:
-                days_until_weekday = 7
-            return first_day + timedelta(days=days_until_weekday + (n - 1) * 7)
-        
-        # MLK Day (3rd Monday of January)
-        holidays.append(get_nth_weekday(year, 1, 0, 3))
-        
-        # Presidents' Day (3rd Monday of February)
-        holidays.append(get_nth_weekday(year, 2, 0, 3))
-        
-        # Memorial Day (last Monday of May)
-        last_day = date(year, 5, 31)
-        days_since_monday = last_day.weekday()
-        mem = last_day - timedelta(days=days_since_monday)
-        holidays.append(mem)
-        
-        # Labor Day (1st Monday of September)
-        holidays.append(get_nth_weekday(year, 9, 0, 1))
-        
-        # Columbus Day (2nd Monday of October)
-        holidays.append(get_nth_weekday(year, 10, 0, 2))
-        
-        # Thanksgiving (4th Thursday of November)
-        holidays.append(get_nth_weekday(year, 11, 3, 4))
-        
-        current = date(year + 1, 1, 1)
-    
-    # Filter to date range and remove duplicates
-    holidays = [h for h in holidays if start_date <= h <= end_date]
-    holidays = sorted(list(set(holidays)))
-    
-    return holidays
+        return X, y, brands
 
 
 def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
@@ -208,7 +132,7 @@ def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
 
 def add_holiday_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     holiday_indicator_col: str = "holiday_indicator",
     days_until_holiday_col: str = "days_until_next_holiday"
 ) -> pd.DataFrame:
@@ -242,7 +166,7 @@ def add_holiday_features(
     extended_max = max_date + timedelta(days=365)
     
     # Get holidays
-    holidays = get_us_holidays(min_date, extended_max)
+    holidays = get_vietnam_holidays(min_date, extended_max)
     holiday_set = set(holidays)
     
     # Initialize columns
@@ -279,7 +203,7 @@ def add_holiday_features(
 
 def add_temporal_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     month_sin_col: str = "month_sin",
     month_cos_col: str = "month_cos",
     dayofmonth_sin_col: str = "dayofmonth_sin",
@@ -330,7 +254,7 @@ def add_temporal_features(
 
 def add_day_of_week_cyclical_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     day_of_week_sin_col: str = "day_of_week_sin",
     day_of_week_cos_col: str = "day_of_week_cos"
 ) -> pd.DataFrame:
@@ -375,7 +299,7 @@ def add_day_of_week_cyclical_features(
 
 def add_weekday_volume_tier_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     weekday_volume_tier_col: str = "weekday_volume_tier",
     is_high_volume_weekday_col: str = "is_high_volume_weekday"
 ) -> pd.DataFrame:
@@ -429,7 +353,7 @@ def add_weekday_volume_tier_features(
 
 def add_eom_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     is_eom_col: str = "is_EOM",
     days_until_month_end_col: str = "days_until_month_end",
     eom_window_days: int = 3
@@ -485,7 +409,7 @@ def add_eom_features(
 
 def add_weekend_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     is_weekend_col: str = "is_weekend",
     day_of_week_col: str = "day_of_week"
 ) -> pd.DataFrame:
@@ -522,7 +446,7 @@ def add_weekend_features(
 
 def add_lunar_calendar_features(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     lunar_month_col: str = "lunar_month",
     lunar_day_col: str = "lunar_day"
 ) -> pd.DataFrame:
@@ -595,8 +519,8 @@ def add_lunar_cyclical_features(
 def add_rolling_and_momentum_features(
     df: pd.DataFrame,
     target_col: str = "QTY",
-    time_col: str = "ACTUALSHIPDATE",
-    cat_col: str = "CATEGORY",
+    time_col: str = "DATE",
+    brand_col: str = "BRAND",
     rolling_7_col: str = "rolling_mean_7d",
     rolling_30_col: str = "rolling_mean_30d",
     momentum_col: str = "momentum_3d_vs_14d"
@@ -615,7 +539,7 @@ def add_rolling_and_momentum_features(
         df: DataFrame with QTY and time columns (must be sorted by time).
         target_col: Name of target column (e.g., "QTY").
         time_col: Name of time column.
-        cat_col: Name of category column (rolling calculated per category).
+        brand_col: Name of BRAND column (rolling calculated per BRAND).
         rolling_7_col: Name for 7-day rolling mean column.
         rolling_30_col: Name for 30-day rolling mean column.
         momentum_col: Name for momentum column.
@@ -629,16 +553,16 @@ def add_rolling_and_momentum_features(
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
         df[time_col] = pd.to_datetime(df[time_col])
     
-    df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
+    df = df.sort_values([brand_col, time_col]).reset_index(drop=True)
     
     # Initialize new columns
     df[rolling_7_col] = np.nan
     df[rolling_30_col] = np.nan
     df[momentum_col] = np.nan
     
-    # Calculate rolling features per category
-    for cat, group in df.groupby(cat_col, sort=False):
-        cat_mask = df[cat_col] == cat
+    # Calculate rolling features per BRAND
+    for cat, group in df.groupby(brand_col, sort=False):
+        cat_mask = df[brand_col] == cat
         cat_indices = df[cat_mask].index
         
         # Calculate rolling means
@@ -664,7 +588,7 @@ def add_rolling_and_momentum_features(
 
 def add_days_since_holiday(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     days_since_holiday_col: str = "days_since_holiday"
 ) -> pd.DataFrame:
     """
@@ -724,7 +648,7 @@ def add_days_since_holiday(
 
 def add_days_to_tet_feature(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     days_to_tet_col: str = "days_to_tet",
 ) -> pd.DataFrame:
     """
@@ -779,158 +703,32 @@ def add_days_to_tet_feature(
     return df
 
 
-def encode_categories(df: pd.DataFrame, cat_col: str = "CATEGORY") -> Tuple[pd.DataFrame, dict, int]:
+def encode_brands(df: pd.DataFrame, brand_col: str = "BRAND") -> Tuple[pd.DataFrame, dict, int]:
     """
-    Encode categorical column to integer IDs.
+    Encode brand column to integer IDs.
     
     Args:
-        df: DataFrame containing category column.
-        cat_col: Name of category column.
+        df: DataFrame containing BRAND column.
+        brand_col: Name of BRAND column.
     
     Returns:
-        Tuple of (df_with_cat_id, cat2id_dict, num_categories)
+        Tuple of (df_with_brand_id, brand2id_dict, num_brands)
     """
-    categories = sorted(df[cat_col].unique())
-    cat2id = {cat: i for i, cat in enumerate(categories)}
-    cat_id_col = f"{cat_col}_ID"
+    categories = sorted(df[brand_col].unique())
+    brand2id = {brand: i for i, brand in enumerate(categories)}
+    brand_id_col = f"{brand_col}_ID"
     df = df.copy()
-    df[cat_id_col] = df[cat_col].map(cat2id)
-    df[cat_id_col] = df[cat_id_col].astype(int)
+    df[brand_id_col] = df[brand_col].map(brand2id)
+    df[brand_id_col] = df[brand_id_col].astype(int)
     num_categories = len(categories)
-    
-    return df, cat2id, num_categories
 
+    return df, brand2id, num_categories
 
-def split_data(
-    data: pd.DataFrame,
-    train_size: float = 0.7,
-    val_size: float = 0.1,
-    test_size: float = 0.2,
-    temporal: bool = True
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Split data into train, validation, and test sets.
-    
-    Args:
-        data: DataFrame to split.
-        train_size: Proportion of data for training.
-        val_size: Proportion of data for validation.
-        test_size: Proportion of data for testing.
-        temporal: If True, use temporal split (sequential). If False, use random split.
-    
-    Returns:
-        Tuple of (train_data, val_data, test_data).
-    
-    Raises:
-        ValueError: If sizes don't sum to 1.0.
-    """
-    if abs(train_size + val_size + test_size - 1.0) > 1e-6:
-        raise ValueError("train_size + val_size + test_size must equal 1.0")
-    
-    N = len(data)
-    
-    if temporal:
-        train_end = int(train_size * N)
-        val_end = train_end + int(val_size * N)
-        
-        train_data = data[:train_end].copy()
-        val_data = data[train_end:val_end].copy()
-        test_data = data[val_end:].copy()
-    else:
-        # Random split (not recommended for time series)
-        from sklearn.model_selection import train_test_split
-        
-        train_data, temp_data = train_test_split(
-            data, test_size=(val_size + test_size), shuffle=True, random_state=42
-        )
-        val_data, test_data = train_test_split(
-            temp_data, test_size=(test_size / (val_size + test_size)), shuffle=True, random_state=42
-        )
-    
-    return train_data, val_data, test_data
-
-
-def aggregate_daily(
-    df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
-    cat_col: str = "CATEGORY",
-    target_col: str = "QTY",
-    keep_cols: Optional[List[str]] = None
-) -> pd.DataFrame:
-    """
-    Aggregate transaction-level data to daily totals by category.
-    
-    Groups data by date and category, summing QTY values. Preserves temporal
-    and holiday features by taking the first value for each date (since they
-    should be the same for all transactions on the same day).
-    
-    Args:
-        df: DataFrame with transaction-level data.
-        time_col: Name of time column.
-        cat_col: Name of category column.
-        target_col: Name of target column to sum (e.g., "QTY").
-        keep_cols: Additional columns to keep (first value taken per group).
-    
-    Returns:
-        DataFrame with daily aggregated data (one row per date per category).
-    """
-    df = df.copy()
-    
-    # Ensure time column is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
-    
-    # Normalize to date only (remove time component)
-    df['date_only'] = pd.to_datetime(df[time_col]).dt.normalize()
-    
-    # Columns to aggregate - sum target_col, optionally sum additional numeric totals
-    agg_dict = {target_col: 'sum'}
-
-    # If a separate total quantity column exists (e.g. "Total QTY" when predicting "Total CBM"),
-    # aggregate it as well so downstream features can use both volume and quantity.
-    if "Total QTY" in df.columns and "Total QTY" != target_col:
-        agg_dict["Total QTY"] = "sum"
-    
-    # For temporal/holiday/weekend features, take first value (should be same for all rows on same date)
-    feature_cols_to_keep = [
-        'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
-        'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
-        'is_weekend', 'day_of_week', 'day_of_week_sin', 'day_of_week_cos',
-        'weekday_volume_tier', 'is_high_volume_weekday',
-        'lunar_month', 'lunar_day',
-        # Lunar cyclical encodings and Tet countdown should also persist after aggregation
-        'lunar_month_sin', 'lunar_month_cos',
-        'lunar_day_sin', 'lunar_day_cos',
-        'days_to_tet',
-        # EOM (End-of-Month) surge features
-        'is_EOM', 'days_until_month_end',
-    ]
-    
-    for col in feature_cols_to_keep:
-        if col in df.columns and col not in agg_dict:
-            agg_dict[col] = 'first'
-    
-    # Add any explicitly requested columns
-    if keep_cols:
-        for col in keep_cols:
-            if col in df.columns and col not in agg_dict:
-                agg_dict[col] = 'first'
-    
-    # Group by date and category
-    grouped = df.groupby(['date_only', cat_col], as_index=False).agg(agg_dict)
-    
-    # Rename date_only back to time_col
-    grouped = grouped.rename(columns={'date_only': time_col})
-    
-    # Sort by category and date
-    grouped = grouped.sort_values([cat_col, time_col]).reset_index(drop=True)
-    
-    return grouped
 
 
 def add_operational_status_flags(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     target_col: str = "QTY",
     status_col: str = "operational_status",
     expected_zero_flag_col: str = "is_expected_zero",
@@ -1047,8 +845,8 @@ def add_cbm_density_features(
     df: pd.DataFrame,
     cbm_col: str = "Total CBM",
     qty_col: str = "Total QTY",
-    time_col: str = "ACTUALSHIPDATE",
-    cat_col: str = "CATEGORY",
+    time_col: str = "DATE",
+    brand_col: str = "BRAND",
     density_col: str = "cbm_per_qty",
     density_last_year_col: str = "cbm_per_qty_last_year",
     eps: float = 1e-3,
@@ -1057,15 +855,15 @@ def add_cbm_density_features(
     Add volume–quantity density features, including a "last-year" structural prior.
 
     Creates:
-    - cbm_per_qty:      Current-day density (CBM / QTY) per (date, category)
+    - cbm_per_qty:      Current-day density (CBM / QTY) per (date, BRAND)
     - cbm_per_qty_last_year: Density observed on the same calendar date one year earlier
-                              for the same category.
+                              for the same BRAND.
 
     This gives the model an explicit prior about how "bulky" shipments were in the
     same seasonal window last year, which is especially useful around Tet / peak seasons.
 
     Assumptions:
-    - df is already aggregated at daily granularity per category.
+    - df is already aggregated at daily granularity per BRAND.
     - cbm_col and qty_col exist in the dataframe.
     """
     df = df.copy()
@@ -1094,26 +892,26 @@ def add_cbm_density_features(
     # Optional stability cap: prevent extreme densities from dominating
     df[density_col] = df[density_col].clip(lower=0.0, upper=1.0)
 
-    # Build a mapping from (category, date_minus_1y) -> density.
+    # Build a mapping from (BRAND, date_minus_1y) -> density.
     # We construct an auxiliary dataframe where we shift dates by +1 year,
-    # then left-join back on (CATEGORY, ACTUALSHIPDATE).
-    aux = df[[time_col, cat_col, density_col]].copy()
+    # then left-join back on (BRAND, DATE).
+    aux = df[[time_col, brand_col, density_col]].copy()
     aux[time_col] = aux[time_col] + pd.DateOffset(years=1)
     aux = aux.rename(columns={density_col: density_last_year_col})
 
     # Merge back to align each row with the density from exactly one year before
     df = df.merge(
-        aux[[time_col, cat_col, density_last_year_col]],
-        on=[time_col, cat_col],
+        aux[[time_col, brand_col, density_last_year_col]],
+        on=[time_col, brand_col],
         how="left",
     )
 
     # For dates where we don't have data from a full prior year (e.g., the first year),
-    # fall back to a stable per-category statistic to avoid NaNs.
+    # fall back to a stable per-BRAND statistic to avoid NaNs.
     if df[density_last_year_col].isna().any():
-        # Category-level median density as a robust fallback
+        # BRAND-level median density as a robust fallback
         cat_median = (
-            df.groupby(cat_col)[density_col]
+            df.groupby(brand_col)[density_col]
             .transform("median")
             .fillna(df[density_col].median())
         )
@@ -1124,7 +922,7 @@ def add_cbm_density_features(
 
 def add_holiday_features_vietnam(
     df: pd.DataFrame,
-    time_col: str = "ACTUALSHIPDATE",
+    time_col: str = "DATE",
     holiday_indicator_col: str = "holiday_indicator",
     days_until_holiday_col: str = "days_until_next_holiday",
     days_since_holiday_col: str = "days_since_holiday"
@@ -1210,208 +1008,16 @@ def add_holiday_features_vietnam(
     return df
 
 
-def prepare_data(
-    df: pd.DataFrame,
-    cat_col: str = "CATEGORY",
-    feature_cols: Optional[List[str]] = None,
-    target_col: str = "QTY",
-    time_col: str = "ACTUALSHIPDATE",
-    train_size: float = 0.7,
-    val_size: float = 0.1,
-    test_size: float = 0.2
-) -> dict:
-    """
-    Complete data preparation pipeline: encoding, splitting, and window creation.
-    
-    Args:
-        df: Raw DataFrame.
-        cat_col: Name of category column.
-        feature_cols: List of feature column names.
-        target_col: Name of target column.
-        time_col: Name of time column.
-        train_size: Proportion for training.
-        val_size: Proportion for validation.
-        test_size: Proportion for testing.
-    
-    Returns:
-        Dictionary containing prepared data and metadata.
-    """
-    # Encode categories
-    df, cat2id, num_categories = encode_categories(df, cat_col)
-    
-    # Split data
-    train_data, val_data, test_data = split_data(
-        df, train_size, val_size, test_size, temporal=True
-    )
-    
-    return {
-        'train_data': train_data,
-        'val_data': val_data,
-        'test_data': test_data,
-        'cat2id': cat2id,
-        'num_categories': num_categories,
-        'cat_id_col': f"{cat_col}_ID"
-    }
 
 
-# def apply_sunday_to_monday_carryover(
-#     df: pd.DataFrame,
-#     time_col: str = "ACTUALSHIPDATE",
-#     cat_col: str = "CATEGORY",
-#     target_col: str = "Total CBM",
-#     actual_col: Optional[str] = None
-# ) -> pd.DataFrame:
-#     """
-#     Apply Sunday-to-Monday demand carryover to capture backlog accumulation.
-    
-#     Logic: Sundays are non-operational (Total CBM = 0). This function implements
-#     Sunday-to-Monday demand carryover where Monday's Target = (Actual Monday + Actual Sunday).
-    
-#     Purpose: Capture backlog accumulation and eliminate misleading zero-demand
-#     patterns in the time-series that occur when Sunday demand is deferred to Monday.
-    
-#     Args:
-#         df: DataFrame with daily aggregated data (one row per date per category).
-#         time_col: Name of time column (should be datetime or date).
-#         cat_col: Name of category column.
-#         target_col: Name of target column to adjust (e.g., "Total CBM").
-#         actual_col: Optional name of actual column to use for carryover calculation.
-#                    If None, uses target_col for both Sunday and Monday values.
-    
-#     Returns:
-#         DataFrame with adjusted target values where Monday's target includes Sunday's demand.
-    
-#     Note:
-#         - This function modifies the target_col in-place for Monday rows.
-#         - Sunday rows remain unchanged (they keep their original values, typically 0).
-#         - The adjustment is applied per category independently.
-#     """
-#     df = df.copy()
-    
-#     # Ensure time column is datetime
-#     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-#         df[time_col] = pd.to_datetime(df[time_col])
-    
-#     # Use target_col for actual values if actual_col not specified
-#     if actual_col is None:
-#         actual_col = target_col
-    
-#     # Ensure both columns exist
-#     if target_col not in df.columns:
-#         raise ValueError(f"Target column '{target_col}' not found in DataFrame.")
-#     if actual_col not in df.columns:
-#         raise ValueError(f"Actual column '{actual_col}' not found in DataFrame.")
-    
-#     # Extract day of week (0=Monday, 6=Sunday)
-#     df['_day_of_week'] = df[time_col].dt.dayofweek
-    
-#     # Sort by category and date to ensure proper ordering
-#     df = df.sort_values([cat_col, time_col]).reset_index(drop=True)
-    
-#     # For each category, apply carryover logic
-#     def apply_carryover_per_category(group):
-#         """Apply Sunday-to-Monday carryover for a single category."""
-#         group[cat_col] = group.name
-#         group = group.copy()
-        
-#         # Identify Mondays (day_of_week == 0)
-#         monday_mask = group['_day_of_week'] == 0
-#         monday_indices = group.index[monday_mask]
-        
-#         # For each Monday, find the previous Sunday and add its value
-#         for monday_idx in monday_indices:
-#             # Find position of Monday in the group
-#             monday_pos = group.index.get_loc(monday_idx)
-            
-#             # Look backwards for the previous Sunday (day_of_week == 6)
-#             if monday_pos > 0:
-#                 prev_days = group.iloc[:monday_pos]
-#                 sunday_in_prev = prev_days[prev_days['_day_of_week'] == 6]
-                
-#                 if len(sunday_in_prev) > 0:
-#                     # Get the most recent Sunday before this Monday
-#                     sunday_idx = sunday_in_prev.index[-1]
-#                     sunday_value = group.loc[sunday_idx, actual_col]
-                    
-#                     # Apply carryover: Monday's target = Monday actual + Sunday actual
-#                     if pd.notna(sunday_value):
-#                         monday_actual = group.loc[monday_idx, actual_col]
-#                         group.loc[monday_idx, target_col] = monday_actual + sunday_value
-        
-#         return group
-    
-#     # Apply carryover per category
-#     df = df.groupby(cat_col, group_keys=False).apply(apply_carryover_per_category).reset_index(drop=False)
-#     # Clean up temporary columns
-#     df = df.drop(columns=['_day_of_week'])
-    
-#     return df
-
-
-# def moving_average_forecast_by_category(
-#     df: pd.DataFrame,
-#     cat_col: str = "CATEGORY",
-#     time_col: str = "ACTUALSHIPDATE",
-#     target_col: str = "QTY",
-#     window: int = 7,
-# ) -> pd.DataFrame:
-#     """
-#     Simple heuristic forecaster: category-wise moving average baseline.
-
-#     This is intended for *minor* / low-volume categories (e.g., POSM, OTHER)
-#     whose noisy behavior should not be backpropagated through the LSTM.
-
-#     The function computes, for each (category, date), a trailing moving average
-#     of the target over the previous `window` days and stores it in a new column
-#     `<target_col>_MA{window}`. This can be used as a lightweight statistical
-#     head for minor entities during inference.
-#     """
-#     df = df.copy()
-
-#     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-#         df[time_col] = pd.to_datetime(df[time_col])
-
-#     df = df.sort_values([cat_col, time_col])
-#     ma_col = f"{target_col}_MA{window}"
-
-#     # If operational anomaly flags are available, exclude those days from the
-#     # baseline trend calculation. This prevents unexplained zero-volume gaps
-#     # from biasing the moving-average forecast for minor categories.
-#     anomaly_flag_col = "is_operational_anomaly"
-
-#     if anomaly_flag_col in df.columns:
-#         def masked_ma(group: pd.Series, mask: pd.Series) -> pd.Series:
-#             # Compute rolling mean over non-anomalous days only.
-#             # We use a masked series where anomalies are dropped from the
-#             # rolling window rather than set to zero.
-#             values = group.copy()
-#             values_masked = values.where(~mask, np.nan)
-#             return values_masked.rolling(window=window, min_periods=1).mean()
-
-#         df[ma_col] = (
-#             df.groupby(cat_col, group_keys=False).apply(
-#                 lambda g: masked_ma(
-#                     g[target_col],
-#                     g[anomaly_flag_col].astype(bool)
-#                 )
-#             )
-#         )
-#     else:
-#         df[ma_col] = (
-#             df.groupby(cat_col)[target_col]
-#             .transform(lambda s: s.rolling(window=window, min_periods=1).mean())
-#         )
-
-#     return df
-
-def add_feature(data : pd.DataFrame, time_col : str, cat_col : str, target_col : str) -> pd.DataFrame:
+def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_col : str) -> pd.DataFrame:
     """
     Add comprehensive feature set to the DataFrame for time-series forecasting.
 
     Args:
         data: Input DataFrame with raw data.
         time_col: Name of the time column (should be datetime).
-        cat_col: Name of the category column.
+        brand_col: Name of the BRAND column.
         target_col: Name of the target column (e.g., "Total CBM").
 
     Returns:
@@ -1505,19 +1111,19 @@ def add_feature(data : pd.DataFrame, time_col : str, cat_col : str, target_col :
     #     days_to_tet_col="days_to_tet",
     # )
     
-    # # Daily aggregation: Group by date and category, sum QTY
+    # # Daily aggregation: Group by date and BRAND, sum QTY
     # # This ensures the model learns daily demand patterns, not individual transaction sizes
-    # print("\n[5.5/8] Aggregating to daily totals by category...")
+    # print("\n[5.5/8] Aggregating to daily totals by BRAND...")
     # samples_before_agg = len(data)
     # data = aggregate_daily(
     #     data,
     #     time_col=time_col,
-    #     cat_col=cat_col,
+    #     brand_col=brand_col,
     #     target_col=target_col
     # )
     # samples_after_agg = len(data)
     # print(f"  - Samples before aggregation: {samples_before_agg}")
-    # print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per category)")
+    # print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per BRAND)")
     
     
     # # Feature engineering: Add CBM/QTY density features, including last-year prior
@@ -1528,7 +1134,7 @@ def add_feature(data : pd.DataFrame, time_col : str, cat_col : str, target_col :
     #     cbm_col=target_col,   # e.g., "Total CBM"
     #     qty_col="Total QTY",
     #     time_col=time_col,
-    #     cat_col=cat_col,
+    #     brand_col=brand_col,
     #     density_col="cbm_per_qty",
     #     density_last_year_col="cbm_per_qty_last_year",
     # )
@@ -1539,7 +1145,7 @@ def add_feature(data : pd.DataFrame, time_col : str, cat_col : str, target_col :
     #     data,
     #     target_col=target_col,
     #     time_col=time_col,
-    #     cat_col=cat_col,
+    #     brand_col=brand_col,
     #     rolling_7_col="rolling_mean_7d",
     #     rolling_30_col="rolling_mean_30d",
     #     momentum_col="momentum_3d_vs_14d"

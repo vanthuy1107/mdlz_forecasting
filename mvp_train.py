@@ -1,7 +1,5 @@
 """
-MVP training script for MDLZ warehouse demand prediction system.
-This script trains a single model on all categories with enhanced feature engineering,
-scaling, and a Huber loss function.
+MVP Test Training Script for MDLZ Warehouse Prediction System
 """
 import torch
 import torch.nn as nn
@@ -17,17 +15,17 @@ from src.data import (
     DataReader,
     ForecastDataset,
     RollingGroupScaler,
-    slicing_window_category,
-    encode_categories
+    slicing_window,
+    encode_brands
 )
-from src.data.preprocessing import add_feature
+from src.data.preprocessing import add_features
 from src.models import RNNForecastor
 from src.training import Trainer
 
 
 def train_single_model(data, config):
     """
-    Train a single model with optional category filtering.
+    Train a single model with optional BRAND filtering.
     
     Args:
         data: Full DataFrame with all data
@@ -36,11 +34,11 @@ def train_single_model(data, config):
     Returns:
         Dictionary with training results and metadata
     """
-    print("TRAINING MODEL FOR ALL CATEGORIES")
+    print("TRAINING MODEL FOR ALL brands")
     print("=" * 80)
     
     data_config = config.data
-    cat_col = data_config['cat_col']
+    brand_col = data_config['brand_col']
     time_col = data_config['time_col']
     target_col = data_config['target_col']    
     
@@ -60,24 +58,24 @@ def train_single_model(data, config):
     
     # Feature engineering: Add temporal features
     print("\n[5/8] Adding temporal features...")
-    data = add_feature(data, time_col, cat_col, target_col)
+    data = add_features(data, time_col, brand_col, target_col)
     
 
-    # Encode categories
-    print("  - Encoding categories...")
-    data, cat2id, num_categories = encode_categories(data, cat_col)
-    cat_id_col = data_config['cat_id_col']
+    # Encode brands
+    print("  - Encoding brands...")
+    data, brand2id, num_brands = encode_brands(data, brand_col)
+    brand_id_col = data_config['brand_id_col']
     
-    # Update config with num_categories for model
-    config.set('model.num_categories', num_categories)
-    print(f"  - Number of categories: {num_categories}")
-    print(f"  - Category mapping: {cat2id}")
+    # Update config with num_brands for model
+    config.set('model.num_brands', num_brands)
+    print(f"  - Number of brands: {num_brands}")
+    print(f"  - BRAND mapping: {brand2id}")
     
     
     # Fit scaler on training data and apply to all splits
     print(f"\n[6/8] Scaling target values in column '{target_col}'...")
     scaler = RollingGroupScaler(
-        group_col=cat_id_col,
+        group_col=brand_id_col,
         time_col=time_col,
         feature_cols=target_col,
         lookback_months=6
@@ -89,7 +87,7 @@ def train_single_model(data, config):
     data_scaled = scaler.transform(data)
    
     
-    # Create windows using slicing_window_category
+    # Create windows using slicing_window_BRAND
     print("\n[7/8] Creating sliding windows...")
     window_config = config.window
     feature_cols = data_config['feature_cols']
@@ -107,13 +105,13 @@ def train_single_model(data, config):
     print(f"  - Feature columns: {feature_cols}")
     
     print("  - Creating training windows...")
-    X_train, y_train, cat_train = slicing_window_category(
+    X_train, y_train, cat_train = slicing_window(
         data_scaled,
         input_size,
         horizon,
         feature_cols=feature_cols,
         target_col=target_col,
-        cat_col=cat_id_col,
+        brand_col=brand_id_col,
         time_col=time_col,
         label_start_date=None,
         label_end_date=None,
@@ -137,8 +135,8 @@ def train_single_model(data, config):
     # Build model
     print("\n[8/8] Building model and trainer...")
     model = RNNForecastor(
-        num_categories=num_categories,
-        cat_emb_dim=model_config['cat_emb_dim'],
+        num_brands=num_brands,
+        brand_emb_dim=model_config['brand_emb_dim'],
         input_dim=model_config['input_dim'],
         hidden_size=model_config['hidden_size'],
         n_layers=model_config['n_layers'],
@@ -220,8 +218,8 @@ def train_single_model(data, config):
     # Save training metadata (including a compact text summary of this log)
     print("\n[9/9] Saving training metadata...")
     log_summary_lines = [
-        f"Number of categories: {num_categories}",
-        f"Category mapping: {cat2id}",
+        f"Number of brands: {num_brands}",
+        f"BRAND mapping: {brand2id}",
         f"Best validation loss: {trainer.best_val_loss:.4f}",
         f"Training time (seconds): {training_time:.2f}"
     ]
@@ -236,7 +234,7 @@ def train_single_model(data, config):
         'model_config': dict(model_config),
         'data_config': {
             'years': data_config['years'],
-            'cat_col': data_config['cat_col'],
+            'brand_col': data_config['brand_col'],
             'feature_cols': data_config['feature_cols'],
             'target_col': data_config['target_col'],
             'daily_aggregation': True,  # Flag indicating daily aggregation was used
@@ -305,7 +303,7 @@ def main():
     config.set('output.model_dir', mvp_models_dir)
     config.set('output.save_model', True)  # Ensure model saving is enabled
     
-    # Get category mode from config
+    # Get BRAND mode from config
     data_config = config.data
     
     print(f"  - Data years: {config.data['years']}")
@@ -333,7 +331,7 @@ def main():
     
     print(f"  - Loaded {len(data)} samples before filtering")
     
-    # Fix DtypeWarning: Cast columns (0, 4) to string/category to resolve mixed types
+    # Fix DtypeWarning: Cast columns (0, 4) to string/BRAND to resolve mixed types
     if len(data.columns) > 0:
         col_0 = data.columns[0]
         if col_0 in data.columns:
@@ -344,15 +342,15 @@ def main():
             data[col_4] = data[col_4].astype(str)
     print("  - Fixed DtypeWarning by casting columns 0 and 4 to string")
     
-    # Get available categories
-    cat_col = data_config['cat_col']
-    if cat_col not in data.columns:
-        raise ValueError(f"Category column '{cat_col}' not found in data. Available columns: {list(data.columns)}")
+    # Get available brands
+    brand_col = data_config['brand_col']
+    if brand_col not in data.columns:
+        raise ValueError(f"BRAND column '{brand_col}' not found in data. Available columns: {list(data.columns)}")
     
-    available_categories = sorted(data[cat_col].unique().tolist())
-    print(f"  - Available categories in data: {available_categories}")
+    available_brands = sorted(data[brand_col].unique().tolist())
+    print(f"  - Available brands in data: {available_brands}")
     
-    # Determine training tasks based on category_mode
+    # Determine training tasks based on BRAND_mode
     
     # Execute training tasks
     results = []

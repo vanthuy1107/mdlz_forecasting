@@ -1,11 +1,5 @@
-"""Prediction script using MVP test model.
-
-This script loads the trained model from mvp_test.py and makes predictions
-for the configured prediction period.
-
-Two modes are supported:
-1. Teacher Forcing (Test Evaluation): Uses actual ground truth QTY values from prediction data as features
-2. Recursive (Production Forecast): Uses model's own predictions as inputs for future dates
+"""
+Module for performing model inference and walk-forward testing.
 """
 import torch
 import torch.nn as nn
@@ -26,11 +20,10 @@ from src.data import (
     DataReader,
     ForecastDataset,
     RollingGroupScaler,
-    slicing_window_category,
-    encode_categories,
-    aggregate_daily
+    slicing_window,
+    encode_brands
 )
-from src.data.preprocessing import add_feature
+from src.data.preprocessing import add_features
 from src.models import RNNForecastor
 from src.training import Trainer
 from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABLE, save_monthly_forecast
@@ -42,14 +35,14 @@ from src.utils.google_sheets import upload_history_prediction
 def fill_missing_dates(
     df: pd.DataFrame,
     time_col: str,
-    cat_col: str,
+    brand_col: str,
     target_col: str,
     feature_cols: List[str] = None,
     fill_target: float = 0.0,
 ):
-    """Ensure each category has continuous daily dates between its min and max.
+    """Ensure each brand has continuous daily dates between its min and max.
 
-    - Adds rows for missing dates per category.
+    - Adds rows for missing dates per brand.
     - Sets `target_col` to `fill_target` for filled rows.
     - If `feature_cols` provided, fills them with 0 for new rows.
 
@@ -63,19 +56,19 @@ def fill_missing_dates(
     df[time_col] = pd.to_datetime(df[time_col])
 
     rows_to_add = []
-    cats = df[cat_col].dropna().unique()
-    for cat in cats:
-        cat_mask = df[cat_col] == cat
-        cat_dates = pd.to_datetime(df.loc[cat_mask, time_col]).dt.normalize()
-        if cat_dates.empty:
+    brands = df[brand_col].dropna().unique()
+    for brand in brands:
+        brand_mask = df[brand_col] == brand
+        brand_dates = pd.to_datetime(df.loc[brand_mask, time_col]).dt.normalize()
+        if brand_dates.empty:
             continue
-        start = cat_dates.min()
-        end = cat_dates.max()
+        start = brand_dates.min()
+        end = brand_dates.max()
         full_idx = pd.date_range(start=start, end=end, freq='D')
-        existing = pd.DatetimeIndex(cat_dates.values)
+        existing = pd.DatetimeIndex(brand_dates.values)
         missing = full_idx.difference(existing)
         for d in missing:
-            new_row = {time_col: d, cat_col: cat, target_col: fill_target}
+            new_row = {time_col: d, brand_col: brand, target_col: fill_target}
             if feature_cols:
                 for f in feature_cols:
                     new_row[f] = 0
@@ -86,7 +79,7 @@ def fill_missing_dates(
         # Preserve column order where possible
         df = pd.concat([df, fill_df], axis=0, ignore_index=True, sort=False)
         df[time_col] = pd.to_datetime(df[time_col])
-        df = df.sort_values(by=[cat_col, time_col]).reset_index(drop=True)
+        df = df.sort_values(by=[brand_col, time_col]).reset_index(drop=True)
 
     return df
 
@@ -97,47 +90,47 @@ def load_model_for_test(model_path: str, config):
     metadata_path = model_dir / "metadata.json"
     
     # ------------------------------------------------------------------
-    # 1) Recover num_categories and full model architecture from metadata
+    # 1) Recover num_brands and full model architecture from metadata
     # ------------------------------------------------------------------
-    num_categories = None
+    num_brands = None
     model_config = None
     feature_cols = None
     if metadata_path.exists():
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
-        # Get full model_config (includes num_categories, input_dim, etc.)
+        # Get full model_config (includes num_brands, input_dim, etc.)
         model_config = metadata.get('model_config', {})
-        if 'num_categories' in model_config:
-            num_categories = model_config['num_categories']
+        if 'num_brands' in model_config:
+            num_brands = model_config['num_brands']
 
         # Also recover the exact feature column list used during training
         data_config = metadata.get("data_config", {})
         feature_cols = data_config.get("feature_cols")
     
     # Fallback to config if metadata doesn't have it
-    if num_categories is None:
+    if num_brands is None:
         model_config = config.model
-        num_categories = model_config.get('num_categories')
+        num_brands = model_config.get('num_brands')
     
-        if num_categories is None:
-            raise ValueError("num_categories must be found in model metadata or config")
+        if num_brands is None:
+            raise ValueError("num_brands must be found in model metadata or config")
     
-    cat2id = None  # Training-time category mapping
+    brand2id = None  # Training-time brand mapping
     if metadata_path.exists():
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         
-        # Try to extract category mapping from log_summary
+        # Try to extract brand mapping from log_summary
         log_summary = metadata.get('log_summary', '')
-        # Look for "Category mapping: {...}" in log_summary
-        match = re.search(r"Category mapping: ({[^}]+})", log_summary)
+        # Look for "brand mapping: {...}" in log_summary
+        match = re.search(r"brand mapping: ({[^}]+})", log_summary)
         if match:
             try:
                 # Parse the dictionary string from log_summary
-                cat2id_str = match.group(1)
+                brand2id_str = match.group(1)
                 # Convert single quotes to double quotes for JSON parsing
-                cat2id_str = cat2id_str.replace("'", '"')
-                cat2id = json.loads(cat2id_str)
+                brand2id_str = brand2id_str.replace("'", '"')
+                brand2id = json.loads(brand2id_str)
             except:
                 pass
 
@@ -146,18 +139,18 @@ def load_model_for_test(model_path: str, config):
     if feature_cols is not None:
         config.set("data.feature_cols", list(feature_cols))
     
-    print(f"  - Loading model with num_categories={num_categories} (from trained model)")
+    print(f"  - Loading model with num_brands={num_brands} (from trained model)")
 
-    if cat2id:
-        print(f"  - Training-time category mapping: {cat2id}")
+    if brand2id:
+        print(f"  - Training-time brand mapping: {brand2id}")
     
     # ------------------------------------------------------------------
     # 2) Build model with the *exact* architecture used during training
     #    (input_dim, hidden_size, n_layers, etc. come from metadata)
     # -----------------------------------------------------------------
     model = RNNForecastor(
-        num_categories=num_categories,
-        cat_emb_dim=model_config['cat_emb_dim'],
+        num_brands=num_brands,
+        brand_emb_dim=model_config['brand_emb_dim'],
         input_dim=model_config['input_dim'],
         hidden_size=model_config['hidden_size'],
         n_layers=model_config['n_layers'],
@@ -184,7 +177,7 @@ def load_model_for_test(model_path: str, config):
     else:
         print(f"  [WARNING] Scaler not found at {scaler_path}, test will be in scaled space")
     
-    return model, device, scaler, cat2id
+    return model, device, scaler, brand2id
 
 def walk_forward_test(
     model : nn.Module,
@@ -193,7 +186,7 @@ def walk_forward_test(
     time_col : str,
     feature_cols : List[str],
     target_col : str,
-    cat_id_col : str,
+    brand_id_col : str,
     input_size : int,
     horizon : int,
     test_start_date : pd.Timestamp,
@@ -206,8 +199,8 @@ def walk_forward_test(
     
     For each chunk:
     - Fit scaler on all data BEFORE chunk_start
-    - Call slicing_window_category with [chunk_start, chunk_end) range
-    - slicing_window_category automatically creates windows for each day in range
+    - Call slicing_window_brand with [chunk_start, chunk_end) range
+    - slicing_window_brand automatically creates windows for each day in range
     
     Args:
         model: Trained PyTorch model for prediction.
@@ -216,7 +209,7 @@ def walk_forward_test(
         time_col: Name of the time column in data.
         feature_cols: List of feature column names.
         target_col: Name of the target column.
-        cat_id_col: Name of the category ID column.
+        brand_id_col: Name of the brand ID column.
         input_size: Number of past days used as input (28).
         horizon: Number of future days to predict (28).
         test_start_date: Start date for testing (inclusive).
@@ -225,7 +218,7 @@ def walk_forward_test(
         device: Torch device (CPU or GPU).
 
     Returns:
-        DataFrame with columns: ['predicted', 'actual', 'category', 'date', 'window_start_date'].
+        DataFrame with columns: ['predicted', 'actual', 'brand', 'date', 'window_start_date'].
     """
     # Convert dates to pd.Timestamp
     if isinstance(test_start_date, date) and not isinstance(test_start_date, datetime):
@@ -242,7 +235,7 @@ def walk_forward_test(
 
     all_preds = []
     all_y_true = []
-    all_cat = []
+    all_brand = []
     all_dates = []
 
     chunk_start = test_start_date - pd.DateOffset(months=1)
@@ -269,15 +262,15 @@ def walk_forward_test(
         print(f"       Scaled {len(df_chunk_scaled)} rows")
 
         # Slice windows for entire chunk range
-        # slicing_window_category will create windows for each day in [chunk_start, chunk_end)
+        # slicing_window_brand will create windows for each day in [chunk_start, chunk_end)
         print(f"  [3/4] Creating sliding windows for each day in range")
-        X_test, y_test, cat_test, test_dates = slicing_window_category(
+        X_test, y_test, brand_test, test_dates = slicing_window(
             df=df_chunk_scaled,
             input_size=input_size,
             horizon=horizon,
             feature_cols=feature_cols,
             target_col=target_col,
-            cat_col=cat_id_col,
+            brand_col=brand_id_col,
             time_col=time_col,
             label_start_date=chunk_start,
             label_end_date=chunk_end,
@@ -301,19 +294,19 @@ def walk_forward_test(
         print(f"  [4/4] Running predictions on {len(X_test)} windows")
         with torch.no_grad():
             inputs = torch.tensor(X_test, dtype=torch.float32).to(device)
-            cats = torch.tensor(cat_test, dtype=torch.long).view(-1).to(device)
-            outputs = model(inputs, cats).cpu().numpy()
+            brands = torch.tensor(brand_test, dtype=torch.long).view(-1).to(device)
+            outputs = model(inputs, brands).cpu().numpy()
 
         print(f"       Output shape: {outputs.shape}")
 
         # Inverse transform
-        preds = scaler.inverse_transform_y(outputs, cat_test)
-        y_true = scaler.inverse_transform_y(y_test, cat_test)
+        preds = scaler.inverse_transform_y(outputs, brand_test)
+        y_true = scaler.inverse_transform_y(y_test, brand_test)
 
         # Collect
         all_preds.append(preds)
         all_y_true.append(y_true)
-        all_cat.append(cat_test)
+        all_brand.append(brand_test)
         all_dates.append(test_dates)
 
         chunk_start = chunk_end
@@ -324,7 +317,7 @@ def walk_forward_test(
     
     preds_all = np.concatenate(all_preds, axis=0)  # shape: (N, horizon)
     y_true_all = np.concatenate(all_y_true, axis=0)  # shape: (N, horizon)
-    cat_all = np.concatenate(all_cat, axis=0)  # shape: (N,)
+    brand_all = np.concatenate(all_brand, axis=0)  # shape: (N,)
     dates_all = np.concatenate(all_dates, axis=0)  # shape: (N,)
 
     print(f"\n[WALK-FORWARD] Complete!")
@@ -337,8 +330,8 @@ def walk_forward_test(
     preds_flat = preds_all.flatten()
     actuals_flat = y_true_all.flatten()
     
-    # Expand categories and dates
-    cat_expanded = np.repeat(cat_all, preds_all.shape[1])
+    # Expand brands and dates
+    brand_expanded = np.repeat(brand_all, preds_all.shape[1])
     
     # For each window date, create horizon consecutive dates
     dates_expanded = []
@@ -355,12 +348,12 @@ def walk_forward_test(
     results_df = pd.DataFrame({
         'predicted': preds_flat,
         'actual': actuals_flat,
-        'category': cat_expanded,
+        'brand': brand_expanded,
         'date': dates_expanded,
         'window_start_date': window_start_dates
     })
 
-    final = results_df.sort_values(by=['category', 'date']).reset_index(drop=True)
+    final = results_df.sort_values(by=['brand', 'date']).reset_index(drop=True)
 
     return final
 
@@ -406,19 +399,19 @@ def main():
     print(f"  - Loading historical data for years: {historical_year}")
     ref_data = data_reader.load(years=[historical_year])
 
-    # Fill missing dates per category in historical data (target set to 0)
+    # Fill missing dates per brand in historical data (target set to 0)
     try:
         # Note: data_config keys are not yet extracted here, so infer minimal defaults
         # We'll use the config values later when available; this conservative fill
-        # fills only the `time` and category columns that exist in the loaded DF.
-        print("  - Filling missing dates for historical data (per category)...")
+        # fills only the `time` and brand columns that exist in the loaded DF.
+        print("  - Filling missing dates for historical data (per brand)...")
         # Infer column names if available
         inf_time_col = data_config.get('time_col') if 'data_config' in locals() else None
-        inf_cat_col = data_config.get('cat_col') if 'data_config' in locals() else None
+        inf_brand_col = data_config.get('brand_col') if 'data_config' in locals() else None
         inf_target_col = data_config.get('target_col') if 'data_config' in locals() else None
-        if inf_time_col and inf_cat_col and inf_target_col:
+        if inf_time_col and inf_brand_col and inf_target_col:
             before_rows = len(ref_data)
-            ref_data = fill_missing_dates(ref_data, inf_time_col, inf_cat_col, inf_target_col)
+            ref_data = fill_missing_dates(ref_data, inf_time_col, inf_brand_col, inf_target_col)
             after_rows = len(ref_data)
             print(f"    - Historical: added {after_rows - before_rows} rows (now {after_rows})")
         else:
@@ -429,7 +422,7 @@ def main():
 
     # DIAGNOSTIC: Check historical data coverage
     # Get column names from config first
-    cat_col = data_config['cat_col']
+    brand_col = data_config['brand_col']
     time_col = data_config['time_col']
     target_col = data_config['target_col']
     
@@ -438,19 +431,19 @@ def main():
         print(f"  - Historical data loaded: {len(ref_data)} rows")
         print(f"  - Date range: {ref_data_dates.min().date()} to {ref_data_dates.max().date()}")
 
-    # Encode all categories from reference data (don't filter yet - need full mapping)
-    # Note: We encode here to get cat2id mapping, but num_categories for model will come from trained model metadata
-    _, trained_cat2id, num_categories = encode_categories(ref_data, data_config['cat_col'])
-    # Don't overwrite config.model.num_categories here - it will be loaded from trained model metadata
+    # Encode all brands from reference data (don't filter yet - need full mapping)
+    # Note: We encode here to get brand2id mapping, but num_brands for model will come from trained model metadata
+    _, trained_brand2id, num_brands = encode_brands(ref_data, data_config['brand_col'])
+    # Don't overwrite config.model.num_brands here - it will be loaded from trained model metadata
     
-    print(f"  - Category mapping: {trained_cat2id}")
-    print(f"  - Number of categories in data: {num_categories}")
+    print(f"  - brand mapping: {trained_brand2id}")
+    print(f"  - Number of brands in data: {num_brands}")
     
-    # Determine which categories to predict
+    # Determine which brands to predict
     # Filter out NaN values and convert to string to handle mixed types
-    unique_ref_cats = ref_data[cat_col].dropna().astype(str).unique().tolist()
-    available_categories = sorted([cat for cat in unique_ref_cats if cat.lower() != 'nan'])
-    print(f"  - Available categories in training data: {available_categories}")
+    unique_ref_brands = ref_data[brand_col].dropna().astype(str).unique().tolist()
+    available_brands = sorted([brand for brand in unique_ref_brands if brand.lower() != 'nan'])
+    print(f"  - Available brands in training data: {available_brands}")
 
     # Load test data
     print("\n[3/6] Loading test data...")
@@ -462,15 +455,15 @@ def main():
     print(f"  - Loading from: {test_data_path}")
     test_data = pd.read_csv(test_data_path, encoding='utf-8', low_memory=False)
 
-    # Fill missing dates per category in test data (target set to 0)
+    # Fill missing dates per brand in test data (target set to 0)
     try:
-        print("  - Filling missing dates for test data (per category)...")
-        # Use time/cat/target names from data_config (available above)
+        print("  - Filling missing dates for test data (per brand)...")
+        # Use time/brand/target names from data_config (available above)
         td_time_col = data_config.get('time_col')
-        td_cat_col = data_config.get('cat_col')
+        td_brand_col = data_config.get('brand_col')
         td_target_col = data_config.get('target_col')
         before_rows = len(test_data)
-        test_data = fill_missing_dates(test_data, td_time_col, td_cat_col, td_target_col)
+        test_data = fill_missing_dates(test_data, td_time_col, td_brand_col, td_target_col)
         after_rows = len(test_data)
         print(f"    - Test data: added {after_rows - before_rows} rows (now {after_rows})")
     except Exception as e:
@@ -482,7 +475,7 @@ def main():
                     f"Test data file is empty or contains no valid data."
                 )
 
-    # Filter to desired test window (keep all categories for now - will filter per category later)
+    # Filter to desired test window (keep all brands for now - will filter per brand later)
     print("\n[4/6] Cliping date range...")
     
     # Filter to configured test window first
@@ -518,20 +511,20 @@ def main():
             f"match the available date range, or use a different test data file."
         )
     
-    # Check which categories are available in test data
+    # Check which brands are available in test data
     # Filter out NaN values and convert to string to handle mixed types
-    unique_cats = test_data[cat_col].dropna().astype(str).unique().tolist()
-    available_test_categories = sorted([cat for cat in unique_cats if cat.lower() != 'nan'])
+    unique_brands = test_data[brand_col].dropna().astype(str).unique().tolist()
+    available_test_brands = sorted([brand for brand in unique_brands if brand.lower() != 'nan'])
     test_year = test_start.year
-    print(f"  - Available categories in {test_year} data: {available_test_categories}")
+    print(f"  - Available brands in {test_year} data: {available_test_brands}")
     
-    # Filter categories_to_test to only those available in both reference and test data
-    categories_to_test = [cat for cat in available_categories if cat in available_test_categories]
+    # Filter brands_to_test to only those available in both reference and test data
+    brands_to_test = [brand for brand in available_brands if brand in available_test_brands]
     
-    if len(categories_to_test) == 0:
-        raise ValueError(f"No matching categories found between reference data and {test_year} data. "
-                        f"Reference: {available_categories}, {test_year}: {available_test_categories}")
-    print(f"  - Final categories to predict: {categories_to_test}")
+    if len(brands_to_test) == 0:
+        raise ValueError(f"No matching brands found between reference data and {test_year} data. "
+                        f"Reference: {available_brands}, {test_year}: {available_test_brands}")
+    print(f"  - Final brands to predict: {brands_to_test}")
 
     # =====================================================================
     # [REFINEMENT] Prepare data before calling walk_forward_test()
@@ -552,31 +545,24 @@ def main():
     
     # 2. Prepare historical data (ref_data) with features
     print("  [5.2] Preparing historical data with features...")
-    data_prepared = add_feature(
+    data_prepared = add_features(
         ref_data.copy(),
         time_col=data_config['time_col'],
-        cat_col=data_config['cat_col'],
+        brand_col=data_config['brand_col'],
         target_col=target_col
     )
     print(f"    - Added all features to historical data")
     
-    # Aggregate to daily level
-    data_prepared = aggregate_daily(data_prepared, data_config['time_col'], target_col, cat_col, feature_cols)
-    print(f"    - Aggregated to daily: {len(data_prepared)} rows")
     
     # 3. Prepare test data with same features
     print("  [5.3] Preparing test data with features...")
-    test_data_prepared = add_feature(
+    test_data_prepared = add_features(
         test_data.copy(),
         time_col=data_config['time_col'],
-        cat_col=data_config['cat_col'],
+        brand_col=data_config['brand_col'],
         target_col=target_col
     )
     print(f"    - Added all features to test data")
-    
-    # Aggregate test data to daily level
-    test_data_prepared = aggregate_daily(test_data_prepared, data_config['time_col'], target_col, cat_col, feature_cols)
-    print(f"    - Aggregated test to daily: {len(test_data_prepared)} rows")
     
     # 4. Combine data: use last 6 months of historical + all test data
     # (This ensures enough input history for rolling windows and scaler updates)
@@ -598,43 +584,43 @@ def main():
     print(f"    - Combined data: {len(data)} rows")
     print(f"    - Date range: {data[time_col].min().date()} to {data[time_col].max().date()}")
     
-    # 4.5 Encode categories using TRAINING-TIME mapping to match model embedding
-    print("  [5.4.5] Encoding categories using training-time mapping...")
-    if trained_cat2id is not None:
-        # Use training-time mapping to ensure category IDs match what model expects
-        cat_id_col = data_config['cat_id_col']
+    # 4.5 Encode brands using TRAINING-TIME mapping to match model embedding
+    print("  [5.4.5] Encoding brands using training-time mapping...")
+    if trained_brand2id is not None:
+        # Use training-time mapping to ensure brand IDs match what model expects
+        brand_id_col = data_config['brand_id_col']
         data = data.copy()
-        data[cat_id_col] = data[cat_col].map(trained_cat2id)
+        data[brand_id_col] = data[brand_col].map(trained_brand2id)
         
-        # Check for unmapped categories (NaN in cat_id_col) BEFORE converting to int
-        unmapped_mask = data[cat_id_col].isna()
+        # Check for unmapped brands (NaN in brand_id_col) BEFORE converting to int
+        unmapped_mask = data[brand_id_col].isna()
         unmapped_count = unmapped_mask.sum()
         if unmapped_count > 0:
-            print(f"    [WARNING] {unmapped_count} rows have categories not in training set:")
-            unmapped_cats = data[unmapped_mask][cat_col].unique()
-            print(f"    [WARNING] Unmapped categories: {unmapped_cats}")
-            print(f"    [WARNING] Dropping {unmapped_count} rows with unmapped categories")
+            print(f"    [WARNING] {unmapped_count} rows have brands not in training set:")
+            unmapped_brands = data[unmapped_mask][brand_col].unique()
+            print(f"    [WARNING] Unmapped brands: {unmapped_brands}")
+            print(f"    [WARNING] Dropping {unmapped_count} rows with unmapped brands")
             data = data[~unmapped_mask].reset_index(drop=True)
         
         # Now safe to convert to int
-        data[cat_id_col] = data[cat_id_col].astype(int)
+        data[brand_id_col] = data[brand_id_col].astype(int)
         
-        # Verify category IDs are in valid range
-        max_cat_id = data[cat_id_col].max()
-        min_cat_id = data[cat_id_col].min()
-        print(f"    - Created {cat_id_col} column: IDs range [{min_cat_id}, {max_cat_id}]")
-        print(f"    - Model expects category IDs in range [0, {num_categories - 1}]")
+        # Verify brand IDs are in valid range
+        max_brand_id = data[brand_id_col].max()
+        min_brand_id = data[brand_id_col].min()
+        print(f"    - Created {brand_id_col} column: IDs range [{min_brand_id}, {max_brand_id}]")
+        print(f"    - Model expects brand IDs in range [0, {num_brands - 1}]")
         
-        if max_cat_id >= num_categories:
+        if max_brand_id >= num_brands:
             raise ValueError(
-                f"Category ID {max_cat_id} exceeds model's num_categories ({num_categories}). "
-                f"Training and test data may have different categories."
+                f"brand ID {max_brand_id} exceeds model's num_brands ({num_brands}). "
+                f"Training and test data may have different brands."
             )
     else:
         # Fallback: create mapping on the fly (not recommended, may cause mismatches)
         print("    [WARNING] No training-time mapping found, creating new mapping from test data")
-        data, _, _ = encode_categories(data, cat_col)
-        cat_id_col = data_config['cat_id_col']
+        data, _, _ = encode_brands(data, brand_col)
+        brand_id_col = data_config['brand_id_col']
     
     # 5. Ensure proper date types for walk_forward_test
     print("  [5.5] Formatting date parameters...")
@@ -654,12 +640,11 @@ def main():
     if not model_path.exists():
         raise FileNotFoundError(
             f"Model not found at {model_path}. "
-            f"Please run mvp_train.py first to train category-specific models."
+            f"Please run mvp_train.py first to train brand-specific models."
         )
         
     print(f"  - Using model from: {model_path}")
-    model, device, scaler, trained_cat2id = load_model_for_test(str(model_path), config)
-
+    model, device, scaler, trained_brand2id = load_model_for_test(str(model_path), config)
     # =====================================================================
     # [PAUSE HERE] Walk-forward test (ready to call)
     # =====================================================================
@@ -668,13 +653,6 @@ def main():
     print(f"  - Feature columns: {feature_cols}")
     print(f"  - Test dates: {test_start_date} to {test_end_date}")
     
-    # TODO: Uncomment below to run walk-forward test
-    for cat in data[cat_col].unique():
-        cat_data = data[data[cat_col] == cat]
-        all_dates = pd.date_range(cat_data[time_col].min(), cat_data[time_col].max())
-        missing = set(all_dates) - set(cat_data[time_col])
-        print(f"Category {cat}: missing {len(missing)} days")
-
     test_results = walk_forward_test(
         model=model,
         scaler=scaler,
@@ -682,7 +660,7 @@ def main():
         time_col=time_col,
         feature_cols=feature_cols,
         target_col=target_col,
-        cat_id_col=cat_id_col,
+        brand_id_col=brand_id_col,
         input_size=input_size,
         horizon=horizon,
         test_start_date=test_start_date,
@@ -692,7 +670,7 @@ def main():
     )
     
     test_results = test_results[test_results['date'].dt.year == 2025]
-    # results_df contains columns: ['predicted', 'actual', 'category', 'date']
+    # results_df contains columns: ['predicted', 'actual', 'brand', 'date']
     print(f"\nWalk-forward test completed with {len(test_results)} samples")
     
     # Filter for 28-day horizon starting from day 1 of each month
@@ -719,41 +697,41 @@ def main():
     ].copy()
     
     # Clean up temporary columns, keep only the 4 main columns
-    cols_to_keep = ['predicted', 'actual', 'category', 'date']
+    cols_to_keep = ['predicted', 'actual', 'brand', 'date']
     test_results_monthly_df = test_results_monthly_df[[c for c in cols_to_keep if c in test_results_monthly_df.columns]]
     
     print(f"  - Output rows (day 1 windows, 28 days each): {len(test_results_monthly_df)}")
     
     if len(test_results_monthly_df) > 0:
-        print(f"  - Categories: {test_results_monthly_df['category'].unique()}")
+        print(f"  - brands: {test_results_monthly_df['brand'].unique()}")
         print(f"  - Date range: {test_results_monthly_df['date'].min().date()} to {test_results_monthly_df['date'].max().date()}")
         save_monthly_forecast(test_results_monthly_df)
         print(test_results_monthly_df.head(10))
     else:
         print("  - No monthly windows found (day 1 windows)")
     
-    # Generate plots for each category/month combination
+    # Generate plots for each brand/month combination
     print("\n[PLOTTING] Generating monthly forecast plots...")
     if len(test_results_monthly_df) > 0:
         test_results_monthly_df['date'] = pd.to_datetime(test_results_monthly_df['date'])
         test_results_monthly_df['month'] = test_results_monthly_df['date'].dt.to_period('M').astype(str)
         
         # Create reverse mapping: ID -> Name for plot filenames
-        id_to_cat_name = {v: k for k, v in trained_cat2id.items()} if trained_cat2id else {}
-        print(f"  - Category ID to Name mapping: {id_to_cat_name}")
+        id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
+        print(f"  - brand ID to Name mapping: {id_to_brand_name}")
         
-        # Group by category and month
-        for category in sorted(test_results_monthly_df['category'].unique()):
-            # Get category name for filename
-            cat_name = id_to_cat_name.get(category, str(category))
-            print(f"  - Category {category} ({cat_name}):")
-            cat_data = test_results_monthly_df[test_results_monthly_df['category'] == category]
+        # Group by brand and month
+        for brand in sorted(test_results_monthly_df['brand'].unique()):
+            # Get brand name for filename
+            brand_name = id_to_brand_name.get(brand, str(brand))
+            print(f"  - brand {brand} ({brand_name}):")
+            brand_data = test_results_monthly_df[test_results_monthly_df['brand'] == brand]
             
-            for month in sorted(cat_data['month'].unique()):
+            for month in sorted(brand_data['month'].unique()):
                 plot_monthly_forecast(
                     test_results_monthly_df,
-                    category=category,
-                    category_name=cat_name,
+                    brand=brand,
+                    brand_name=brand_name,
                     month_str=month,
                     output_dir="outputs/plots",
                     show=False
@@ -765,17 +743,17 @@ def main():
     # Generate accuracy report
     print("\n[REPORTING] Generating accuracy report...")
     if len(test_results_monthly_df) > 0:
-        # Prepare category name mapping for report
-        id_to_cat_name = {v: k for k, v in trained_cat2id.items()} if trained_cat2id else {}
+        # Prepare brand name mapping for report
+        id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
         
         # Generate and save report
         report = generate_accuracy_report(
             test_results_monthly_df,
             actual_col='actual',
             forecast_col='predicted',
-            category_col='category',
+            brand_col='brand',
             date_col='date',
-            category_name_map=id_to_cat_name,
+            brand_name_map=id_to_brand_name,
             output_path='outputs/accuracy_report.txt'
         )
         print(report)

@@ -50,35 +50,35 @@ def calculate_sfa_accuracy(
     return accuracy.item() if accuracy.shape == () else accuracy
 
 
-def calculate_sfa_by_category(
+def calculate_sfa_by_brand(
     df: pd.DataFrame,
     actual_col: str = 'actual',
     forecast_col: str = 'forecast',
-    category_col: str = 'category'
+    brand_col: str = 'brand'
 ) -> pd.DataFrame:
     """
-    Calculate SFA accuracy grouped by category.
+    Calculate SFA accuracy grouped by brand.
     
     Args:
-        df: DataFrame with columns [actual_col, forecast_col, category_col]
+        df: DataFrame with columns [actual_col, forecast_col, brand_col]
         actual_col: Column name for actual values
         forecast_col: Column name for forecast values
-        category_col: Column name for categories
+        brand_col: Column name for brands
     
     Returns:
-        DataFrame with columns ['category', 'accuracy', 'count']
+        DataFrame with columns ['brand', 'accuracy', 'count']
     """
     results = []
     
-    for category in df[category_col].unique():
-        cat_data = df[df[category_col] == category]
-        accuracies = calculate_sfa_accuracy(cat_data[actual_col].values, cat_data[forecast_col].values)
+    for brand in df[brand_col].unique():
+        brand_data = df[df[brand_col] == brand]
+        accuracies = calculate_sfa_accuracy(brand_data[actual_col].values, brand_data[forecast_col].values)
         mean_accuracy = np.mean(accuracies)
         
         results.append({
-            'category': category,
+            'brand': brand,
             'accuracy': mean_accuracy,
-            'count': len(cat_data)
+            'count': len(brand_data)
         })
     
     return pd.DataFrame(results)
@@ -159,43 +159,43 @@ def calculate_sfa_by_month(
     return pd.DataFrame(results)
 
 
-def calculate_sfa_by_category_and_date(
+def calculate_sfa_by_brand_and_date(
     df: pd.DataFrame,
     actual_col: str = 'actual',
     forecast_col: str = 'forecast',
-    category_col: str = 'category',
+    brand_col: str = 'brand',
     date_col: str = 'date'
 ) -> pd.DataFrame:
     """
-    Calculate SFA accuracy grouped by both category and date (daily per category).
+    Calculate SFA accuracy grouped by both brand and date (daily per brand).
     
     Args:
-        df: DataFrame with columns [actual_col, forecast_col, category_col, date_col]
+        df: DataFrame with columns [actual_col, forecast_col, brand_col, date_col]
         actual_col: Column name for actual values
         forecast_col: Column name for forecast values
-        category_col: Column name for categories
+        brand_col: Column name for brands
         date_col: Column name for dates
     
     Returns:
-        DataFrame with columns ['category', 'date', 'accuracy', 'actual', 'forecast']
+        DataFrame with columns ['brand', 'date', 'accuracy', 'actual', 'forecast']
     """
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col])
     
     results = []
     
-    for category in sorted(df[category_col].unique()):
-        cat_data = df[df[category_col] == category]
+    for brand in sorted(df[brand_col].unique()):
+        brand_data = df[df[brand_col] == brand]
         
-        for date in sorted(cat_data[date_col].unique()):
-            date_data = cat_data[cat_data[date_col] == date]
+        for date in sorted(brand_data[date_col].unique()):
+            date_data = brand_data[brand_data[date_col] == date]
             accuracies = calculate_sfa_accuracy(date_data[actual_col].values, date_data[forecast_col].values)
             mean_accuracy = np.mean(accuracies)
             total_actual = date_data[actual_col].sum()
             total_forecast = date_data[forecast_col].sum()
             
             results.append({
-                'category': category,
+                'brand': brand,
                 'date': date,
                 'accuracy': mean_accuracy,
                 'actual': total_actual,
@@ -205,25 +205,25 @@ def calculate_sfa_by_category_and_date(
     return pd.DataFrame(results)
 
 
-def calculate_sfa_by_category_and_month(
+def calculate_sfa_by_brand_and_month(
     df: pd.DataFrame,
     actual_col: str = 'actual',
     forecast_col: str = 'forecast',
-    category_col: str = 'category',
+    brand_col: str = 'brand',
     date_col: str = 'date'
 ) -> pd.DataFrame:
     """
-    Calculate SFA accuracy grouped by both category and month (monthly per category).
+    Calculate SFA accuracy grouped by both brand and month (monthly per brand).
     
     Args:
-        df: DataFrame with columns [actual_col, forecast_col, category_col, date_col]
+        df: DataFrame with columns [actual_col, forecast_col, brand_col, date_col]
         actual_col: Column name for actual values
         forecast_col: Column name for forecast values
-        category_col: Column name for categories
+        brand_col: Column name for brands
         date_col: Column name for dates
     
     Returns:
-        DataFrame with columns ['category', 'month', 'accuracy', 'actual', 'forecast']
+        DataFrame with columns ['brand', 'month', 'accuracy', 'actual', 'forecast']
     """
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col])
@@ -231,18 +231,18 @@ def calculate_sfa_by_category_and_month(
     
     results = []
     
-    for category in sorted(df[category_col].unique()):
-        cat_data = df[df[category_col] == category]
+    for brand in sorted(df[brand_col].unique()):
+        brand_data = df[df[brand_col] == brand]
         
-        for month in sorted(cat_data['month'].unique()):
-            month_data = cat_data[cat_data['month'] == month]
+        for month in sorted(brand_data['month'].unique()):
+            month_data = brand_data[brand_data['month'] == month]
             accuracies = calculate_sfa_accuracy(month_data[actual_col].values, month_data[forecast_col].values)
             mean_accuracy = np.mean(accuracies)
             total_actual = month_data[actual_col].sum()
             total_forecast = month_data[forecast_col].sum()
             
             results.append({
-                'category': category,
+                'brand': brand,
                 'month': month,
                 'accuracy': mean_accuracy,
                 'actual': total_actual,
@@ -256,9 +256,9 @@ def generate_accuracy_report(
     df: pd.DataFrame,
     actual_col: str = 'actual',
     forecast_col: str = 'predicted',
-    category_col: str = 'category',
+    brand_col: str = 'brand',
     date_col: str = 'date',
-    category_name_map: dict = None,
+    brand_name_map: dict = None,
     output_path: str = None
 ) -> str:
     """
@@ -268,9 +268,9 @@ def generate_accuracy_report(
         df: DataFrame with prediction results
         actual_col: Column name for actual values
         forecast_col: Column name for forecast values
-        category_col: Column name for categories
+        brand_col: Column name for brands
         date_col: Column name for dates
-        category_name_map: Dictionary mapping category IDs to names (optional)
+        brand_name_map: Dictionary mapping brand IDs to names (optional)
         output_path: Path to save report (optional, returns string if not provided)
     
     Returns:
@@ -288,37 +288,37 @@ def generate_accuracy_report(
     report.append(f"OVERALL ACCURACY: {overall_accuracy:.2%}")
     report.append("")
     
-    # By category
+    # By brand
     report.append("-" * 80)
-    report.append("ACCURACY BY CATEGORY")
+    report.append("ACCURACY BY brand")
     report.append("-" * 80)
-    cat_acc = calculate_sfa_by_category(df, actual_col, forecast_col, category_col)
-    cat_acc = cat_acc.sort_values('accuracy', ascending=False)
+    brand_acc = calculate_sfa_by_brand(df, actual_col, forecast_col, brand_col)
+    brand_acc = brand_acc.sort_values('accuracy', ascending=False)
     
-    for _, row in cat_acc.iterrows():
-        cat_id = row['category']
-        cat_name = category_name_map.get(cat_id, f"Category_{cat_id}") if category_name_map else f"Category_{cat_id}"
-        report.append(f"  {cat_name:30s} | Accuracy: {row['accuracy']:6.2%} | Count: {int(row['count']):5d}")
+    for _, row in brand_acc.iterrows():
+        brand_id = row['brand']
+        brand_name = brand_name_map.get(brand_id, f"brand_{brand_id}") if brand_name_map else f"brand_{brand_id}"
+        report.append(f"  {brand_name:30s} | Accuracy: {row['accuracy']:6.2%} | Count: {int(row['count']):5d}")
     report.append("")
     
-    # By category and month
+    # By brand and month
     report.append("-" * 80)
-    report.append("ACCURACY BY CATEGORY AND MONTH")
+    report.append("ACCURACY BY brand AND MONTH")
     report.append("-" * 80)
     
-    cat_month_acc = calculate_sfa_by_category_and_month(df, actual_col, forecast_col, category_col, date_col)
-    cat_month_acc = cat_month_acc.sort_values(['category', 'month'])
+    brand_month_acc = calculate_sfa_by_brand_and_month(df, actual_col, forecast_col, brand_col, date_col)
+    brand_month_acc = brand_month_acc.sort_values(['brand', 'month'])
     
-    current_category = None
-    for _, row in cat_month_acc.iterrows():
-        cat_id = row['category']
-        cat_name = category_name_map.get(cat_id, f"Category_{cat_id}") if category_name_map else f"Category_{cat_id}"
+    current_brand = None
+    for _, row in brand_month_acc.iterrows():
+        brand_id = row['brand']
+        brand_name = brand_name_map.get(brand_id, f"brand_{brand_id}") if brand_name_map else f"brand_{brand_id}"
         
-        if current_category != cat_id:
-            if current_category is not None:
+        if current_brand != brand_id:
+            if current_brand is not None:
                 report.append("")
-            report.append(f"\n{cat_name}:")
-            current_category = cat_id
+            report.append(f"\n{brand_name}:")
+            current_brand = brand_id
         
         month = row['month']
         accuracy = row['accuracy']
@@ -343,10 +343,10 @@ def generate_accuracy_report(
 
 __all__ = [
     'calculate_sfa_accuracy',
-    'calculate_sfa_by_category',
+    'calculate_sfa_by_brand',
     'calculate_sfa_by_date',
     'calculate_sfa_by_month',
-    'calculate_sfa_by_category_and_date',
-    'calculate_sfa_by_category_and_month',
+    'calculate_sfa_by_brand_and_date',
+    'calculate_sfa_by_brand_and_month',
     'generate_accuracy_report',
 ]
