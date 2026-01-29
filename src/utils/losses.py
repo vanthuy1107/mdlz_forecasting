@@ -11,6 +11,10 @@ def spike_aware_mse(
     category_loss_weights: Optional[Dict[int, float]] = None,
     is_monday: Optional[torch.Tensor] = None,
     monday_loss_weight: float = 3.0,
+    is_wednesday: Optional[torch.Tensor] = None,
+    wednesday_loss_weight: float = 1.0,
+    is_friday: Optional[torch.Tensor] = None,
+    friday_loss_weight: float = 1.0,
     is_golden_window: Optional[torch.Tensor] = None,
     golden_window_weight: float = 1.0,
     is_peak_loss_window: Optional[torch.Tensor] = None,
@@ -25,7 +29,7 @@ def spike_aware_mse(
     
     This loss function assigns 3x weight to top 20% values (spikes) to better
     handle sudden demand surges. Optionally supports category-specific loss weights,
-    Monday-specific weighting for FRESH category, and Golden Window weighting for
+    Monday/Wednesday/Friday-specific weighting for FRESH category, and Golden Window weighting for
     MOONCAKE category (Gregorian August 1-31).
     
     Args:
@@ -36,6 +40,12 @@ def spike_aware_mse(
         is_monday: Optional tensor indicating Monday samples (1 for Monday, 0 otherwise).
                   Shape should match y_true (can be 1D for single-step or 2D for multi-step).
         monday_loss_weight: Weight multiplier for Monday samples (default: 3.0).
+        is_wednesday: Optional tensor indicating Wednesday samples (1 for Wednesday, 0 otherwise).
+                     Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+        wednesday_loss_weight: Weight multiplier for Wednesday samples (default: 1.0).
+        is_friday: Optional tensor indicating Friday samples (1 for Friday, 0 otherwise).
+                  Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+        friday_loss_weight: Weight multiplier for Friday samples (default: 1.0).
         is_golden_window: Optional tensor indicating Golden Window samples (1 for Golden Window, 0 otherwise).
                          For MOONCAKE: Gregorian August 1-31. Shape should match y_true.
         golden_window_weight: Weight multiplier for Golden Window samples (default: 1.0, typically 12.0 for MOONCAKE).
@@ -58,8 +68,8 @@ def spike_aware_mse(
         torch.tensor(1.0, device=y_true.device)
     )
     
-    # Apply Monday-specific weighting if provided
-    if is_monday is not None:
+    # Apply Monday-specific weighting if provided (for FRESH category)
+    if is_monday is not None and monday_loss_weight > 1.0:
         # Ensure is_monday matches y_true shape
         if is_monday.ndim == 1 and y_true.ndim == 2:
             # Expand 1D is_monday to 2D to match (batch, horizon) shape
@@ -68,13 +78,45 @@ def spike_aware_mse(
             # If y_true is 1D but is_monday is 2D, take first column or mean
             is_monday = is_monday[:, 0] if is_monday.shape[1] > 0 else is_monday.mean(dim=1)
         
-        # Apply Monday weight: 3.0x for Monday samples (Is_Monday == 1)
+        # Apply Monday weight for Monday samples (Is_Monday == 1)
         monday_weight = torch.where(
             is_monday > 0.5,  # Is_Monday == 1
             torch.tensor(monday_loss_weight, device=y_true.device),
             torch.tensor(1.0, device=y_true.device)
         )
         base_weight = base_weight * monday_weight
+    
+    # Apply Wednesday-specific weighting if provided (for FRESH category)
+    if is_wednesday is not None and wednesday_loss_weight > 1.0:
+        # Ensure is_wednesday matches y_true shape
+        if is_wednesday.ndim == 1 and y_true.ndim == 2:
+            is_wednesday = is_wednesday.unsqueeze(-1).expand_as(y_true)
+        elif is_wednesday.ndim == 2 and y_true.ndim == 1:
+            is_wednesday = is_wednesday[:, 0] if is_wednesday.shape[1] > 0 else is_wednesday.mean(dim=1)
+        
+        # Apply Wednesday weight for Wednesday samples
+        wednesday_weight = torch.where(
+            is_wednesday > 0.5,
+            torch.tensor(wednesday_loss_weight, device=y_true.device),
+            torch.tensor(1.0, device=y_true.device)
+        )
+        base_weight = base_weight * wednesday_weight
+    
+    # Apply Friday-specific weighting if provided (for FRESH category)
+    if is_friday is not None and friday_loss_weight > 1.0:
+        # Ensure is_friday matches y_true shape
+        if is_friday.ndim == 1 and y_true.ndim == 2:
+            is_friday = is_friday.unsqueeze(-1).expand_as(y_true)
+        elif is_friday.ndim == 2 and y_true.ndim == 1:
+            is_friday = is_friday[:, 0] if is_friday.shape[1] > 0 else is_friday.mean(dim=1)
+        
+        # Apply Friday weight for Friday samples
+        friday_weight = torch.where(
+            is_friday > 0.5,
+            torch.tensor(friday_loss_weight, device=y_true.device),
+            torch.tensor(1.0, device=y_true.device)
+        )
+        base_weight = base_weight * friday_weight
     
     # Apply Golden Window weighting if provided (for MOONCAKE category)
     # Peak-Phase Loss Amplification: Apply 10x weight when is_golden_window == 1

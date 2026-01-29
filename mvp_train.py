@@ -1691,12 +1691,20 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                 category_loss_weights[cat2id[category_filter]] = cat_params['loss_weight']
                 print(f"  - Loss weight for {category_filter}: {cat_params['loss_weight']}")
         
-        # Get Monday loss weight from config (for FRESH category)
+        # Get Monday/Wednesday/Friday loss weights from config (for FRESH category)
         monday_loss_weight = 3.0  # Default
+        wednesday_loss_weight = 1.0  # Default (no additional weighting)
+        friday_loss_weight = 1.0  # Default (no additional weighting)
         cat_params = get_category_params(category_specific_params, category_filter)
         if 'monday_loss_weight' in cat_params:
             monday_loss_weight = float(cat_params['monday_loss_weight'])
             print(f"  - Monday loss weight: {monday_loss_weight}x (for {category_filter or 'default'})")
+        if 'wednesday_loss_weight' in cat_params:
+            wednesday_loss_weight = float(cat_params['wednesday_loss_weight'])
+            print(f"  - Wednesday loss weight: {wednesday_loss_weight}x (for {category_filter or 'default'})")
+        if 'friday_loss_weight' in cat_params:
+            friday_loss_weight = float(cat_params['friday_loss_weight'])
+            print(f"  - Friday loss weight: {friday_loss_weight}x (for {category_filter or 'default'})")
         
         # Get Golden Window loss weight from config (for MOONCAKE category)
         golden_window_weight = 1.0  # Default (no additional weighting)
@@ -1746,13 +1754,19 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             is_august_idx = feature_cols.index('is_august')
             print(f"  - is_august feature found at index {is_august_idx}")
         
-        # Create a partial function that includes category loss weights, Monday weighting, and Golden Window weighting
-        def create_criterion(cat_loss_weights, monday_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
+        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, and Golden Window weighting
+        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
                             is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
             def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
-                # Extract Is_Monday for the prediction horizon
+                # Extract day of week for the prediction horizon (for Monday/Wednesday/Friday weighting)
                 is_monday_horizon = None
-                if (is_monday_feature_idx is not None or (day_of_week_sin_idx is not None and day_of_week_cos_idx is not None)) and inputs is not None and monday_weight > 1.0:
+                is_wednesday_horizon = None
+                is_friday_horizon = None
+                
+                # Determine if we need to compute day of week (if any weight > 1.0)
+                need_dow = (monday_weight > 1.0 or wednesday_weight > 1.0 or friday_weight > 1.0)
+                
+                if (is_monday_feature_idx is not None or (day_of_week_sin_idx is not None and day_of_week_cos_idx is not None)) and inputs is not None and need_dow:
                     # inputs shape: (batch, input_size, features)
                     batch_size = inputs.shape[0]
                     
@@ -1811,13 +1825,15 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                         if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
                             horizon = y_pred.shape[1]
                             is_monday_horizon = torch.zeros((batch_size, horizon), device=y_pred.device)
+                            is_wednesday_horizon = torch.zeros((batch_size, horizon), device=y_pred.device)
+                            is_friday_horizon = torch.zeros((batch_size, horizon), device=y_pred.device)
                             
-                            # Compute which days in horizon are Mondays
+                            # Compute which days in horizon are Mon/Wed/Fri
                             # If last input day is Monday (dow=0), then:
                             # - Horizon day 0 (tomorrow) is Tuesday (dow=1)
                             # - Horizon day 6 is Monday (dow=0)
                             # - Horizon day 13 is Monday (dow=0)
-                            # General: horizon day H is Monday if (last_day_dow + H + 1) % 7 == 0
+                            # General: horizon day H has dow = (last_day_dow + H + 1) % 7
                             for h in range(horizon):
                                 # Compute day of week for horizon day h
                                 # Last input day is day -1, first horizon day is day 0
@@ -1832,22 +1848,30 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                                 # Ensure result is 1D
                                 if horizon_day_dow.ndim > 1:
                                     horizon_day_dow = horizon_day_dow.squeeze()
-                                # Monday is day 0, and only mark as Monday if we knew the starting day
+                                # Mark Monday (0), Wednesday (2), Friday (4)
                                 is_monday_horizon[:, h] = ((horizon_day_dow == 0) & known_dow_mask).float()
+                                is_wednesday_horizon[:, h] = ((horizon_day_dow == 2) & known_dow_mask).float()
+                                is_friday_horizon[:, h] = ((horizon_day_dow == 4) & known_dow_mask).float()
                         else:  # Single-step
-                            # For single-step, check if the prediction day is Monday
+                            # For single-step, check if the prediction day is Mon/Wed/Fri
                             # If last input day is Monday, next day is Tuesday (not Monday)
-                            # We need to check if next day is Monday: (last_day_dow + 1) % 7 == 0
+                            # We need to check if next day is Mon/Wed/Fri: (last_day_dow + 1) % 7
                             next_day_dow = (last_day_dow + 1) % 7
                             if next_day_dow.ndim > 1:
                                 next_day_dow = next_day_dow.squeeze()
                             is_monday_horizon = (next_day_dow == 0).float()
+                            is_wednesday_horizon = (next_day_dow == 2).float()
+                            is_friday_horizon = (next_day_dow == 4).float()
                     else:
-                        # If we can't determine day of week, set all to zero (no Monday weighting)
+                        # If we can't determine day of week, set all to zero (no weekday weighting)
                         if y_pred.ndim == 2:
                             is_monday_horizon = torch.zeros((batch_size, y_pred.shape[1]), device=y_pred.device)
+                            is_wednesday_horizon = torch.zeros((batch_size, y_pred.shape[1]), device=y_pred.device)
+                            is_friday_horizon = torch.zeros((batch_size, y_pred.shape[1]), device=y_pred.device)
                         else:
                             is_monday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
+                            is_wednesday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
+                            is_friday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
                 
                 # Extract is_golden_window for the prediction horizon (for MOONCAKE category)
                 is_golden_window_horizon = None
@@ -1906,6 +1930,10 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     category_loss_weights=cat_loss_weights if cat_loss_weights else None,
                     is_monday=is_monday_horizon,
                     monday_loss_weight=monday_weight,
+                    is_wednesday=is_wednesday_horizon,
+                    wednesday_loss_weight=wednesday_weight,
+                    is_friday=is_friday_horizon,
+                    friday_loss_weight=friday_weight,
                     is_golden_window=is_golden_window_horizon,
                     golden_window_weight=golden_window_weight,
                     is_peak_loss_window=is_peak_loss_window_horizon,
@@ -1919,7 +1947,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         
         criterion = create_criterion(
             category_loss_weights, 
-            monday_loss_weight, 
+            monday_loss_weight,
+            wednesday_loss_weight,
+            friday_loss_weight,
             golden_window_weight,
             peak_loss_window_weight,
             august_boost_weight,
