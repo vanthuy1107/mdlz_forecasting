@@ -185,11 +185,6 @@ class Trainer:
             # than raising an error and aborting training.
             if val_loader is None or len(val_loader) == 0:
                 val_loss = train_loss
-                if verbose:
-                    print(
-                        "WARNING: Validation dataloader is empty. "
-                        "Using training loss as a proxy for validation loss."
-                    )
             else:
                 val_loss, _, _ = self.evaluate(val_loader, return_predictions=False)
             self.val_losses.append(val_loss)
@@ -220,7 +215,6 @@ class Trainer:
                 print(
                     f"EPOCH {self.current_epoch}/{epochs}: "
                     f"Train loss: {train_loss:.4f} | "
-                    f"Val loss: {val_loss:.4f} | "
                     f"LR: {current_lr:.6f}"
                 )
         
@@ -228,7 +222,7 @@ class Trainer:
         if save_best and self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
             if verbose:
-                print(f"\nBest validation loss: {self.best_val_loss:.4f}")
+                print(f"\nBest train loss: {self.best_val_loss:.4f}")
         
         return self.train_losses, self.val_losses
     

@@ -48,8 +48,6 @@ class RollingGroupScaler:
             (df[self.time_col] >= start_date) &
             (df[self.time_col] < origin)
         )
-        print(f"Start date: {start_date}")
-        print(f"Origin: {origin}")
 
         df_window = df.loc[mask]
 

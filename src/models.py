@@ -30,175 +30,60 @@ Example implementation:
 
 import torch
 import torch.nn as nn
-from torch import Tensor
-from typing import Optional, Tuple
 
 
-class RNNWithCategory(nn.Module):
-    """Category-aware LSTM forecaster.
-
-    Args:
-        num_categories: Number of unique product categories.
-        cat_emb_dim: Dimension of category embedding vectors.
-        input_dim: Number of time-series features per timestep (without category).
-        hidden_size: LSTM hidden state size.
-        n_layers: Number of LSTM layers.
-        output_dim: Output dimension (e.g., 1 for single-step forecast).
-    """
-
+class RNNForecastor(nn.Module):
     def __init__(
-        self,
-        num_categories: int,
-        cat_emb_dim: int,
-        input_dim: int,
-        hidden_size: int,
-        n_layers: int,
-        output_dim: int,
-        use_layer_norm: bool = True,
-    ) -> None:
+        self, num_categories, cat_emb_dim, 
+        input_dim, hidden_size,
+        n_layers, output_dim=30
+    ):
         super().__init__()
-
-        self.num_categories = num_categories
-        self.cat_emb_dim = cat_emb_dim
-        self.input_dim = input_dim
-        self.hidden_size = hidden_size
         self.n_layers = n_layers
-        self.use_layer_norm = use_layer_norm
 
-        # Category embedding
-        self.cat_embedding = nn.Embedding(num_categories, cat_emb_dim)
+        self.cat_emb = nn.Embedding(num_categories, cat_emb_dim)
 
-        # Initialize hidden state from category embedding
-        self.h0_fc = nn.Linear(cat_emb_dim, hidden_size)
-
-        # LSTM over concatenated [time_features, category_embedding]
         self.lstm = nn.LSTM(
             input_size=input_dim + cat_emb_dim,
             hidden_size=hidden_size,
             num_layers=n_layers,
-            batch_first=True,
+            batch_first=True
         )
 
-        # Final prediction layer: outputs entire forecast horizon at once (direct multi-step)
-        # This prevents exposure bias from recursive forecasting
-        self.fc = nn.Linear(hidden_size, output_dim)
-
-        # Optional Layer Normalization on the final hidden state to
-        # reduce sensitivity to absolute scale and improve stability.
-        self.layer_norm = nn.LayerNorm(hidden_size) if use_layer_norm else None
-
-    def forward(self, x_seq: Tensor, x_cat: Tensor) -> Tensor:
-        """Forward pass.
-
-        Args:
-            x_seq: Input sequence of shape (B, T, D) with D == input_dim.
-            x_cat: Category IDs of shape (B,) or (B, 1).
-
-        Returns:
-            Tensor of shape (B, output_dim) with predictions for entire forecast horizon.
-            For direct multi-step forecasting, output_dim = horizon (e.g., 30 days).
-        """
-        # Ensure category IDs are 1D long tensors
-        if x_cat.dim() > 1:
-            x_cat = x_cat.squeeze(-1)
-        x_cat = x_cat.long()
-
-        batch_size, seq_len, _ = x_seq.shape
-
-        # Category embedding: (B, cat_emb_dim)
-        cat_vec = self.cat_embedding(x_cat)
-
-        # Hidden state initialization from category embedding
-        # h0_single: (B, hidden_size)
-        h0_single = torch.tanh(self.h0_fc(cat_vec))
-        # h0: (num_layers, B, hidden_size)
-        h0 = h0_single.unsqueeze(0).repeat(self.n_layers, 1, 1)
-
-        # Cell state initialized to zeros
-        c0 = torch.zeros(
-            self.n_layers,
-            batch_size,
-            self.hidden_size,
-            device=x_seq.device,
-            dtype=x_seq.dtype,
+        self.h0_fc = nn.Linear(cat_emb_dim, hidden_size)
+        #self.fc = nn.Linear(hidden_size, output_dim)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_dim)
         )
 
-        # Expand category embedding across time dimension and concatenate
-        # cat_seq: (B, T, cat_emb_dim)
-        cat_seq = cat_vec.unsqueeze(1).expand(-1, seq_len, -1)
-        # x: (B, T, input_dim + cat_emb_dim)
+    def forward(self, x_seq, x_cat):
+        # x_seq: (B, T, F)
+        # x_cat: (B,)
+               
+        B, T, _ = x_seq.shape
+
+        x_cat = x_cat.long()  # Ensure cat is long for embedding
+        cat_vec = self.cat_emb(x_cat)              # (B, E)
+
+        # init hidden
+        h0 = self.h0_fc(cat_vec)                   # (B, H)
+        h0 = h0.unsqueeze(0).repeat(self.n_layers, 1, 1)
+
+        c0 = torch.zeros_like(h0)
+
+        # expand category over time
+        cat_seq = cat_vec.unsqueeze(1).expand(B, T, -1)
         x = torch.cat([x_seq, cat_seq], dim=-1)
 
-        # LSTM forward
-        out, _ = self.lstm(x, (h0.to(x_seq.device), c0))
-        # Take last timestep output: (B, hidden_size)
-        last_out = out[:, -1, :]
-
-        # Apply LayerNorm if enabled
-        if self.layer_norm is not None:
-            last_out = self.layer_norm(last_out)
-
-        # Final prediction: outputs entire forecast horizon at once
-        # Shape: (B, output_dim) where output_dim = horizon (e.g., 30)
-        pred = self.fc(last_out)
-        return pred
+        out, _ = self.lstm(x, (h0, c0))
+        out = out[:, -1, :]
+        y = self.fc(out)
+        return y
 
 
-class RNNForecastor(nn.Module):
-    """Baseline RNN/LSTM forecaster without explicit category conditioning.
-
-    Args:
-        embedding_dim: Number of input features per timestep.
-        hidden_size: Hidden state size of the RNN/LSTM.
-        out_dim: Output dimension (e.g., 1 for single-step forecast).
-        n_layers: Number of RNN/LSTM layers.
-        dropout_prob: Dropout probability applied before the final layer.
-    """
-
-    def __init__(
-        self,
-        embedding_dim: int,
-        hidden_size: int,
-        out_dim: int,
-        n_layers: int = 1,
-        dropout_prob: float = 0.0,
-    ) -> None:
-        super().__init__()
-
-        self.embedding_dim = embedding_dim
-        self.hidden_size = hidden_size
-        self.out_dim = out_dim
-        self.n_layers = n_layers
-
-        # Core sequence model
-        self.rnn = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_size,
-            num_layers=n_layers,
-            batch_first=True,
-        )
-
-        self.dropout = nn.Dropout(dropout_prob)
-        self.fc = nn.Linear(hidden_size, out_dim)
-
-    def forward(self, x_seq: Tensor, x_cat: Optional[Tensor] = None) -> Tensor:
-        """Forward pass.
-
-        Args:
-            x_seq: Input sequence of shape (B, T, D) with D == embedding_dim.
-            x_cat: Optional category tensor (ignored, present for API compatibility).
-
-        Returns:
-            Tensor of shape (B, out_dim) with predictions.
-        """
-        # LSTM forward
-        out, _ = self.rnn(x_seq)
-        # Take last timestep output
-        last_out = out[:, -1, :]
-        last_out = self.dropout(last_out)
-
-        return self.fc(last_out)
-
-
-__all__ = ["RNNWithCategory", "RNNForecastor"]
+__all__ = ["RNNForecastor"]
 

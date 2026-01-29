@@ -56,6 +56,85 @@ def plot_difference(
         plt.close()
 
 
+def plot_monthly_forecast(
+    df,
+    category,
+    category_name,
+    month_str,
+    output_dir: str = "outputs/plots",
+    show: bool = False
+):
+    """
+    Plot monthly forecast for a specific category.
+    
+    Args:
+        df: DataFrame with columns ['date', 'predicted', 'actual', 'category']
+        category: Category ID to filter
+        category_name: Category name for plot title and filename
+        month_str: Month string (e.g., '2025-01', '2025-02')
+        output_dir: Base output directory
+        show: Whether to display the plot
+    """
+    import pandas as pd
+    from pathlib import Path
+    
+    # Filter data for this category and month
+    mask = (df['category'] == category) & (df['date'].dt.to_period('M').astype(str) == month_str)
+    df_filtered = df[mask].sort_values('date')
+    
+    if len(df_filtered) == 0:
+        print(f"    [WARNING] No data for category={category} ({category_name}), month={month_str}")
+        return
+    
+    # Create output directory using category name
+    cat_output_dir = Path(output_dir) / category_name
+    cat_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Plot
+    plt.figure(figsize=(14, 6))
+    
+    y_true = df_filtered['actual'].values
+    y_pred = df_filtered['predicted'].values
+    dates = df_filtered['date'].values
+    
+    # Format dates for x-axis
+    date_labels = [pd.Timestamp(d).strftime('%m-%d') for d in dates]
+    x_pos = range(len(dates))
+    
+    plt.plot(x_pos, y_true, label="Actual", marker="o", linewidth=2, markersize=6, color='blue')
+    plt.plot(x_pos, y_pred, label="Predicted", marker="x", linewidth=2, markersize=6, color='red')
+    
+    # Format x-axis
+    plt.xticks(x_pos[::max(1, len(x_pos)//10)], date_labels[::max(1, len(x_pos)//10)], rotation=45)
+    
+    plt.title(f"Monthly Forecast - {category_name} - {month_str}")
+    plt.xlabel("Date")
+    plt.ylabel("Volume (CBM)")
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    
+    # Add statistics to plot
+    mae = np.abs(y_true - y_pred).mean()
+    rmse = np.sqrt(((y_true - y_pred) ** 2).mean())
+    accuracy = 100 * (1 - np.abs(y_true - y_pred).sum() / np.abs(y_true).sum()) if np.abs(y_true).sum() > 0 else 0
+    
+    stats_text = f"MAE: {mae:.2f} | RMSE: {rmse:.2f} | Accuracy: {accuracy:.1f}%"
+    plt.text(0.5, 0.95, stats_text, transform=plt.gca().transAxes, 
+             ha='center', va='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+             fontsize=9)
+    
+    plt.tight_layout()
+    
+    # Save figure using category name
+    filename = f"{category_name}_{month_str}.png"
+    filepath = cat_output_dir / filename
+    plt.savefig(filepath, dpi=300, bbox_inches="tight")
+    print(f"    - Saved: {filepath}")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
 def plot_learning_curve(
     train_losses: Union[list, np.ndarray],
     val_losses: Union[list, np.ndarray],

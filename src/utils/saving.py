@@ -1,6 +1,9 @@
 """Utilities for saving predictions and results."""
+import os
 import numpy as np
+import pandas as pd
 from typing import Union, Optional
+from pathlib import Path
 
 
 def _to_scalar(x) -> float:
@@ -119,4 +122,81 @@ def save_window_samples(
             f.write(f"  y = {y[i]:,.6f}\n")
         
         f.write("\n" + "=" * 90 + "\n")
+
+
+def save_monthly_forecast(
+    test_results_monthly: pd.DataFrame,
+    output_path: str = "outputs/forecast_on_month_start.csv"
+):
+    """
+    Save monthly forecast results (30-day windows starting from day 1 of month).
+    
+    Args:
+        test_results_monthly: DataFrame with columns ['predicted', 'actual', 'category', 'date'].
+        output_path: Path to save the CSV file.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Ensure date column is datetime for consistent formatting
+    if 'date' in test_results_monthly.columns:
+        test_results_monthly = test_results_monthly.copy()
+        test_results_monthly['date'] = pd.to_datetime(test_results_monthly['date'])
+    
+    # Save to CSV
+    test_results_monthly.to_csv(output_path, index=False, encoding='utf-8')
+    print(f"✓ Saved monthly forecast to: {output_path}")
+    print(f"  - Total rows: {len(test_results_monthly)}")
+    print(f"  - Columns: {list(test_results_monthly.columns)}")
+
+
+def export_chunk_windows(
+    chunk_id: int,
+    preds: np.ndarray,        # (N, horizon)
+    y_true: np.ndarray,       # (N, horizon)
+    cats: np.ndarray,         # (N,)
+    window_dates: np.ndarray, # (N,)
+    input_size: int,
+    horizon: int,
+    output_dir: str = "debug_windows"
+):
+    """
+    Export all windows of a chunk to a CSV file (1 row = 1 window).
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    rows = []
+    for i in range(len(window_dates)):
+        t0 = pd.Timestamp(window_dates[i])
+
+        row = {
+            "chunk_id": chunk_id,
+            "category": int(cats[i]),
+            "window_start_date": t0.date(),
+
+            "input_start_date": (t0 - pd.Timedelta(days=input_size)).date(),
+            "input_end_date": (t0 - pd.Timedelta(days=1)).date(),
+
+            "horizon_start_date": t0.date(),
+            "horizon_end_date": (t0 + pd.Timedelta(days=horizon - 1)).date(),
+
+            "y_true": y_true[i].tolist(),
+            "y_pred": preds[i].tolist(),
+        }
+        rows.append(row)
+
+    df_out = pd.DataFrame(rows)
+
+    filepath = os.path.join(
+        output_dir,
+        f"chunk_{chunk_id:02d}_windows.csv"
+    )
+    df_out.to_csv(filepath, index=False)
+
+    print(
+        f"       📄 Exported {len(df_out)} windows → {filepath}"
+    )
+
+
 
