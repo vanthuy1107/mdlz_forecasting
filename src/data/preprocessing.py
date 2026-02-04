@@ -64,7 +64,7 @@ def slicing_window(
             # AND prediction_end_date (label_date + horizon - 1) <= label_end_date
             if label_start_date and label_date < label_start_date:
                 continue
-            if label_end_date and (label_date + horizon - 1) > label_end_date:
+            if label_end_date and label_date >= label_end_date:
                 continue
 
             # input window
@@ -237,7 +237,7 @@ def add_temporal_features(
     
     # Extract month (1-12) and day of month (1-31)
     month = df[time_col].dt.month
-    dayofmonth = df[time_col].dt.day
+    #dayofmonth = df[time_col].dt.day
     
     # Create cyclical encoding for month (0-11 for sin/cos, so subtract 1)
     # Normalize to [0, 1] range, then apply sin/cos
@@ -246,8 +246,8 @@ def add_temporal_features(
     
     # Create cyclical encoding for day of month (0-30, so subtract 1)
     # Normalize to [0, 1] range, then apply sin/cos
-    df[dayofmonth_sin_col] = np.sin(2 * np.pi * (dayofmonth - 1) / 31)
-    df[dayofmonth_cos_col] = np.cos(2 * np.pi * (dayofmonth - 1) / 31)
+    # df[dayofmonth_sin_col] = np.sin(2 * np.pi * (dayofmonth - 1) / 31)
+    # df[dayofmonth_cos_col] = np.cos(2 * np.pi * (dayofmonth - 1) / 31)
     
     return df
 
@@ -1024,34 +1024,32 @@ def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_co
         DataFrame enriched with engineered features.
     """    
 
-    data = data.copy()
-
-    # data = add_temporal_features(
-    #     data,
-    #     time_col=time_col,
-    #     month_sin_col="month_sin",
-    #     month_cos_col="month_cos",
-    #     dayofmonth_sin_col="dayofmonth_sin",
-    #     dayofmonth_cos_col="dayofmonth_cos"
-    # )
+    data = add_temporal_features(
+        data,
+        time_col=time_col,
+        month_sin_col="month_sin",
+        month_cos_col="month_cos",
+        dayofmonth_sin_col="dayofmonth_sin",
+        dayofmonth_cos_col="dayofmonth_cos"
+    )
     
-    # # Feature engineering: Add weekend features
-    # print("  - Adding weekend features (is_weekend, day_of_week)...")
-    # data = add_weekend_features(
-    #     data,
-    #     time_col=time_col,
-    #     is_weekend_col="is_weekend",
-    #     day_of_week_col="day_of_week"
-    # )
+    # Feature engineering: Add weekend features
+    print("  - Adding weekend features (is_weekend, day_of_week)...")
+    data = add_weekend_features(
+        data,
+        time_col=time_col,
+        is_weekend_col="is_weekend",
+        day_of_week_col="dow"
+    )
     
-    # # Feature engineering: Add cyclical day-of-week encoding (sin/cos)
-    # print("  - Adding cyclical day-of-week features (day_of_week_sin, day_of_week_cos)...")
-    # data = add_day_of_week_cyclical_features(
-    #     data,
-    #     time_col=time_col,
-    #     day_of_week_sin_col="day_of_week_sin",
-    #     day_of_week_cos_col="day_of_week_cos"
-    # )
+    # Feature engineering: Add cyclical day-of-week encoding (sin/cos)
+    print("  - Adding cyclical day-of-week features (day_of_week_sin, day_of_week_cos)...")
+    data = add_day_of_week_cyclical_features(
+        data,
+        time_col=time_col,
+        day_of_week_sin_col="dow_sin",
+        day_of_week_cos_col="dow_cos"
+    )
     
     # # Feature engineering: Add weekday volume tier features
     # print("  - Adding weekday volume tier features (weekday_volume_tier, is_high_volume_weekday)...")
@@ -1093,7 +1091,7 @@ def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_co
     #     lunar_day_cos_col="lunar_day_cos",
     # )
 
-    # # Feature engineering: Vietnamese holiday features (with days_since_holiday)
+    # Feature engineering: Vietnamese holiday features (with days_since_holiday)
     # print("  - Adding Vietnamese holiday features...")
     # data = add_holiday_features_vietnam(
     #     data,
@@ -1139,7 +1137,7 @@ def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_co
     #     density_last_year_col="cbm_per_qty_last_year",
     # )
 
-    # # Feature engineering: Add rolling means and momentum features (after aggregation)
+    # Feature engineering: Add rolling means and momentum features (after aggregation)
     # print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
     # data = add_rolling_and_momentum_features(
     #     data,

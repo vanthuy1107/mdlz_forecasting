@@ -8,32 +8,32 @@ data:
   
  
   feature_cols:
-    # - "month_sin"
-    # - "month_cos"
+    - "month_sin"
+    - "month_cos"
     # - "dayofmonth_sin"
     # - "dayofmonth_cos"
-    # - "holiday_indicator"
-    # - "days_until_next_holiday"
-    # - "days_since_holiday"
-    # - "is_weekend"
-    # - "day_of_week_sin"
-    # - "day_of_week_cos"
+    - "is_weekend"
+    - "dow_sin"
+    - "dow_cos"
     # - "weekday_volume_tier"
     # - "is_high_volume_weekday"
     # - "is_EOM"
     # - "days_until_month_end"
     # - "lunar_month"
     # - "lunar_day"
-    # - "rolling_mean_7d"
-    # - "rolling_mean_30d"
-    # - "momentum_3d_vs_14d"
     # - "lunar_month_sin"
     # - "lunar_month_cos"
     # - "lunar_day_sin"
     # - "lunar_day_cos"
+    # - "holiday_indicator"
+    # - "days_until_next_holiday"
+    # - "days_since_holiday"
     # - "days_to_tet"
     # - "cbm_per_qty"
     # - "cbm_per_qty_last_year"
+    # - "rolling_mean_7d"
+    # - "rolling_mean_30d"
+    # - "momentum_3d_vs_14d"
     - "CUBE_OUT"
   
   # Target column
@@ -48,18 +48,18 @@ data:
 # Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
 # This prevents exposure bias from recursive forecasting where errors compound
 window:
-  input_size: 28  # Increased from 30 to provide more context
-  horizon: 28     # Changed from 1 to 30 for direct multi-step prediction
+  input_size: 7
+  horizon: 2     
 
 # Model Configuration
 model:
-  name: "RNNForecastor"  # or "RNNForecastor"
+  name: "RNNForecastor" 
   num_brands: null  # Will be set dynamically from data
   brand_emb_dim: 4
-  input_dim: 15  # Updated dynamically in code to match feature_cols length
-  hidden_size: 64
+  input_dim: null  # Updated dynamically in code to match feature_cols length
+  hidden_size: 32
   n_layers: 2
-  output_dim: 28  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
+  output_dim: 2  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
   dropout_prob: 0.2  # Only for RNNForecastor
 
 # Training Configuration
@@ -67,9 +67,10 @@ training:
   batch_size: 64
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 20
+  epochs: 40
   learning_rate: 0.001
   optimizer: "Adam"
+  loss: "Huber"
   
   
   # Learning rate scheduler
@@ -90,12 +91,11 @@ training:
 output:
   output_dir: "../outputs"
   save_model: true
-  model_dir: "../outputs/models"
+  model_dir: "../outputs/mvp_test/models"
   
   # Visualization
   visualize:
     save_plots: true
-    show_plots: false
 
 # Inference Configuration
 inference:

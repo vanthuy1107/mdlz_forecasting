@@ -1,7 +1,5 @@
 # Data files
-dataset/**/*.csv
-dataset/**/*.xlsx
-dataset/**/*.xls
+dataset/
 
 # Python cache
 __pycache__/

@@ -21,6 +21,7 @@ from src.data import (
 from src.data.preprocessing import add_features
 from src.models import RNNForecastor
 from src.training import Trainer
+from src.utils import spike_aware_huber
 
 
 def train_single_model(data, config):
@@ -50,6 +51,7 @@ def train_single_model(data, config):
     os.makedirs(mvp_models_dir, exist_ok=True)
     config.set('output.output_dir', mvp_output_dir)
     config.set('output.model_dir', mvp_models_dir)
+    config.set('output.save_model', True) 
     
     # Ensure time column is datetime and sort by time
     if not pd.api.types.is_datetime64_any_dtype(data[time_col]):
@@ -78,13 +80,27 @@ def train_single_model(data, config):
         group_col=brand_id_col,
         time_col=time_col,
         feature_cols=target_col,
-        lookback_months=6
+        lookback_months=3
     )
-    # scaler = fit_scaler(train_data, target_col=target_col_for_model)
+    y = data['CUBE_OUT']
+    print("\nBEFORE SCALE:")
+    print("min:", y.min())
+    print("max:", y.max())
+    print("p50:", y.quantile(0.5))
+    print("p90:", y.quantile(0.9))
+    print("p99:", y.quantile(0.99))
     test_end_date = pd.Timestamp("2025-01-01")
     data[time_col] = pd.to_datetime(data[time_col])
     scaler.fit(data, test_end_date)
     data_scaled = scaler.transform(data)
+
+    y = data_scaled['CUBE_OUT']
+    print("\nAFTER SCALE:")
+    print("min:", y.min())
+    print("max:", y.max())
+    print("p50:", y.quantile(0.5))
+    print("p90:", y.quantile(0.9))
+    print("p99:", y.quantile(0.99))
    
     
     # Create windows using slicing_window_BRAND
@@ -102,6 +118,8 @@ def train_single_model(data, config):
 
     print(f"  - Input size: {input_size}")
     print(f"  - Horizon: {horizon}")
+    print(f"  - Embedding dims: {model_config['brand_emb_dim']}")
+    print(f"  - Feature dims: {model_config['input_dim']}")
     print(f"  - Feature columns: {feature_cols}")
     
     print("  - Creating training windows...")
@@ -114,7 +132,7 @@ def train_single_model(data, config):
         brand_col=brand_id_col,
         time_col=time_col,
         label_start_date=None,
-        label_end_date=None,
+        label_end_date=test_end_date,
         return_dates=False
     )
     
@@ -140,15 +158,21 @@ def train_single_model(data, config):
         input_dim=model_config['input_dim'],
         hidden_size=model_config['hidden_size'],
         n_layers=model_config['n_layers'],
-        output_dim=horizon
+        dropout_prob=model_config['dropout_prob'],
+        output_dim=model_config['output_dim']
     )
     print(f"  - Model: {model_config['name']}")
     print(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Build loss, optimizer, scheduler
-    # Force spike_aware_mse loss function for Vietnamese market demand spikes
-    print("  - Using HuberLoss loss (delta=0.4)...")
-    criterion = nn.HuberLoss(delta=0.4)
+    w_loss = [1.0, 0.0]
+    criterion = lambda yhat, y: (
+        w_loss[0] * nn.HuberLoss(delta=0.9)(yhat, y)
+        + w_loss[1] * nn.MSELoss()(yhat, y)
+    )
+    criterion = lambda yhat, y: (
+        spike_aware_huber(yhat, y, delta=0.9, alpha=2.0)
+    )
     
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -237,7 +261,6 @@ def train_single_model(data, config):
             'brand_col': data_config['brand_col'],
             'feature_cols': data_config['feature_cols'],
             'target_col': data_config['target_col'],
-            'daily_aggregation': True,  # Flag indicating daily aggregation was used
             'scaling': {
                 'method': 'RobustScaler',
                 'valid_group': list(scaler.valid_groups_)
@@ -259,19 +282,12 @@ def train_single_model(data, config):
         json.dump(metadata, f, indent=2, ensure_ascii=False)
     print(f"  - Metadata saved to: {metadata_path}")
     
-    # Generate prediction plot
-    print("\n" + "=" * 80)
-    print("GENERATING PLOTS")
-    print("=" * 80)
     output_dir = config.output['output_dir']
-    
-    
     result = {
         'output_dir': output_dir,
         'model_dir': save_dir,
         'training_time': training_time
     }
-    
     return result
 
 
@@ -287,12 +303,6 @@ def main():
     
     # Override configuration for MVP test
     print("\n[2/8] Applying MVP test overrides...")
-    # Use years from config.yaml instead of hardcoding
-    config.set('data.years', config.data.get('years'))
-    # Longer warm-up and lower LR for complex feature set
-    # training.epochs and training.learning_rate now come from config.yaml
-    config.set('training.learning_rate', 0.001)
-    config.set('training.loss', 'spike_aware_mse')  # Force spike_aware_mse loss
     
     # Set base output directory
     mvp_output_dir = "outputs/mvp_test"
@@ -301,14 +311,12 @@ def main():
     os.makedirs(mvp_models_dir, exist_ok=True)
     config.set('output.output_dir', mvp_output_dir)
     config.set('output.model_dir', mvp_models_dir)
-    config.set('output.save_model', True)  # Ensure model saving is enabled
     
     # Get BRAND mode from config
     data_config = config.data
     
     print(f"  - Data years: {config.data['years']}")
     print(f"  - Training epochs: {config.training['epochs']}")
-    print(f"  - Loss function: spike_aware_mse (forced)")
     print(f"  - Base output directory: {mvp_output_dir}")
     
     # Load data
@@ -321,6 +329,7 @@ def main():
     # Load 2023 and 2024 data
     try:
         data = data_reader.load(years=data_config['years'])
+        data = data[~data["BRAND"].isin(["KINH DO CAKE", "LU"])]
     except FileNotFoundError:
         print("[WARNING] Combined year files not found, trying pattern-based loading...")
         file_prefix = data_config.get('file_prefix', 'Outboundreports')
@@ -329,18 +338,7 @@ def main():
             file_prefix=file_prefix
         )
     
-    print(f"  - Loaded {len(data)} samples before filtering")
-    
-    # Fix DtypeWarning: Cast columns (0, 4) to string/BRAND to resolve mixed types
-    if len(data.columns) > 0:
-        col_0 = data.columns[0]
-        if col_0 in data.columns:
-            data[col_0] = data[col_0].astype(str)
-    if len(data.columns) > 4:
-        col_4 = data.columns[4]
-        if col_4 in data.columns:
-            data[col_4] = data[col_4].astype(str)
-    print("  - Fixed DtypeWarning by casting columns 0 and 4 to string")
+    print(f"  - Loaded {len(data)} samples")
     
     # Get available brands
     brand_col = data_config['brand_col']
@@ -349,11 +347,6 @@ def main():
     
     available_brands = sorted(data[brand_col].unique().tolist())
     print(f"  - Available brands in data: {available_brands}")
-    
-    # Determine training tasks based on BRAND_mode
-    
-    # Execute training tasks
-    results = []
 
     print(f"\n{'=' * 80}")
     print(f"TRAINING")
@@ -361,7 +354,6 @@ def main():
     
     try:
         result = train_single_model(data, config)
-        results.append(result)
         
         print(f"\n✓ Training completed successfully")
         print(f"  - Results saved to: {result['output_dir']}")
@@ -375,11 +367,9 @@ def main():
     print("\n" + "=" * 80)
     print("MVP TEST COMPLETE!")
     print("=" * 80)
-    
-    for i, result in enumerate(results, 1):
-        print(f"   - Output directory: {result['output_dir']}")
-        print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
-        print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
+    print(f"   - Output directory: {result['output_dir']}")
+    print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
+    print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")
     print("=" * 80)
 
 

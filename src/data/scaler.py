@@ -20,7 +20,7 @@ class RollingGroupScaler:
         self.feature_cols = feature_cols
         self.lookback_months = lookback_months
         self.scaler_cls = scaler_cls
-        self.scaler_kwargs = scaler_kwargs or {"quantile_range": (10, 90)}
+        self.scaler_kwargs = scaler_kwargs or {"quantile_range": (1, 99)}
 
         self.scalers = {}            # group_id -> scaler
         self.valid_groups_ = set()   # ✅ groups actually fitted
@@ -59,13 +59,12 @@ class RollingGroupScaler:
             self.scalers[g] = scaler
             self.valid_groups_.add(g)   # ✅ mark valid
 
-        
-        # print(f"[Scaler.fit] origin={origin}")
-        # print(f"[Scaler.fit] valid_groups_={self.valid_groups_}")
-
         if not self.valid_groups_:
             raise ValueError("No valid groups after fitting scaler")
-
+        
+        print("Scaler feature_cols:", self.feature_cols)
+        print("Scaler center_:", scaler.center_)
+        print("Scaler scale_:", scaler.scale_)
         return self
 
     def filter_invalid_groups(self, df):

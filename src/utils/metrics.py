@@ -1,352 +1,235 @@
-"""Metrics calculation utilities."""
+"""
+Clean, consistent metrics for demand / volume forecasting.
+
+Design principles:
+- Aggregate-first metrics (volume-weighted)
+- No per-row averaging for business KPIs
+- Safe handling of zeros
+- Clear separation between pointwise errors and business accuracy
+
+All functions accept numpy arrays or pandas Series.
+"""
+
 import numpy as np
 import pandas as pd
-import os
-from typing import Union, Tuple
+
+# ---------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------
+
+def _to_numpy(x):
+    if isinstance(x, (pd.Series, pd.DataFrame)):
+        return x.values
+    return np.asarray(x)
 
 
-def calculate_sfa_accuracy(
-    actual: Union[np.ndarray, pd.Series],
-    forecast: Union[np.ndarray, pd.Series]
-) -> Union[float, np.ndarray]:
-    """
-    Calculate Shipping Forecast Accuracy (SFA) for individual items or arrays.
-    
-    Formula: 
-    - If abs(actual - forecast) > actual, then accuracy = 0
-    - Otherwise, accuracy = 1 - abs(actual - forecast) / actual
-    
-    Special case:
-    - If actual = 0 and forecast = 0, then accuracy = 1
-    - If actual = 0 and forecast != 0, then accuracy = 0
-    
-    Args:
-        actual: Actual values (numpy array or pandas Series)
-        forecast: Forecasted values (same shape as actual)
-    
-    Returns:
-        Accuracy value(s) between 0 and 1. Returns single float for scalar input,
-        numpy array for array input.
-    """
-    actual = np.asarray(actual)
-    forecast = np.asarray(forecast)
-    
-    error = np.abs(actual - forecast)
-    
-    # Calculate accuracy where actual > 0
-    with np.errstate(divide='ignore', invalid='ignore'):
-        accuracy = 1.0 - error / actual
-    
-    # Rule 1: If error > actual, set accuracy = 0
-    accuracy = np.where(error > actual, 0.0, accuracy)
-    
-    # Rule 2: Handle actual = 0 cases
-    # If actual = 0 and forecast = 0, accuracy = 1
-    # If actual = 0 and forecast != 0, accuracy = 0
-    accuracy = np.where(actual == 0,
-                        np.where(forecast == 0, 1.0, 0.0),
-                        accuracy)
-    
-    return accuracy.item() if accuracy.shape == () else accuracy
+# ---------------------------------------------------------------------
+# Pointwise error metrics (diagnostic)
+# ---------------------------------------------------------------------
+
+def mae(y_true, y_pred):
+    """Mean Absolute Error (unweighted)."""
+    y_true = _to_numpy(y_true)
+    y_pred = _to_numpy(y_pred)
+    return np.mean(np.abs(y_true - y_pred))
 
 
-def calculate_sfa_by_brand(
-    df: pd.DataFrame,
-    actual_col: str = 'actual',
-    forecast_col: str = 'forecast',
-    brand_col: str = 'brand'
-) -> pd.DataFrame:
-    """
-    Calculate SFA accuracy grouped by brand.
-    
-    Args:
-        df: DataFrame with columns [actual_col, forecast_col, brand_col]
-        actual_col: Column name for actual values
-        forecast_col: Column name for forecast values
-        brand_col: Column name for brands
-    
-    Returns:
-        DataFrame with columns ['brand', 'accuracy', 'count']
-    """
-    results = []
-    
-    for brand in df[brand_col].unique():
-        brand_data = df[df[brand_col] == brand]
-        accuracies = calculate_sfa_accuracy(brand_data[actual_col].values, brand_data[forecast_col].values)
-        mean_accuracy = np.mean(accuracies)
-        
-        results.append({
-            'brand': brand,
-            'accuracy': mean_accuracy,
-            'count': len(brand_data)
-        })
-    
-    return pd.DataFrame(results)
+def rmse(y_true, y_pred):
+    """Root Mean Squared Error (unweighted)."""
+    y_true = _to_numpy(y_true)
+    y_pred = _to_numpy(y_pred)
+    return np.sqrt(np.mean((y_true - y_pred) ** 2))
 
 
-def calculate_sfa_by_date(
-    df: pd.DataFrame,
-    actual_col: str = 'actual',
-    forecast_col: str = 'forecast',
-    date_col: str = 'date'
-) -> pd.DataFrame:
+# ---------------------------------------------------------------------
+# Volume-weighted business metrics (recommended)
+# ---------------------------------------------------------------------
+
+def wape(y_true, y_pred):
     """
-    Calculate SFA accuracy grouped by date (daily).
-    
-    Args:
-        df: DataFrame with columns [actual_col, forecast_col, date_col]
-        actual_col: Column name for actual values
-        forecast_col: Column name for forecast values
-        date_col: Column name for dates
-    
-    Returns:
-        DataFrame with columns ['date', 'accuracy', 'count']
+    Weighted Absolute Percentage Error.
+    WAPE = sum(|y - yhat|) / sum(y)
     """
-    df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
-    
-    results = []
-    
-    for date in sorted(df[date_col].unique()):
-        date_data = df[df[date_col] == date]
-        accuracies = calculate_sfa_accuracy(date_data[actual_col].values, date_data[forecast_col].values)
-        mean_accuracy = np.mean(accuracies)
-        
-        results.append({
-            'date': date,
-            'accuracy': mean_accuracy,
-            'count': len(date_data)
-        })
-    
-    return pd.DataFrame(results)
+    y_true = _to_numpy(y_true)
+    y_pred = _to_numpy(y_pred)
+
+    denom = np.sum(y_true)
+    if denom == 0:
+        return 0.0 if np.sum(y_pred) == 0 else 1.0
+
+    return np.sum(np.abs(y_true - y_pred)) / denom
 
 
-def calculate_sfa_by_month(
-    df: pd.DataFrame,
-    actual_col: str = 'actual',
-    forecast_col: str = 'forecast',
-    date_col: str = 'date'
-) -> pd.DataFrame:
-    """
-    Calculate SFA accuracy grouped by month (monthly).
-    
-    Args:
-        df: DataFrame with columns [actual_col, forecast_col, date_col]
-        actual_col: Column name for actual values
-        forecast_col: Column name for forecast values
-        date_col: Column name for dates
-    
-    Returns:
-        DataFrame with columns ['month', 'accuracy', 'count']
-    """
-    df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
-    df['month'] = df[date_col].dt.to_period('M').astype(str)
-    
-    results = []
-    
-    for month in sorted(df['month'].unique()):
-        month_data = df[df['month'] == month]
-        accuracies = calculate_sfa_accuracy(month_data[actual_col].values, month_data[forecast_col].values)
-        mean_accuracy = np.mean(accuracies)
-        
-        results.append({
-            'month': month,
-            'accuracy': mean_accuracy,
-            'count': len(month_data)
-        })
-    
-    return pd.DataFrame(results)
+def sfa_daily_accuracy(y_true, y_pred, eps=1e-6):
+    y_true = _to_numpy(y_true).astype(float)
+    y_pred = _to_numpy(y_pred).astype(float)
+
+    acc = np.zeros_like(y_true, dtype=float)
+
+    near_zero = np.abs(y_true) <= eps
+    non_zero = ~near_zero
+
+    # normal SFA for non-zero actuals
+    acc[non_zero] = 1.0 - np.abs(y_pred[non_zero] - y_true[non_zero]) / y_true[non_zero]
+
+    # zero-demand handling
+    acc[near_zero] = (np.abs(y_pred[near_zero]) <= eps).astype(float)
+
+    acc = np.clip(acc, 0.0, 1.0)
+    return acc
 
 
 def calculate_sfa_by_brand_and_date(
-    df: pd.DataFrame,
-    actual_col: str = 'actual',
-    forecast_col: str = 'forecast',
-    brand_col: str = 'brand',
-    date_col: str = 'date'
-) -> pd.DataFrame:
-    """
-    Calculate SFA accuracy grouped by both brand and date (daily per brand).
-    
-    Args:
-        df: DataFrame with columns [actual_col, forecast_col, brand_col, date_col]
-        actual_col: Column name for actual values
-        forecast_col: Column name for forecast values
-        brand_col: Column name for brands
-        date_col: Column name for dates
-    
-    Returns:
-        DataFrame with columns ['brand', 'date', 'accuracy', 'actual', 'forecast']
-    """
+    df,
+    actual_col="actual",
+    forecast_col="predicted",
+    brand_col="brand",
+    date_col="date",
+):
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col])
-    
-    results = []
-    
-    for brand in sorted(df[brand_col].unique()):
-        brand_data = df[df[brand_col] == brand]
-        
-        for date in sorted(brand_data[date_col].unique()):
-            date_data = brand_data[brand_data[date_col] == date]
-            accuracies = calculate_sfa_accuracy(date_data[actual_col].values, date_data[forecast_col].values)
-            mean_accuracy = np.mean(accuracies)
-            total_actual = date_data[actual_col].sum()
-            total_forecast = date_data[forecast_col].sum()
-            
-            results.append({
-                'brand': brand,
-                'date': date,
-                'accuracy': mean_accuracy,
-                'actual': total_actual,
-                'forecast': total_forecast
-            })
-    
-    return pd.DataFrame(results)
 
+    df["sfa_accuracy"] = sfa_daily_accuracy(
+        df[actual_col].values,
+        df[forecast_col].values
+    )
+
+    return (
+        df
+        .groupby([brand_col, date_col])["sfa_accuracy"]
+        .mean()
+        .reset_index()
+    )
 
 def calculate_sfa_by_brand_and_month(
-    df: pd.DataFrame,
-    actual_col: str = 'actual',
-    forecast_col: str = 'forecast',
-    brand_col: str = 'brand',
-    date_col: str = 'date'
-) -> pd.DataFrame:
-    """
-    Calculate SFA accuracy grouped by both brand and month (monthly per brand).
-    
-    Args:
-        df: DataFrame with columns [actual_col, forecast_col, brand_col, date_col]
-        actual_col: Column name for actual values
-        forecast_col: Column name for forecast values
-        brand_col: Column name for brands
-        date_col: Column name for dates
-    
-    Returns:
-        DataFrame with columns ['brand', 'month', 'accuracy', 'actual', 'forecast']
-    """
+    df,
+    actual_col="actual",
+    forecast_col="predicted",
+    brand_col="brand",
+    date_col="date",
+):
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col])
-    df['month'] = df[date_col].dt.to_period('M').astype(str)
-    
-    results = []
-    
-    for brand in sorted(df[brand_col].unique()):
-        brand_data = df[df[brand_col] == brand]
-        
-        for month in sorted(brand_data['month'].unique()):
-            month_data = brand_data[brand_data['month'] == month]
-            accuracies = calculate_sfa_accuracy(month_data[actual_col].values, month_data[forecast_col].values)
-            mean_accuracy = np.mean(accuracies)
-            total_actual = month_data[actual_col].sum()
-            total_forecast = month_data[forecast_col].sum()
-            
-            results.append({
-                'brand': brand,
-                'month': month,
-                'accuracy': mean_accuracy,
-                'actual': total_actual,
-                'forecast': total_forecast
-            })
-    
-    return pd.DataFrame(results)
+    df["month"] = df[date_col].dt.to_period("M").astype(str)
 
+    df["daily_sfa"] = sfa_daily_accuracy(
+        df[actual_col].values,
+        df[forecast_col].values
+    )
+
+    return (
+        df
+        .groupby([brand_col, "month"])["daily_sfa"]
+        .mean()
+        .reset_index(name="sfa_accuracy")
+    )
+
+
+
+# ---------------------------------------------------------------------
+# High-level report (text-friendly)
+# ---------------------------------------------------------------------
 
 def generate_accuracy_report(
-    df: pd.DataFrame,
-    actual_col: str = 'actual',
-    forecast_col: str = 'predicted',
-    brand_col: str = 'brand',
-    date_col: str = 'date',
-    brand_name_map: dict = None,
-    output_path: str = None
-) -> str:
+    df,
+    actual_col="actual",
+    forecast_col="predicted",
+    brand_col="brand",
+    date_col="date",
+    brand_name_map=None,
+    output_path=None,
+):
     """
-    Generate a comprehensive accuracy report and optionally save to file.
-    
-    Args:
-        df: DataFrame with prediction results
-        actual_col: Column name for actual values
-        forecast_col: Column name for forecast values
-        brand_col: Column name for brands
-        date_col: Column name for dates
-        brand_name_map: Dictionary mapping brand IDs to names (optional)
-        output_path: Path to save report (optional, returns string if not provided)
-    
-    Returns:
-        Report string
+    Generate a clean text report using DAILY-AVERAGED SFA accuracy.
     """
-    report = []
-    report.append("=" * 80)
-    report.append("SHIPPING FORECAST ACCURACY (SFA) REPORT")
-    report.append("=" * 80)
-    report.append("")
-    
-    # Overall accuracy
-    overall_acc = calculate_sfa_accuracy(df[actual_col].values, df[forecast_col].values)
-    overall_accuracy = np.mean(overall_acc)
-    report.append(f"OVERALL ACCURACY: {overall_accuracy:.2%}")
-    report.append("")
-    
-    # By brand
-    report.append("-" * 80)
-    report.append("ACCURACY BY brand")
-    report.append("-" * 80)
-    brand_acc = calculate_sfa_by_brand(df, actual_col, forecast_col, brand_col)
-    brand_acc = brand_acc.sort_values('accuracy', ascending=False)
-    
-    for _, row in brand_acc.iterrows():
-        brand_id = row['brand']
-        brand_name = brand_name_map.get(brand_id, f"brand_{brand_id}") if brand_name_map else f"brand_{brand_id}"
-        report.append(f"  {brand_name:30s} | Accuracy: {row['accuracy']:6.2%} | Count: {int(row['count']):5d}")
-    report.append("")
-    
-    # By brand and month
-    report.append("-" * 80)
-    report.append("ACCURACY BY brand AND MONTH")
-    report.append("-" * 80)
-    
-    brand_month_acc = calculate_sfa_by_brand_and_month(df, actual_col, forecast_col, brand_col, date_col)
-    brand_month_acc = brand_month_acc.sort_values(['brand', 'month'])
-    
-    current_brand = None
-    for _, row in brand_month_acc.iterrows():
-        brand_id = row['brand']
-        brand_name = brand_name_map.get(brand_id, f"brand_{brand_id}") if brand_name_map else f"brand_{brand_id}"
-        
-        if current_brand != brand_id:
-            if current_brand is not None:
-                report.append("")
-            report.append(f"\n{brand_name}:")
-            current_brand = brand_id
-        
-        month = row['month']
-        accuracy = row['accuracy']
-        actual_sum = row['actual']
-        forecast_sum = row['forecast']
-        
-        report.append(f"  {month} | Accuracy: {accuracy:6.2%} | Actual: {actual_sum:10.0f} | Forecast: {forecast_sum:10.0f}")
-    
-    report.append("")
-    report.append("=" * 80)
-    
-    report_str = "\n".join(report)
-    
+    if brand_name_map is None:
+        brand_name_map = {}
+
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    # ------------------------------------------------------------------
+    # Daily SFA (row-level)
+    # ------------------------------------------------------------------
+    df["daily_sfa"] = df.apply(
+        lambda r: sfa_daily_accuracy(r[actual_col], r[forecast_col]),
+        axis=1,
+    )
+
+    # Overall accuracy = average of all daily accuracies
+    overall_acc = df["daily_sfa"].mean()
+    overall_wape = wape(df[actual_col], df[forecast_col])
+
+    # ------------------------------------------------------------------
+    # Aggregations
+    # ------------------------------------------------------------------
+    monthly_sfa = calculate_sfa_by_brand_and_month(
+        df,
+        actual_col=actual_col,
+        forecast_col=forecast_col,
+        brand_col=brand_col,
+        date_col=date_col,
+    )
+
+    daily_sfa = calculate_sfa_by_brand_and_date(
+        df,
+        actual_col=actual_col,
+        forecast_col=forecast_col,
+        brand_col=brand_col,
+        date_col=date_col,
+    )
+
+    # ------------------------------------------------------------------
+    # Report rendering
+    # ------------------------------------------------------------------
+    lines = []
+    lines.append("=== FORECAST ACCURACY REPORT ===")
+    lines.append(f"Overall SFA Accuracy (Daily Avg): {overall_acc * 100:.2f}%")
+    lines.append(f"Overall WAPE: {overall_wape * 100:.2f}%")
+    lines.append("")
+
+    for brand, g_brand in monthly_sfa.groupby(brand_col):
+        brand_name = brand_name_map.get(brand, str(brand))
+        lines.append(f"--- Brand: {brand_name} ---")
+
+        for _, row in g_brand.sort_values("month").iterrows():
+            month = row["month"]
+            acc = row["sfa_accuracy"]
+
+            g_month_raw = df[
+                (df[brand_col] == brand) &
+                (df[date_col].dt.to_period("M").astype(str) == month)
+            ]
+
+            w = wape(g_month_raw[actual_col], g_month_raw[forecast_col])
+
+            lines.append(
+                f"  {month}: "
+                f"Accuracy={acc * 100:.1f}% | "
+                f"WAPE={w * 100:.1f}% | "
+                f"Actual={g_month_raw[actual_col].sum():.0f} | "
+                f"Forecast={g_month_raw[forecast_col].sum():.0f}"
+            )
+
+        lines.append("")
+
+    report_str = "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------------
     if output_path:
-        os.makedirs(os.path.dirname(output_path) or "outputs", exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        import os
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(report_str)
-        print(f"\n✓ Accuracy report saved to: {output_path}")
-    
+        print(f"✓ Accuracy report saved to: {output_path}")
+
     return report_str
 
 
-__all__ = [
-    'calculate_sfa_accuracy',
-    'calculate_sfa_by_brand',
-    'calculate_sfa_by_date',
-    'calculate_sfa_by_month',
-    'calculate_sfa_by_brand_and_date',
-    'calculate_sfa_by_brand_and_month',
-    'generate_accuracy_report',
+
+
+__all__ = [ 
+    'generate_accuracy_report', 
 ]

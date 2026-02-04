@@ -114,25 +114,6 @@ def load_model_for_test(model_path: str, config):
     
         if num_brands is None:
             raise ValueError("num_brands must be found in model metadata or config")
-    
-    brand2id = None  # Training-time brand mapping
-    if metadata_path.exists():
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-        
-        # Try to extract brand mapping from log_summary
-        log_summary = metadata.get('log_summary', '')
-        # Look for "brand mapping: {...}" in log_summary
-        match = re.search(r"brand mapping: ({[^}]+})", log_summary)
-        if match:
-            try:
-                # Parse the dictionary string from log_summary
-                brand2id_str = match.group(1)
-                # Convert single quotes to double quotes for JSON parsing
-                brand2id_str = brand2id_str.replace("'", '"')
-                brand2id = json.loads(brand2id_str)
-            except:
-                pass
 
     # If we have the training-time feature list, push it into the live config
     # so that window creation uses the exact same ordering and dimensionality.
@@ -140,9 +121,6 @@ def load_model_for_test(model_path: str, config):
         config.set("data.feature_cols", list(feature_cols))
     
     print(f"  - Loading model with num_brands={num_brands} (from trained model)")
-
-    if brand2id:
-        print(f"  - Training-time brand mapping: {brand2id}")
     
     # ------------------------------------------------------------------
     # 2) Build model with the *exact* architecture used during training
@@ -159,13 +137,20 @@ def load_model_for_test(model_path: str, config):
     
     # Load checkpoint
     device = torch.device(config.training['device'])
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    ckpt = torch.load(model_path, map_location=device)
+
+    cfg = ckpt.get("config", {})
+    model_cfg = cfg["model"]
+    assert model_cfg["input_dim"] == model.input_dim
+    assert model_cfg["brand_emb_dim"] == model.brand_emb_dim
+    assert model_cfg["num_brands"] == model.num_brands
+
+    model.load_state_dict(ckpt['model_state_dict'])
     model.to(device)
     model.eval()
     
     print(f"  - Model loaded from: {model_path}")
-    print(f"  - Best validation loss: {checkpoint.get('best_val_loss', 'N/A'):.4f}")
+    print(f"  - Best validation loss: {ckpt.get('best_val_loss', 'N/A'):.4f}")
     
     # Load scaler from same directory as model (model_dir already defined above)
     scaler_path = model_dir / "scaler.pkl"
@@ -177,7 +162,7 @@ def load_model_for_test(model_path: str, config):
     else:
         print(f"  [WARNING] Scaler not found at {scaler_path}, test will be in scaled space")
     
-    return model, device, scaler, brand2id
+    return model, device, scaler
 
 def walk_forward_test(
     model : nn.Module,
@@ -238,7 +223,7 @@ def walk_forward_test(
     all_brand = []
     all_dates = []
 
-    chunk_start = test_start_date - pd.DateOffset(months=1)
+    chunk_start = test_start_date
     chunk_idx = 0
     while chunk_start < test_end_date:
         chunk_idx += 1
@@ -365,7 +350,11 @@ def main():
     # Load configuration
     print("\n[1/6] Loading configuration...")
     config = load_config()
+    # Get column names from config first
     data_config = config.data
+    brand_col = data_config['brand_col']
+    time_col = data_config['time_col']
+    target_col = data_config['target_col']
 
     inference_config = config.inference or {}
     test_data_path = inference_config.get(
@@ -398,34 +387,9 @@ def main():
     # Load history data
     print(f"  - Loading historical data for years: {historical_year}")
     ref_data = data_reader.load(years=[historical_year])
+    ref_data = ref_data[~ref_data["BRAND"].isin(["KINH DO CAKE", "LU"])]
 
-    # Fill missing dates per brand in historical data (target set to 0)
-    try:
-        # Note: data_config keys are not yet extracted here, so infer minimal defaults
-        # We'll use the config values later when available; this conservative fill
-        # fills only the `time` and brand columns that exist in the loaded DF.
-        print("  - Filling missing dates for historical data (per brand)...")
-        # Infer column names if available
-        inf_time_col = data_config.get('time_col') if 'data_config' in locals() else None
-        inf_brand_col = data_config.get('brand_col') if 'data_config' in locals() else None
-        inf_target_col = data_config.get('target_col') if 'data_config' in locals() else None
-        if inf_time_col and inf_brand_col and inf_target_col:
-            before_rows = len(ref_data)
-            ref_data = fill_missing_dates(ref_data, inf_time_col, inf_brand_col, inf_target_col)
-            after_rows = len(ref_data)
-            print(f"    - Historical: added {after_rows - before_rows} rows (now {after_rows})")
-        else:
-            # Delay fill until we have explicit names later in the pipeline
-            print("    - Skipping automatic fill now; will ensure fill after config extraction")
-    except Exception as e:
-        print(f"    [WARNING] Failed to fill historical dates: {e}")
-
-    # DIAGNOSTIC: Check historical data coverage
-    # Get column names from config first
-    brand_col = data_config['brand_col']
-    time_col = data_config['time_col']
-    target_col = data_config['target_col']
-    
+    # DIAGNOSTIC: Check historical data coverage    
     if len(ref_data) > 0 and time_col in ref_data.columns:
         ref_data_dates = pd.to_datetime(ref_data[time_col])
         print(f"  - Historical data loaded: {len(ref_data)} rows")
@@ -454,21 +418,7 @@ def main():
         )
     print(f"  - Loading from: {test_data_path}")
     test_data = pd.read_csv(test_data_path, encoding='utf-8', low_memory=False)
-
-    # Fill missing dates per brand in test data (target set to 0)
-    try:
-        print("  - Filling missing dates for test data (per brand)...")
-        # Use time/brand/target names from data_config (available above)
-        td_time_col = data_config.get('time_col')
-        td_brand_col = data_config.get('brand_col')
-        td_target_col = data_config.get('target_col')
-        before_rows = len(test_data)
-        test_data = fill_missing_dates(test_data, td_time_col, td_brand_col, td_target_col)
-        after_rows = len(test_data)
-        print(f"    - Test data: added {after_rows - before_rows} rows (now {after_rows})")
-    except Exception as e:
-        print(f"    [WARNING] Failed to fill test data dates: {e}")
-
+    test_data = test_data[~test_data["BRAND"].isin(["KINH DO CAKE", "LU"])]
     print(f"  - Loaded {len(test_data)} samples")
     if len(test_data) == 0:
         raise ValueError(
@@ -535,8 +485,8 @@ def main():
     print("  [5.1] Extracting config parameters...")
     feature_cols = data_config.get('feature_cols', [])
     target_col = data_config.get('target_col', 'Total CBM')
-    input_size = config.window.get('input_size', 28)
-    horizon = config.window.get('horizon', 28)
+    input_size = config.window.get('input_size', 7)
+    horizon = config.window.get('horizon', 2)
     
     print(f"    - Feature columns: {len(feature_cols)} columns")
     print(f"    - Target: {target_col}")
@@ -589,7 +539,6 @@ def main():
     if trained_brand2id is not None:
         # Use training-time mapping to ensure brand IDs match what model expects
         brand_id_col = data_config['brand_id_col']
-        data = data.copy()
         data[brand_id_col] = data[brand_col].map(trained_brand2id)
         
         # Check for unmapped brands (NaN in brand_id_col) BEFORE converting to int
@@ -644,7 +593,7 @@ def main():
         )
         
     print(f"  - Using model from: {model_path}")
-    model, device, scaler, trained_brand2id = load_model_for_test(str(model_path), config)
+    model, device, scaler = load_model_for_test(str(model_path), config)
     # =====================================================================
     # [PAUSE HERE] Walk-forward test (ready to call)
     # =====================================================================
@@ -665,90 +614,47 @@ def main():
         horizon=horizon,
         test_start_date=test_start_date,
         test_end_date=test_end_date,
-        update_freq=pd.DateOffset(months=2), 
+        update_freq=pd.DateOffset(months=3), 
         device=device
     )
     
     test_results = test_results[test_results['date'].dt.year == 2025]
-    # results_df contains columns: ['predicted', 'actual', 'brand', 'date']
-    print(f"\nWalk-forward test completed with {len(test_results)} samples")
-    
-    # Filter for 28-day horizon starting from day 1 of each month
-    print("\n[FILTERING] Creating 28-day monthly window dataset...")
-    test_results['date'] = pd.to_datetime(test_results['date'])
-    test_results['window_start_date'] = pd.to_datetime(test_results['window_start_date'])
-    
-    # Filter for 28-day windows starting from day 1 of each month
-    # Logic: Keep only predictions from windows where window_start_date.day == 1
-    print(f"  - Total rows before filtering: {len(test_results)}")
-    print(f"  - Unique window_start_dates: {len(test_results['window_start_date'].unique())}")
-    print(f"  - Window start dates range: {test_results['window_start_date'].min().date()} to {test_results['window_start_date'].max().date()}")
-    print(f"  - Window start months: {sorted(test_results['window_start_date'].dt.month.unique())}")
-    
-    # Add helper column to check if window starts on day 1
-    test_results['window_start_day'] = test_results['window_start_date'].dt.day
-    test_results['days_from_window_start'] = (test_results['date'] - test_results['window_start_date']).dt.days
-    
-    # Filter: Keep only windows starting on day 1, and only first 28 days of each window (0-29)
-    test_results_monthly_df = test_results[
-        (test_results['window_start_day'] == 1) & 
-        (test_results['days_from_window_start'] >= 0) &
-        (test_results['days_from_window_start'] <= 27)
+    test_results["predicted"] = test_results["predicted"].clip(lower=0)
+    # Keep only the FIRST forecast step (y[0]) for each window
+    test_results['days_from_window_start'] = (
+        test_results['date'] - test_results['window_start_date']
+    ).dt.days
+    test_results_first_step = test_results[
+        test_results['days_from_window_start'] == 0
     ].copy()
+
+    # Keep only essential columns
+    test_results_first_step = test_results_first_step[
+        ['predicted', 'actual', 'brand', 'date']
+    ]
+
+    print(f"First-step forecasts: {len(test_results_first_step)} rows")
+    print(
+        f"Date range: "
+        f"{test_results_first_step['date'].min().date()} → "
+        f"{test_results_first_step['date'].max().date()}"
+    )
     
-    # Clean up temporary columns, keep only the 4 main columns
-    cols_to_keep = ['predicted', 'actual', 'brand', 'date']
-    test_results_monthly_df = test_results_monthly_df[[c for c in cols_to_keep if c in test_results_monthly_df.columns]]
-    
-    print(f"  - Output rows (day 1 windows, 28 days each): {len(test_results_monthly_df)}")
-    
-    if len(test_results_monthly_df) > 0:
-        print(f"  - brands: {test_results_monthly_df['brand'].unique()}")
-        print(f"  - Date range: {test_results_monthly_df['date'].min().date()} to {test_results_monthly_df['date'].max().date()}")
-        save_monthly_forecast(test_results_monthly_df)
-        print(test_results_monthly_df.head(10))
+    if len(test_results_first_step) > 0:
+        print(f"  - brands: {test_results_first_step['brand'].unique()}")
+        print(f"  - Date range: {test_results_first_step['date'].min().date()} to {test_results_first_step['date'].max().date()}")
+        save_monthly_forecast(test_results_first_step)
     else:
         print("  - No monthly windows found (day 1 windows)")
-    
-    # Generate plots for each brand/month combination
-    print("\n[PLOTTING] Generating monthly forecast plots...")
-    if len(test_results_monthly_df) > 0:
-        test_results_monthly_df['date'] = pd.to_datetime(test_results_monthly_df['date'])
-        test_results_monthly_df['month'] = test_results_monthly_df['date'].dt.to_period('M').astype(str)
-        
-        # Create reverse mapping: ID -> Name for plot filenames
-        id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
-        print(f"  - brand ID to Name mapping: {id_to_brand_name}")
-        
-        # Group by brand and month
-        for brand in sorted(test_results_monthly_df['brand'].unique()):
-            # Get brand name for filename
-            brand_name = id_to_brand_name.get(brand, str(brand))
-            print(f"  - brand {brand} ({brand_name}):")
-            brand_data = test_results_monthly_df[test_results_monthly_df['brand'] == brand]
-            
-            for month in sorted(brand_data['month'].unique()):
-                plot_monthly_forecast(
-                    test_results_monthly_df,
-                    brand=brand,
-                    brand_name=brand_name,
-                    month_str=month,
-                    output_dir="outputs/plots",
-                    show=False
-                )
-        print(f"  - All plots saved to: outputs/plots/")
-    else:
-        print("  - No data available for plotting")
-    
+
     # Generate accuracy report
     print("\n[REPORTING] Generating accuracy report...")
-    if len(test_results_monthly_df) > 0:
+    if len(test_results_first_step) > 0:
         # Prepare brand name mapping for report
         id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
-        
         # Generate and save report
         report = generate_accuracy_report(
-            test_results_monthly_df,
+            test_results_first_step,
             actual_col='actual',
             forecast_col='predicted',
             brand_col='brand',
@@ -759,6 +665,37 @@ def main():
         print(report)
     else:
         print("  - No data available for accuracy report")
+    
+    # Generate plots for each brand/month combination
+    if config.output['visualize'].get('save_plots', False):
+        print("\n[PLOTTING] Generating monthly forecast plots...")
+        if len(test_results_first_step) > 0:
+            test_results_first_step['date'] = pd.to_datetime(test_results_first_step['date'])
+            test_results_first_step['month'] = test_results_first_step['date'].dt.to_period('M').astype(str)
+            
+            # Create reverse mapping: ID -> Name for plot filenames
+            id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
+            print(f"  - brand ID to Name mapping: {id_to_brand_name}")
+            
+            # Group by brand and month
+            for brand in sorted(test_results_first_step['brand'].unique()):
+                # Get brand name for filename
+                brand_name = id_to_brand_name.get(brand, str(brand))
+                print(f"  - brand {brand} ({brand_name}):")
+                brand_data = test_results_first_step[test_results_first_step['brand'] == brand]
+                
+                for month in sorted(brand_data['month'].unique()):
+                    plot_monthly_forecast(
+                        test_results_first_step,
+                        brand=brand,
+                        brand_name=brand_name,
+                        month_str=month,
+                        output_dir="outputs/plots",
+                        show=False
+                    )
+            print(f"  - All plots saved to: outputs/plots/")
+        else:
+            print("  - No data available for plotting")
 
 if __name__ == "__main__":
     main()

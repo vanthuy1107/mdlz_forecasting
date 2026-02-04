@@ -10,15 +10,22 @@ class RNNForecastor(nn.Module):
     def __init__(
         self, num_brands, brand_emb_dim, 
         input_dim, hidden_size,
-        n_layers, output_dim=28
+        n_layers, 
+        dropout_prob=0.2,
+        output_dim=28
     ):
         super().__init__()
+        self.input_dim = input_dim
+        self.num_brands = num_brands
+        self.brand_emb_dim = brand_emb_dim
+        self.hidden_size = hidden_size
+        self.dropout_prob = dropout_prob
         self.n_layers = n_layers
 
         self.brand_emb = nn.Embedding(num_brands, brand_emb_dim)
 
         self.lstm = nn.LSTM(
-            input_size=input_dim + brand_emb_dim,
+            input_size=input_dim,
             hidden_size=hidden_size,
             num_layers=n_layers,
             batch_first=True
@@ -30,6 +37,7 @@ class RNNForecastor(nn.Module):
             nn.Linear(hidden_size, hidden_size * 2),
             nn.ReLU(),
             nn.Linear(hidden_size * 2, hidden_size),
+            nn.Dropout(dropout_prob),
             nn.ReLU(),
             nn.Linear(hidden_size, output_dim)
         )
@@ -50,10 +58,7 @@ class RNNForecastor(nn.Module):
         c0 = torch.zeros_like(h0)
 
         # expand brand over time
-        brand_seq = brand_vec.unsqueeze(1).expand(B, T, -1)
-        x = torch.cat([x_seq, brand_seq], dim=-1)
-
-        out, _ = self.lstm(x, (h0, c0))
+        out, _ = self.lstm(x_seq, (h0, c0))
         out = out[:, -1, :]
         y = self.fc(out)
         return y

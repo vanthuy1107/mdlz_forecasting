@@ -265,7 +265,7 @@ class Trainer:
         
         if filename is None:
             filename = "checkpoint.pth" if not is_best else "best_model.pth"
-        
+ 
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
