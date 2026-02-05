@@ -10,7 +10,7 @@ from typing import List, Tuple
 # so that both the discrete holiday indicators and the continuous
 # "days-to-lunar-event" features stay perfectly aligned.
 # Holidays are now loaded from config/holidays.yaml for easier maintenance.
-VIETNAM_HOLIDAYS_BY_YEAR = load_holidays(holiday_type="model")
+VIETNAM_HOLIDAYS_BY_YEAR = load_holidays()
 
 
 def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:

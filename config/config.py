@@ -121,53 +121,41 @@ def load_config(config_path: Optional[str] = None) -> Config:
     return Config(config_path)
 
 
-def load_holidays(holidays_path: Optional[str] = None, holiday_type: str = "model") -> Dict[int, Dict[str, List[date]]]:
+def load_holidays(holidays_path: Optional[str] = None) -> Dict[int, Dict[str, List[date]]]:
     """
     Load Vietnam holidays from holidays.yaml config file.
-    
-    Args:
-        holidays_path: Path to holidays.yaml file. If None, uses default.
-        holiday_type: Type of holidays to load. Either "model" or "business".
-    
+
+    YAML format:
+    {
+      2024: {
+        off: [[2024, 1, 1], ...],
+        other: [[2024, 4, 18], ...]
+      }
+    }
+
     Returns:
-        Dictionary mapping years to holiday types to lists of dates.
-        Format: {year: {holiday_type: [date, ...], ...}, ...}
+        {year: {group: [date, ...], ...}, ...}
     """
     if holidays_path is None:
-        # Default to config/holidays.yaml relative to this file
         holidays_path = Path(__file__).parent / "holidays.yaml"
-    
+
     holidays_path = Path(holidays_path)
     if not holidays_path.exists():
         raise FileNotFoundError(f"Holidays config file not found: {holidays_path}")
-    
-    with open(holidays_path, 'r') as f:
+
+    with open(holidays_path, "r") as f:
         holidays_config = yaml.safe_load(f)
-    
-    # Allow user-friendly aliases ("model", "business") as well as
-    # the raw keys from YAML ("model_holidays", "business_holidays").
-    if holiday_type in ("model", "business"):
-        yaml_key = f"{holiday_type}_holidays"
-    else:
-        yaml_key = holiday_type
-    
-    if yaml_key not in holidays_config:
-        raise ValueError(
-            f"Holiday type '{holiday_type}' not found in config. "
-            f"Available keys: {list(holidays_config.keys())}"
-        )
-    
-    holidays_data = holidays_config[yaml_key]
-    
-    # Convert YAML format [year, month, day] to date objects
-    result = {}
-    for year_str, year_holidays in holidays_data.items():
+
+    result: Dict[int, Dict[str, List[date]]] = {}
+
+    for year_str, groups in holidays_config.items():
         year = int(year_str)
         result[year] = {}
-        for holiday_name, date_list in year_holidays.items():
-            result[year][holiday_name] = [
-                date(d[0], d[1], d[2]) for d in date_list
+
+        for group_name, date_list in groups.items():
+            result[year][group_name] = [
+                date(y, m, d) for y, m, d in date_list
             ]
-    
+
     return result
 

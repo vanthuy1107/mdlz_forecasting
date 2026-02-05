@@ -2,8 +2,27 @@
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+import pandas as pd
 from typing import Union
+from pathlib import Path
 
+
+def _to_numpy(x):
+    if isinstance(x, (pd.Series, pd.DataFrame)):
+        return x.values
+    return np.asarray(x)
+
+def _first_step(y):
+    """
+    If horizon > 1, return y[..., 0].
+    Works for scalars, 1D, and 2D arrays.
+    """
+    y = _to_numpy(y)
+
+    if y.ndim >= 2:
+        return y[..., 0]
+
+    return y
 
 def plot_difference(
     y_true: Union[np.ndarray, list],
@@ -62,79 +81,113 @@ def plot_monthly_forecast(
     brand_name,
     month_str,
     output_dir: str = "outputs/plots",
-    show: bool = False
+    show: bool = False,
+    plot_baseline: bool = False,  
 ):
-    """
-    Plot monthly forecast for a specific brand.
-    
-    Args:
-        df: DataFrame with columns ['date', 'predicted', 'actual', 'brand']
-        brand: brand ID to filter
-        brand_name: brand name for plot title and filename
-        month_str: Month string (e.g., '2025-01', '2025-02')
-        output_dir: Base output directory
-        show: Whether to display the plot
-    """
-    import pandas as pd
-    from pathlib import Path
-    
+
     # Filter data for this brand and month
-    mask = (df['brand'] == brand) & (df['date'].dt.to_period('M').astype(str) == month_str)
+    mask = (df['brand'] == brand) & (
+        df['date'].dt.to_period('M').astype(str) == month_str
+    )
     df_filtered = df[mask].sort_values('date')
-    
+
     if len(df_filtered) == 0:
         print(f"    [WARNING] No data for brand={brand} ({brand_name}), month={month_str}")
         return
-    
+
     # Create output directory using brand name
     brand_output_dir = Path(output_dir) / brand_name
     brand_output_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # --------------------------------------------------
+    # TAKE FIRST HORIZON STEP ONLY
+    # --------------------------------------------------
+    y_true = _first_step(df_filtered['actual'].values)
+    y_pred = _first_step(df_filtered['predicted'].values)
+    dates = df_filtered['date'].values
+    if plot_baseline:
+        y_base = _first_step(df_filtered['baseline'].values)
+
     # Plot
     plt.figure(figsize=(14, 6))
-    
-    y_true = df_filtered['actual'].values
-    y_pred = df_filtered['predicted'].values
-    dates = df_filtered['date'].values
-    
-    # Format dates for x-axis
+
     date_labels = [pd.Timestamp(d).strftime('%m-%d') for d in dates]
     x_pos = range(len(dates))
-    
-    plt.plot(x_pos, y_true, label="Actual", marker="o", linewidth=2, markersize=6, color='blue')
-    plt.plot(x_pos, y_pred, label="Predicted", marker="x", linewidth=2, markersize=6, color='red')
-    
-    # Format x-axis
-    plt.xticks(x_pos[::max(1, len(x_pos)//10)], date_labels[::max(1, len(x_pos)//10)], rotation=45)
-    
+
+    plt.plot(
+        x_pos, y_true,
+        label="Actual",
+        marker="o",
+        linewidth=2,
+        markersize=6,
+        color="blue"
+    )
+
+    if plot_baseline:
+        plt.plot(
+            x_pos, y_base,
+            label="Baseline",
+            marker="s",
+            linewidth=2,
+            linestyle="--",
+            markersize=5,
+            color="gray"
+        )
+
+    plt.plot(
+        x_pos, y_pred,
+        label="Predicted",
+        marker="x",
+        linewidth=2,
+        markersize=6,
+        color="red"
+    )
+
+    plt.xticks(
+        x_pos[::max(1, len(x_pos)//10)],
+        date_labels[::max(1, len(x_pos)//10)],
+        rotation=45
+    )
+
     plt.title(f"Monthly Forecast - {brand_name} - {month_str}")
     plt.xlabel("Date")
     plt.ylabel("Volume (CBM)")
     plt.legend(fontsize=10)
     plt.grid(True, alpha=0.3)
-    
-    # Add statistics to plot
-    mae = np.abs(y_true - y_pred).mean()
-    rmse = np.sqrt(((y_true - y_pred) ** 2).mean())
-    accuracy = 100 * (1 - np.abs(y_true - y_pred).sum() / np.abs(y_true).sum()) if np.abs(y_true).sum() > 0 else 0
-    
+
+    # --------------------------------------------------
+    # STATS (t+1 ONLY)
+    # --------------------------------------------------
+    mae = np.mean(np.abs(y_true - y_pred))
+    rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+    accuracy = (
+        100 * (1 - np.abs(y_true - y_pred).sum() / np.abs(y_true).sum())
+        if np.abs(y_true).sum() > 0 else 0
+    )
+
     stats_text = f"MAE: {mae:.2f} | RMSE: {rmse:.2f} | Accuracy: {accuracy:.1f}%"
-    plt.text(0.5, 0.95, stats_text, transform=plt.gca().transAxes, 
-             ha='center', va='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
-             fontsize=9)
-    
+    plt.text(
+        0.5, 0.95,
+        stats_text,
+        transform=plt.gca().transAxes,
+        ha="center",
+        va="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        fontsize=9
+    )
+
     plt.tight_layout()
-    
-    # Save figure using brand name
+
     filename = f"{brand_name}_{month_str}.png"
     filepath = brand_output_dir / filename
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
     print(f"    - Saved: {filepath}")
-    
+
     if show:
         plt.show()
     else:
         plt.close()
+
 
         
 def plot_learning_curve(

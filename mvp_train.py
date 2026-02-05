@@ -61,7 +61,7 @@ def train_single_model(data, config):
     # Feature engineering: Add temporal features
     print("\n[5/8] Adding temporal features...")
     data = add_features(data, time_col, brand_col, target_col)
-    
+    target_col = "residual"
 
     # Encode brands
     print("  - Encoding brands...")
@@ -82,7 +82,7 @@ def train_single_model(data, config):
         feature_cols=target_col,
         lookback_months=3
     )
-    y = data['CUBE_OUT']
+    y = data[target_col]
     print("\nBEFORE SCALE:")
     print("min:", y.min())
     print("max:", y.max())
@@ -94,7 +94,7 @@ def train_single_model(data, config):
     scaler.fit(data, test_end_date)
     data_scaled = scaler.transform(data)
 
-    y = data_scaled['CUBE_OUT']
+    y = data_scaled[target_col]
     print("\nAFTER SCALE:")
     print("min:", y.min())
     print("max:", y.max())
@@ -123,12 +123,13 @@ def train_single_model(data, config):
     print(f"  - Feature columns: {feature_cols}")
     
     print("  - Creating training windows...")
-    X_train, y_train, cat_train = slicing_window(
+    X_train, y_train, baselines_train, cat_train = slicing_window(
         data_scaled,
         input_size,
         horizon,
         feature_cols=feature_cols,
         target_col=target_col,
+        baseline_col='baseline',
         brand_col=brand_id_col,
         time_col=time_col,
         label_start_date=None,
@@ -165,14 +166,15 @@ def train_single_model(data, config):
     print(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Build loss, optimizer, scheduler
-    w_loss = [1.0, 0.0]
-    criterion = lambda yhat, y: (
-        w_loss[0] * nn.HuberLoss(delta=0.9)(yhat, y)
-        + w_loss[1] * nn.MSELoss()(yhat, y)
-    )
-    criterion = lambda yhat, y: (
-        spike_aware_huber(yhat, y, delta=0.9, alpha=2.0)
-    )
+    # w_loss = [1.0, 0.0]
+    # criterion = lambda yhat, y: (
+    #     w_loss[0] * nn.HuberLoss(delta=0.9)(yhat, y)
+    #     + w_loss[1] * nn.MSELoss()(yhat, y)
+    # )
+    # criterion = lambda yhat, y: (
+    #     spike_aware_huber(yhat, y, delta=0.9, alpha=2.0)
+    # )
+    criterion = nn.HuberLoss(delta=0.8)
     
     optimizer = torch.optim.Adam(
         model.parameters(),

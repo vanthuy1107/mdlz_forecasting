@@ -22,182 +22,110 @@ def slicing_window(
     horizon,
     feature_cols,
     target_col,
+    baseline_col,
     brand_col,
     time_col,
+    off_holiday_col=None,
     label_start_date=None,
     label_end_date=None,
-    return_dates=False
+    return_dates=False,
+    return_off_holiday=False,
 ):
-    """
-    Slice time series data into input-output windows for model training.
-    Args:
-        df: DataFrame containing time series data.
-        input_size: Number of time steps in input sequence.
-        horizon: Number of time steps to predict.
-        feature_cols: List of feature column names.
-        target_col: Name of target column.
-        brand_col: Name of brand column.
-        time_col: Name of time column.
-        label_start_date: Optional start date for labels (inclusive).
-        label_end_date: Optional end date for labels (inclusive).
-        return_dates: If True, return label dates along with data.
-    Returns:
-        Tuple of (X, y, brands, dates) if return_dates is True,
-        else (X, y, brands).
-    """
-
-    X, y, brands, dates = [], [], [], []
+    X, y, baselines, brands, dates, off_flags = [], [], [], [], [], []
 
     for brand, g in df.groupby(brand_col, sort=False):
         g = g.sort_values(time_col).reset_index(drop=True)
 
         X_data = g[feature_cols].values
-        Q = g[target_col].values.squeeze()
+        y_data = g[target_col].values.squeeze()
+        b_data = g[baseline_col].values
         time_vals = g[time_col].values
 
         for i in range(len(g) - input_size - horizon + 1):
-
             label_date = time_vals[i + input_size]
 
-            # rolling-origin / test split
-            # Keep windows where label_date (start of prediction) >= label_start_date
-            # AND prediction_end_date (label_date + horizon - 1) <= label_end_date
             if label_start_date and label_date < label_start_date:
                 continue
             if label_end_date and label_date >= label_end_date:
                 continue
 
-            # input window
-            X_seq = X_data[i:i + input_size]
-
-            # future label
-            y_future = Q[i + input_size: i + input_size + horizon]
-
-            # collect
-            X.append(X_seq)
-            y.append(y_future)
+            X.append(X_data[i : i + input_size])
+            y.append(y_data[i + input_size : i + input_size + horizon])
+            baselines.append(b_data[i + input_size : i + input_size + horizon])
             brands.append(brand)
             dates.append(label_date)
 
+            if off_holiday_col is not None:
+                off_flags.append(
+                    g.loc[i + input_size, off_holiday_col]
+                )
+
     X = np.array(X)
     y = np.array(y)
+    baselines = np.array(baselines)
     brands = np.array(brands)
     dates = np.array(dates) if return_dates else None
-    
-    if return_dates:
-        return X, y, brands, dates
+    off_flags = np.array(off_flags) if return_off_holiday else None
+
+    if return_dates and return_off_holiday:
+        return X, y, baselines, brands, dates, off_flags
+    elif return_dates:
+        return X, y, baselines, brands, dates
+    elif return_off_holiday:
+        return X, y, baselines, brands, off_flags
     else:
-        return X, y, brands
+        return X, y, baselines, brands
 
-
-def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
-    """
-    Get list of Vietnamese holidays between start_date and end_date.
-    
-    Includes the official Vietnam day‑off calendar for:
-    - New Year
-    - Tet (Lunar New Year)
-    - Hung Kings / Reunification / Labor
-    - Independence Day
-    
-    Args:
-        start_date: Start date for holiday range.
-        end_date: End date for holiday range.
-    
-    Returns:
-        List of holiday dates.
-    """
-    holidays: List[date] = []
-    
-    # Canonical Vietnam holiday calendar (days off) aligned with business rules.
-    # NOTE: These dates are now loaded from config/holidays.yaml for easier maintenance.
-    vietnam_holidays = load_holidays(holiday_type="business")
-    
-    # Collect all holidays in the date range
-    current = start_date
-    while current <= end_date:
-        year = current.year
-        if year in vietnam_holidays:
-            for dates in vietnam_holidays[year].values():
-                holidays.extend(dates)
-        # Jump to next year boundary
-        current = date(year + 1, 1, 1)
-    
-    # Filter to date range and remove duplicates
-    holidays = [h for h in holidays if start_date <= h <= end_date]
-    holidays = sorted(list(set(holidays)))
-    
-    return holidays
 
 
 def add_holiday_features(
     df: pd.DataFrame,
     time_col: str = "DATE",
-    holiday_indicator_col: str = "holiday_indicator",
-    days_until_holiday_col: str = "days_until_next_holiday"
+    off_holiday_col: str = "is_off_holiday",
+    other_holiday_col: str = "is_other_holiday",
+    holidays_path: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Add holiday-related features to DataFrame.
-    
+    Add Vietnam holiday flags to DataFrame.
+
     Creates:
-    - holiday_indicator: Binary (0 or 1) indicating if date is a holiday
-    - days_until_next_holiday: Number of days until the next holiday
-    
+    - is_off_holiday: 1 if date is an official day-off holiday
+    - is_other_holiday: 1 if date is an 'other' holiday
+
     Args:
         df: DataFrame with time column.
-        time_col: Name of time column (should be datetime or date).
-        holiday_indicator_col: Name for holiday indicator column.
-        days_until_holiday_col: Name for days until next holiday column.
-    
+        time_col: Name of time column (datetime or date).
+        off_holiday_col: Column name for off-holiday flag.
+        other_holiday_col: Column name for other-holiday flag.
+        holidays_path: Optional path to holidays.yaml.
+
     Returns:
-        DataFrame with added holiday features.
+        DataFrame with added holiday indicator columns.
     """
     df = df.copy()
-    
-    # Ensure time column is datetime
+
+    # Ensure datetime
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
         df[time_col] = pd.to_datetime(df[time_col])
-    
-    # Get date range from data
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
-    
-    # Extend range slightly to ensure we have next holidays for all dates
-    extended_max = max_date + timedelta(days=365)
-    
-    # Get holidays
-    holidays = get_vietnam_holidays(min_date, extended_max)
-    holiday_set = set(holidays)
-    
-    # Initialize columns
-    df[holiday_indicator_col] = 0
-    df[days_until_holiday_col] = np.nan
-    
-    # Process each row
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
-        
-        # Set holiday indicator
-        if current_date in holiday_set:
-            df.at[idx, holiday_indicator_col] = 1
-        
-        # Calculate days until next holiday
-        next_holiday = None
-        for holiday in holidays:
-            if holiday > current_date:
-                next_holiday = holiday
-                break
-        
-        if next_holiday:
-            days_until = (next_holiday - current_date).days
-            df.at[idx, days_until_holiday_col] = days_until
-        else:
-            # If no holiday found (shouldn't happen with extended range), set to large value
-            df.at[idx, days_until_holiday_col] = 365
-    
-    # Fill any remaining NaN values (shouldn't happen, but safety check)
-    df[days_until_holiday_col] = df[days_until_holiday_col].fillna(365)
-    
+
+    # Load holidays
+    holidays = load_holidays(holidays_path)
+
+    # Flatten holiday dates into sets
+    off_holidays = set()
+    other_holidays = set()
+
+    for year_data in holidays.values():
+        off_holidays.update(year_data.get("off", []))
+        other_holidays.update(year_data.get("other", []))
+
+    # Convert dataframe dates to date (not datetime)
+    dates = df[time_col].dt.date
+
+    # Binary flags
+    df[off_holiday_col] = dates.isin(off_holidays).astype(int)
+    df[other_holiday_col] = dates.isin(other_holidays).astype(int)
+
     return df
 
 
@@ -210,45 +138,27 @@ def add_temporal_features(
     dayofmonth_cos_col: str = "dayofmonth_cos"
 ) -> pd.DataFrame:
     """
-    Add cyclical temporal features from datetime column.
-    
-    Creates:
-    - month_sin: sin(2π × month / 12)
-    - month_cos: cos(2π × month / 12)
-    - dayofmonth_sin: sin(2π × day / 31)
-    - dayofmonth_cos: cos(2π × day / 31)
-    
-    Args:
-        df: DataFrame with time column.
-        time_col: Name of time column (should be datetime or date).
-        month_sin_col: Name for month_sin column.
-        month_cos_col: Name for month_cos column.
-        dayofmonth_sin_col: Name for dayofmonth_sin column.
-        dayofmonth_cos_col: Name for dayofmonth_cos column.
-    
-    Returns:
-        DataFrame with added temporal features.
+    Add cyclical temporal features using true month lengths.
     """
     df = df.copy()
-    
-    # Ensure time column is datetime
+
+    # Ensure datetime
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
         df[time_col] = pd.to_datetime(df[time_col])
-    
-    # Extract month (1-12) and day of month (1-31)
+
     month = df[time_col].dt.month
-    #dayofmonth = df[time_col].dt.day
-    
-    # Create cyclical encoding for month (0-11 for sin/cos, so subtract 1)
-    # Normalize to [0, 1] range, then apply sin/cos
+    day = df[time_col].dt.day
+    days_in_month = df[time_col].dt.days_in_month
+
+    # Month cycle (fixed 12)
     df[month_sin_col] = np.sin(2 * np.pi * (month - 1) / 12)
     df[month_cos_col] = np.cos(2 * np.pi * (month - 1) / 12)
-    
-    # Create cyclical encoding for day of month (0-30, so subtract 1)
-    # Normalize to [0, 1] range, then apply sin/cos
-    # df[dayofmonth_sin_col] = np.sin(2 * np.pi * (dayofmonth - 1) / 31)
-    # df[dayofmonth_cos_col] = np.cos(2 * np.pi * (dayofmonth - 1) / 31)
-    
+
+    # Day-of-month cycle (true month length)
+    phase = (day - 1) / days_in_month
+    df[dayofmonth_sin_col] = np.sin(2 * np.pi * phase)
+    df[dayofmonth_cos_col] = np.cos(2 * np.pi * phase)
+
     return df
 
 
@@ -516,36 +426,30 @@ def add_lunar_cyclical_features(
     return df
 
 
-def add_rolling_and_momentum_features(
+def add_baseline(
     df: pd.DataFrame,
-    target_col: str = "QTY",
+    target_col: str = "CUBE_OUT",
     time_col: str = "DATE",
     brand_col: str = "BRAND",
-    rolling_7_col: str = "rolling_mean_7d",
-    rolling_30_col: str = "rolling_mean_30d",
-    momentum_col: str = "momentum_3d_vs_14d"
+    baseline_col: str = "rolling_mean_7d"
 ) -> pd.DataFrame:
     """
     Add rolling mean and momentum features to reduce model inertia.
     
     Creates:
-    - rolling_mean_7d: 7-day rolling average of QTY
-    - rolling_mean_30d: 30-day rolling average of QTY
-    - momentum_3d_vs_14d: Difference between 3-day and 14-day rolling means
+    - rolling_mean_7d: 7-day rolling average of CBM
     
     These features help the model see "pace" rather than just yesterday's value.
     
     Args:
         df: DataFrame with QTY and time columns (must be sorted by time).
-        target_col: Name of target column (e.g., "QTY").
+        target_col: Name of target column (e.g., "CBM").
         time_col: Name of time column.
         brand_col: Name of BRAND column (rolling calculated per BRAND).
-        rolling_7_col: Name for 7-day rolling mean column.
-        rolling_30_col: Name for 30-day rolling mean column.
-        momentum_col: Name for momentum column.
+        baseline_col: Name for baseline column.
     
     Returns:
-        DataFrame with added rolling and momentum features.
+        DataFrame with added baseline features.
     """
     df = df.copy()
     
@@ -556,93 +460,22 @@ def add_rolling_and_momentum_features(
     df = df.sort_values([brand_col, time_col]).reset_index(drop=True)
     
     # Initialize new columns
-    df[rolling_7_col] = np.nan
-    df[rolling_30_col] = np.nan
-    df[momentum_col] = np.nan
+    df[baseline_col] = np.nan
     
     # Calculate rolling features per BRAND
-    for cat, group in df.groupby(brand_col, sort=False):
-        cat_mask = df[brand_col] == cat
-        cat_indices = df[cat_mask].index
+    for brand, group in df.groupby(brand_col, sort=False):
+        brand_mask = df[brand_col] == brand
+        brand_indices = df[brand_mask].index
         
         # Calculate rolling means
-        rolling_7 = group[target_col].rolling(window=7, min_periods=1).mean()
-        rolling_30 = group[target_col].rolling(window=30, min_periods=1).mean()
-        rolling_3 = group[target_col].rolling(window=3, min_periods=1).mean()
-        rolling_14 = group[target_col].rolling(window=14, min_periods=1).mean()
+        rolling_7 = group[target_col].rolling(window=7, min_periods=1).mean().shift(1)
         
         # Assign values back to main dataframe
-        df.loc[cat_indices, rolling_7_col] = rolling_7.values
-        df.loc[cat_indices, rolling_30_col] = rolling_30.values
-        
-        # Momentum: difference between short-term and long-term averages
-        momentum = rolling_3 - rolling_14
-        df.loc[cat_indices, momentum_col] = momentum.values
+        df.loc[brand_indices, baseline_col] = rolling_7.values
     
     # Fill any remaining NaN with forward fill then backward fill
-    for col in [rolling_7_col, rolling_30_col, momentum_col]:
-        df[col] = df[col].ffill().bfill().fillna(0)
-    
-    return df
+    df[baseline_col] = df.groupby(brand_col)[baseline_col].ffill().fillna(0)
 
-
-def add_days_since_holiday(
-    df: pd.DataFrame,
-    time_col: str = "DATE",
-    days_since_holiday_col: str = "days_since_holiday"
-) -> pd.DataFrame:
-    """
-    Add days since last holiday feature.
-    
-    This complements days_until_next_holiday to help model understand
-    post-holiday patterns (e.g., demand drops after Tet).
-    
-    Args:
-        df: DataFrame with time column.
-        time_col: Name of time column.
-        days_since_holiday_col: Name for days_since_holiday column.
-    
-    Returns:
-        DataFrame with added days_since_holiday feature.
-    """
-    df = df.copy()
-    
-    # Ensure time column is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
-    
-    # Get date range from data
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
-    
-    # Get Vietnamese holidays
-    holidays = get_vietnam_holidays(min_date - timedelta(days=365), max_date)
-    holiday_set = set(holidays)
-    
-    # Initialize column
-    df[days_since_holiday_col] = np.nan
-    
-    # Process each row
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
-        
-        # Find last holiday before or on current_date
-        last_holiday = None
-        for holiday in sorted(holidays, reverse=True):
-            if holiday <= current_date:
-                last_holiday = holiday
-                break
-        
-        if last_holiday:
-            days_since = (current_date - last_holiday).days
-            df.at[idx, days_since_holiday_col] = days_since
-        else:
-            # If no holiday found, set to large value
-            df.at[idx, days_since_holiday_col] = 365
-    
-    # Fill any remaining NaN values
-    df[days_since_holiday_col] = df[days_since_holiday_col].fillna(365)
-    
     return df
 
 
@@ -725,122 +558,6 @@ def encode_brands(df: pd.DataFrame, brand_col: str = "BRAND") -> Tuple[pd.DataFr
     return df, brand2id, num_categories
 
 
-
-def add_operational_status_flags(
-    df: pd.DataFrame,
-    time_col: str = "DATE",
-    target_col: str = "QTY",
-    status_col: str = "operational_status",
-    expected_zero_flag_col: str = "is_expected_zero",
-    anomaly_flag_col: str = "is_operational_anomaly",
-    holiday_label: str = "Holiday_OFF",
-    weekend_label: str = "Weekend_Downtime",
-    anomaly_label: str = "Operational_Anomaly",
-    normal_label: str = "Business_Day_Normal",
-) -> pd.DataFrame:
-    """
-    Context-aware data imputation and anomaly tracking for daily time-series.
-
-    This function processes each calendar date as follows:
-
-    1) Holiday-driven downtime (expected zero):
-       - Cross-references each date against the canonical Vietnam business
-         holiday calendar (from config/holidays.yaml via get_vietnam_holidays).
-       - If a date is a recognized public holiday or scheduled facility closure,
-         it is labeled as `holiday_label` (default: "Holiday_OFF").
-       - Volume on these days is treated as an *expected external constraint*.
-
-    2) Standard weekend downtime (Sunday low-volume):
-       - All Sundays (day_of_week == 6) are labeled as `weekend_label`
-         (default: "Weekend_Downtime").
-       - Given the historical pattern of zero/negligible volume on Sundays,
-         these are treated as *expected zeros* and decoupled from
-         business-day demand signals.
-
-    3) Unexpected operational gaps (critical tracking):
-       - For any date that is neither a holiday nor a Sunday but contains
-         missing or zero volume, the system:
-           * Imputes the volume to 0 to maintain time-series continuity
-             for downstream LSTM layers.
-           * Flags the date as `anomaly_label`
-             (default: "Operational_Anomaly").
-           * Marks it with a binary `anomaly_flag_col` so that baseline /
-             trend components can explicitly *exclude* it from their
-             reference windows.
-
-    In addition, a binary `expected_zero_flag_col` is provided to indicate
-    Holiday_OFF and Weekend_Downtime cases, which are structurally expected
-    zeros and should not be treated as demand collapse.
-
-    This logic improves:
-    - Model interpretability (clear separation of calendar-driven zeros vs
-      unexplained operational gaps).
-    - Statistical baselines (by excluding Operational_Anomalies from
-      standard trend estimation).
-    """
-    df = df.copy()
-
-    # Ensure time column is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
-
-    # Ensure target column exists; if not, nothing to do
-    if target_col not in df.columns:
-        return df
-
-    # Normalize to date (drop time component)
-    dates = df[time_col].dt.date
-
-    # Build Vietnam business holiday calendar over the data range
-    if len(df) > 0:
-        min_date = dates.min()
-        max_date = dates.max()
-        holiday_list = get_vietnam_holidays(min_date, max_date)
-        holiday_set = set(holiday_list)
-    else:
-        holiday_set = set()
-
-    # Day-of-week (0=Mon, 6=Sun)
-    day_of_week = df[time_col].dt.dayofweek
-
-    # Treat missing values in the target as zero for classification/imputation
-    vol = pd.to_numeric(df[target_col], errors="coerce")
-    is_missing_or_zero = vol.isna() | (vol == 0)
-
-    # Initialize status labels
-    status = np.full(len(df), normal_label, dtype=object)
-
-    is_holiday = dates.isin(holiday_set)
-    is_weekend_sun = day_of_week == 6
-
-    # 1) Holidays
-    status[is_holiday] = holiday_label
-
-    # 2) Sunday downtime
-    # Do not override holidays that also fall on Sunday
-    weekend_only = (~is_holiday) & is_weekend_sun
-    status[weekend_only] = weekend_label
-
-    # 3) Operational anomalies:
-    #    Non-holiday, non-Sunday business days with missing/zero volume.
-    anomaly_mask = (~is_holiday) & (~is_weekend_sun) & is_missing_or_zero
-
-    # Impute to 0 to maintain continuity
-    vol_imputed = vol.copy()
-    vol_imputed[anomaly_mask] = 0.0
-    df[target_col] = vol_imputed.fillna(0.0)
-
-    # Label anomalies
-    status[anomaly_mask] = anomaly_label
-
-    # Write status + flags back to dataframe
-    df[status_col] = status
-    df[expected_zero_flag_col] = ((status == holiday_label) | (status == weekend_label)).astype(int)
-    df[anomaly_flag_col] = (status == anomaly_label).astype(int)
-
-    return df
-
-
 def add_cbm_density_features(
     df: pd.DataFrame,
     cbm_col: str = "Total CBM",
@@ -918,95 +635,6 @@ def add_cbm_density_features(
         df[density_last_year_col] = df[density_last_year_col].fillna(cat_median)
 
     return df
-
-
-def add_holiday_features_vietnam(
-    df: pd.DataFrame,
-    time_col: str = "DATE",
-    holiday_indicator_col: str = "holiday_indicator",
-    days_until_holiday_col: str = "days_until_next_holiday",
-    days_since_holiday_col: str = "days_since_holiday"
-) -> pd.DataFrame:
-    """
-    Add Vietnamese holiday-related features to DataFrame.
-    
-    Creates:
-    - holiday_indicator: Binary (0 or 1) indicating if date is a Vietnamese holiday
-    - days_until_next_holiday: Number of days until the next Vietnamese holiday
-    
-    Args:
-        df: DataFrame with time column.
-        time_col: Name of time column (should be datetime or date).
-        holiday_indicator_col: Name for holiday indicator column.
-        days_until_holiday_col: Name for days until next holiday column.
-    
-    Returns:
-        DataFrame with added holiday features.
-    """
-    df = df.copy()
-    
-    # Ensure time column is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
-        df[time_col] = pd.to_datetime(df[time_col])
-    
-    # Get date range from data
-    min_date = df[time_col].min().date()
-    max_date = df[time_col].max().date()
-    
-    # Extend range slightly to ensure we have next holidays for all dates
-    extended_max = max_date + timedelta(days=365)
-    
-    # Get Vietnamese holidays
-    holidays = get_vietnam_holidays(min_date, extended_max)
-    holiday_set = set(holidays)
-    
-    # Initialize columns
-    df[holiday_indicator_col] = 0
-    df[days_until_holiday_col] = np.nan
-    df[days_since_holiday_col] = np.nan
-    
-    # Process each row
-    for idx, row in df.iterrows():
-        current_date = row[time_col].date()
-        
-        # Set holiday indicator
-        if current_date in holiday_set:
-            df.at[idx, holiday_indicator_col] = 1
-        
-        # Calculate days until next holiday
-        next_holiday = None
-        for holiday in holidays:
-            if holiday > current_date:
-                next_holiday = holiday
-                break
-        
-        if next_holiday:
-            days_until = (next_holiday - current_date).days
-            df.at[idx, days_until_holiday_col] = days_until
-        else:
-            # If no holiday found (shouldn't happen with extended range), set to large value
-            df.at[idx, days_until_holiday_col] = 365
-        
-        # Calculate days since last holiday
-        last_holiday = None
-        for holiday in sorted(holidays, reverse=True):
-            if holiday <= current_date:
-                last_holiday = holiday
-                break
-        
-        if last_holiday:
-            days_since = (current_date - last_holiday).days
-            df.at[idx, days_since_holiday_col] = days_since
-        else:
-            # If no holiday found, set to large value
-            df.at[idx, days_since_holiday_col] = 365
-    
-    # Fill any remaining NaN values (shouldn't happen, but safety check)
-    df[days_until_holiday_col] = df[days_until_holiday_col].fillna(365)
-    df[days_since_holiday_col] = df[days_since_holiday_col].fillna(365)
-    
-    return df
-
 
 
 
@@ -1092,14 +720,14 @@ def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_co
     # )
 
     # Feature engineering: Vietnamese holiday features (with days_since_holiday)
-    # print("  - Adding Vietnamese holiday features...")
-    # data = add_holiday_features_vietnam(
-    #     data,
-    #     time_col=time_col,
-    #     holiday_indicator_col="holiday_indicator",
-    #     days_until_holiday_col="days_until_next_holiday",
-    #     days_since_holiday_col="days_since_holiday"
-    # )
+    print("  - Adding Vietnamese holiday features...")
+    data = add_holiday_features(
+        data,
+        time_col=time_col,
+        off_holiday_col="is_off_holiday",
+        other_holiday_col="is_other_holiday",
+        holidays_path=None
+    )
 
     # # Feature engineering: continuous countdown to Tet (lunar event)
     # print("  - Adding Tet countdown feature (days_to_tet)...")
@@ -1108,21 +736,6 @@ def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_co
     #     time_col=time_col,
     #     days_to_tet_col="days_to_tet",
     # )
-    
-    # # Daily aggregation: Group by date and BRAND, sum QTY
-    # # This ensures the model learns daily demand patterns, not individual transaction sizes
-    # print("\n[5.5/8] Aggregating to daily totals by BRAND...")
-    # samples_before_agg = len(data)
-    # data = aggregate_daily(
-    #     data,
-    #     time_col=time_col,
-    #     brand_col=brand_col,
-    #     target_col=target_col
-    # )
-    # samples_after_agg = len(data)
-    # print(f"  - Samples before aggregation: {samples_before_agg}")
-    # print(f"  - Samples after aggregation: {samples_after_agg} (one row per date per BRAND)")
-    
     
     # # Feature engineering: Add CBM/QTY density features, including last-year prior
     # print("  - Adding CBM density features (cbm_per_qty, cbm_per_qty_last_year)...")
@@ -1137,17 +750,19 @@ def add_features(data : pd.DataFrame, time_col : str, brand_col : str, target_co
     #     density_last_year_col="cbm_per_qty_last_year",
     # )
 
-    # Feature engineering: Add rolling means and momentum features (after aggregation)
-    # print("  - Adding rolling mean and momentum features (7d, 30d, momentum)...")
-    # data = add_rolling_and_momentum_features(
-    #     data,
-    #     target_col=target_col,
-    #     time_col=time_col,
-    #     brand_col=brand_col,
-    #     rolling_7_col="rolling_mean_7d",
-    #     rolling_30_col="rolling_mean_30d",
-    #     momentum_col="momentum_3d_vs_14d"
-    # )
+    # Feature engineering: Add Baseline (Rolling mean 7d)
+    print("  - Adding baseline rolling mean 7d...")
+    data = add_baseline(
+        data,
+        target_col=target_col,
+        time_col=time_col,
+        brand_col=brand_col,
+        baseline_col="baseline",
+    )
+
+    # Add residual
+    data["residual"] = data[target_col] - data["baseline"]
+    target_col = "residual"
 
     return data
 

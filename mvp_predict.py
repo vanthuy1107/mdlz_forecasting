@@ -30,6 +30,7 @@ from src.utils import plot_difference, upload_to_google_sheets, GSPREAD_AVAILABL
 from src.utils.visualization import plot_monthly_forecast
 from src.utils.metrics import generate_accuracy_report
 from src.utils.google_sheets import upload_history_prediction
+from src.utils.date import load_holidays
 
 
 def fill_missing_dates(
@@ -218,8 +219,9 @@ def walk_forward_test(
     
     model.eval()
 
-    all_preds = []
+    all_y_pred = []
     all_y_true = []
+    all_baselines = []
     all_brand = []
     all_dates = []
 
@@ -249,17 +251,20 @@ def walk_forward_test(
         # Slice windows for entire chunk range
         # slicing_window_brand will create windows for each day in [chunk_start, chunk_end)
         print(f"  [3/4] Creating sliding windows for each day in range")
-        X_test, y_test, brand_test, test_dates = slicing_window(
+        X_test, y_test, baselines_test, brand_test, test_dates, off_flags = slicing_window(
             df=df_chunk_scaled,
             input_size=input_size,
             horizon=horizon,
             feature_cols=feature_cols,
             target_col=target_col,
+            baseline_col='baseline',
             brand_col=brand_id_col,
             time_col=time_col,
+            off_holiday_col="is_off_holiday",
             label_start_date=chunk_start,
             label_end_date=chunk_end,
-            return_dates=True
+            return_dates=True,
+            return_off_holiday=True,
         )
 
         if len(X_test) == 0:
@@ -285,62 +290,64 @@ def walk_forward_test(
         print(f"       Output shape: {outputs.shape}")
 
         # Inverse transform
-        preds = scaler.inverse_transform_y(outputs, brand_test)
-        y_true = scaler.inverse_transform_y(y_test, brand_test)
+        y_pred = (
+            scaler.inverse_transform_y(outputs[:, [0]], brand_test)
+            .reshape(-1, 1)
+            + baselines_test[:, [0]]
+        )
+        y_pred[off_flags == 1] = 0
+
+        y_true = (
+            scaler.inverse_transform_y(y_test[:, [0]], brand_test)
+            .reshape(-1, 1)
+            + baselines_test[:, [0]]
+        )
+
 
         # Collect
-        all_preds.append(preds)
+        all_y_pred.append(y_pred)
         all_y_true.append(y_true)
+        all_baselines.append(baselines_test)
         all_brand.append(brand_test)
         all_dates.append(test_dates)
 
         chunk_start = chunk_end
 
     # Concatenate all chunks
-    if len(all_preds) == 0:
+    if len(all_y_pred) == 0:
         raise ValueError("No windows were created during walk-forward test!")
     
-    preds_all = np.concatenate(all_preds, axis=0)  # shape: (N, horizon)
-    y_true_all = np.concatenate(all_y_true, axis=0)  # shape: (N, horizon)
-    brand_all = np.concatenate(all_brand, axis=0)  # shape: (N,)
-    dates_all = np.concatenate(all_dates, axis=0)  # shape: (N,)
+    # Concatenate all chunks
+    y_pred_all = np.concatenate(all_y_pred, axis=0)    # (N, 1)
+    y_true_all = np.concatenate(all_y_true, axis=0)  # (N, 1)
+    brand_all = np.concatenate(all_brand, axis=0)    # (N,)
+    dates_all = np.concatenate(all_dates, axis=0)    # (N,)
+    baseline_all = np.concatenate(
+        [b[:, 0] for b in all_baselines], axis=0
+    )   # shape (N,)
 
     print(f"\n[WALK-FORWARD] Complete!")
-    print(f"  - Total windows: {len(preds_all)}")
-    print(f"  - Horizon: {preds_all.shape[1]} days")
-    print(f"  - Total predictions: {len(preds_all) * preds_all.shape[1]}")
+    print(f"  - Total windows: {len(y_pred_all)}")
+    print(f"  - Forecast type: one-step-ahead (t+1)")
     print(f"  - Date range: {dates_all.min()} to {dates_all.max()}")
 
-    # Flatten predictions and actuals: (N, horizon) -> (N*horizon,)
-    preds_flat = preds_all.flatten()
-    actuals_flat = y_true_all.flatten()
-    
-    # Expand brands and dates
-    brand_expanded = np.repeat(brand_all, preds_all.shape[1])
-    
-    # For each window date, create horizon consecutive dates
-    dates_expanded = []
-    window_start_dates = []
-    for window_date in dates_all:
-        window_date = pd.Timestamp(window_date)
-        for day_offset in range(preds_all.shape[1]):
-            dates_expanded.append(window_date + timedelta(days=day_offset))
-            window_start_dates.append(window_date)
-    dates_expanded = np.array(dates_expanded)
-    window_start_dates = np.array(window_start_dates)
+    # Remove horizon dimension
+    preds_flat = y_pred_all.squeeze()
+    actuals_flat = y_true_all.squeeze()
 
-    # Convert to DataFrame
+    # Direct mapping (no expansion)
     results_df = pd.DataFrame({
         'predicted': preds_flat,
         'actual': actuals_flat,
-        'brand': brand_expanded,
-        'date': dates_expanded,
-        'window_start_date': window_start_dates
+        'baseline': baseline_all,
+        'brand': brand_all,
+        'date': pd.to_datetime(dates_all),
+        'window_start_date': pd.to_datetime(dates_all)
     })
 
     final = results_df.sort_values(by=['brand', 'date']).reset_index(drop=True)
-
     return final
+
 
 
 def main():
@@ -488,11 +495,6 @@ def main():
     input_size = config.window.get('input_size', 7)
     horizon = config.window.get('horizon', 2)
     
-    print(f"    - Feature columns: {len(feature_cols)} columns")
-    print(f"    - Target: {target_col}")
-    print(f"    - Input size: {input_size} days")
-    print(f"    - Horizon: {horizon} days")
-    
     # 2. Prepare historical data (ref_data) with features
     print("  [5.2] Preparing historical data with features...")
     data_prepared = add_features(
@@ -513,6 +515,12 @@ def main():
         target_col=target_col
     )
     print(f"    - Added all features to test data")
+
+    target_col = "residual"
+    print(f"    - Feature columns: {len(feature_cols)} columns")
+    print(f"    - Target: {target_col}")
+    print(f"    - Input size: {input_size} days")
+    print(f"    - Horizon: {horizon} days")
     
     # 4. Combine data: use last 6 months of historical + all test data
     # (This ensures enough input history for rolling windows and scaler updates)
@@ -602,6 +610,9 @@ def main():
     print(f"  - Feature columns: {feature_cols}")
     print(f"  - Test dates: {test_start_date} to {test_end_date}")
     
+    # ------------------------------------------------------------------
+    # Walk-forward test (t+1 only)
+    # ------------------------------------------------------------------
     test_results = walk_forward_test(
         model=model,
         scaler=scaler,
@@ -611,91 +622,115 @@ def main():
         target_col=target_col,
         brand_id_col=brand_id_col,
         input_size=input_size,
-        horizon=horizon,
+        horizon=1,   # explicit, even if ignored internally
         test_start_date=test_start_date,
         test_end_date=test_end_date,
-        update_freq=pd.DateOffset(months=3), 
+        update_freq=pd.DateOffset(months=3),
         device=device
     )
-    
-    test_results = test_results[test_results['date'].dt.year == 2025]
-    test_results["predicted"] = test_results["predicted"].clip(lower=0)
-    # Keep only the FIRST forecast step (y[0]) for each window
-    test_results['days_from_window_start'] = (
-        test_results['date'] - test_results['window_start_date']
-    ).dt.days
-    test_results_first_step = test_results[
-        test_results['days_from_window_start'] == 0
+
+    # Keep only 2025
+    test_results = test_results[
+        test_results['date'].dt.year == 2025
     ].copy()
 
+    # Business constraint: no negative demand
+    # Demand zero on OFF HOLIDAYS
+    test_results['predicted'] = test_results['predicted'].clip(lower=0)
+    holidays = load_holidays()
+    off_holidays = {
+        d
+        for year_data in holidays.values()
+        for d in year_data.get("off", [])
+    }
+
+    test_results.loc[
+        test_results["date"].dt.date.isin(off_holidays),
+        "predicted"
+    ] = 0
+
     # Keep only essential columns
-    test_results_first_step = test_results_first_step[
-        ['predicted', 'actual', 'brand', 'date']
+    test_results = test_results[
+        ['predicted', 'actual', 'baseline', 'brand', 'date']
     ]
 
-    print(f"First-step forecasts: {len(test_results_first_step)} rows")
+    print(f"[EVAL] One-step forecasts: {len(test_results)} rows")
     print(
-        f"Date range: "
-        f"{test_results_first_step['date'].min().date()} → "
-        f"{test_results_first_step['date'].max().date()}"
+        f"[EVAL] Date range: "
+        f"{test_results['date'].min().date()} → "
+        f"{test_results['date'].max().date()}"
     )
-    
-    if len(test_results_first_step) > 0:
-        print(f"  - brands: {test_results_first_step['brand'].unique()}")
-        print(f"  - Date range: {test_results_first_step['date'].min().date()} to {test_results_first_step['date'].max().date()}")
-        save_monthly_forecast(test_results_first_step)
+
+    if len(test_results) > 0:
+        print(f"[EVAL] Brands: {sorted(test_results['brand'].unique())}")
+        save_monthly_forecast(test_results)
     else:
-        print("  - No monthly windows found (day 1 windows)")
+        print("[EVAL] No forecasts generated")
+
 
     # Generate accuracy report
     print("\n[REPORTING] Generating accuracy report...")
-    if len(test_results_first_step) > 0:
-        # Prepare brand name mapping for report
-        id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
-        # Generate and save report
+
+    if len(test_results) > 0:
+        id_to_brand_name = (
+            {v: k for k, v in trained_brand2id.items()}
+            if trained_brand2id else {}
+        )
+
         report = generate_accuracy_report(
-            test_results_first_step,
+            test_results,
             actual_col='actual',
             forecast_col='predicted',
+            baseline_col='baseline',
             brand_col='brand',
             date_col='date',
             brand_name_map=id_to_brand_name,
             output_path='outputs/accuracy_report.txt'
         )
+
         print(report)
     else:
         print("  - No data available for accuracy report")
+
     
     # Generate plots for each brand/month combination
     if config.output['visualize'].get('save_plots', False):
         print("\n[PLOTTING] Generating monthly forecast plots...")
-        if len(test_results_first_step) > 0:
-            test_results_first_step['date'] = pd.to_datetime(test_results_first_step['date'])
-            test_results_first_step['month'] = test_results_first_step['date'].dt.to_period('M').astype(str)
-            
-            # Create reverse mapping: ID -> Name for plot filenames
-            id_to_brand_name = {v: k for k, v in trained_brand2id.items()} if trained_brand2id else {}
-            print(f"  - brand ID to Name mapping: {id_to_brand_name}")
-            
-            # Group by brand and month
-            for brand in sorted(test_results_first_step['brand'].unique()):
-                # Get brand name for filename
+
+        if len(test_results) > 0:
+            test_results['month'] = (
+                test_results['date']
+                .dt.to_period('M')
+                .astype(str)
+            )
+
+            id_to_brand_name = (
+                {v: k for k, v in trained_brand2id.items()}
+                if trained_brand2id else {}
+            )
+
+            for brand in sorted(test_results['brand'].unique()):
                 brand_name = id_to_brand_name.get(brand, str(brand))
-                print(f"  - brand {brand} ({brand_name}):")
-                brand_data = test_results_first_step[test_results_first_step['brand'] == brand]
-                
+                brand_data = test_results[test_results['brand'] == brand]
+
+                print(f"  - brand {brand} ({brand_name})")
+
                 for month in sorted(brand_data['month'].unique()):
                     plot_monthly_forecast(
-                        test_results_first_step,
+                        test_results,
                         brand=brand,
                         brand_name=brand_name,
                         month_str=month,
                         output_dir="outputs/plots",
-                        show=False
+                        show=False,
+                        plot_baseline=True,   # 👈 control
                     )
-            print(f"  - All plots saved to: outputs/plots/")
+
+
+            print("  - All plots saved to: outputs/plots/")
         else:
             print("  - No data available for plotting")
+
 
 if __name__ == "__main__":
     main()

@@ -10,8 +10,8 @@ data:
   feature_cols:
     - "month_sin"
     - "month_cos"
-    # - "dayofmonth_sin"
-    # - "dayofmonth_cos"
+    - "dayofmonth_sin"
+    - "dayofmonth_cos"
     - "is_weekend"
     - "dow_sin"
     - "dow_cos"
@@ -25,16 +25,15 @@ data:
     # - "lunar_month_cos"
     # - "lunar_day_sin"
     # - "lunar_day_cos"
-    # - "holiday_indicator"
+    - "is_off_holiday"
+    - "is_other_holiday"
     # - "days_until_next_holiday"
     # - "days_since_holiday"
     # - "days_to_tet"
     # - "cbm_per_qty"
     # - "cbm_per_qty_last_year"
-    # - "rolling_mean_7d"
-    # - "rolling_mean_30d"
-    # - "momentum_3d_vs_14d"
-    - "CUBE_OUT"
+    # - "baseline"
+    # - "CUBE_OUT"
   
   # Target column
   target_col: "CUBE_OUT"
@@ -49,7 +48,7 @@ data:
 # This prevents exposure bias from recursive forecasting where errors compound
 window:
   input_size: 7
-  horizon: 2     
+  horizon: 2    
 
 # Model Configuration
 model:
@@ -57,17 +56,17 @@ model:
   num_brands: null  # Will be set dynamically from data
   brand_emb_dim: 4
   input_dim: null  # Updated dynamically in code to match feature_cols length
-  hidden_size: 32
+  hidden_size: 16
   n_layers: 2
   output_dim: 2  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
-  dropout_prob: 0.2  # Only for RNNForecastor
+  dropout_prob: 0.1  # Only for RNNForecastor
 
 # Training Configuration
 training:
   batch_size: 64
   val_batch_size: 16
   test_batch_size: 16
-  epochs: 40
+  epochs: 20
   learning_rate: 0.001
   optimizer: "Adam"
   loss: "Huber"
