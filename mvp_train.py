@@ -21,8 +21,9 @@ from src.data import (
 from src.data.preprocessing import add_features
 from src.models import RNNForecastor
 from src.training import Trainer
-from src.utils import spike_aware_huber
+from src.utils import spike_aware_huber, seed_everything, seed_worker, SEED
 
+seed_everything(SEED)
 
 def train_single_model(data, config):
     """
@@ -145,10 +146,15 @@ def train_single_model(data, config):
     
     # Create data loaders
     training_config = config.training
+    g = torch.Generator()
+    g.manual_seed(SEED)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=training_config['batch_size'],
-        shuffle=True
+        shuffle=True,
+        worker_init_fn=seed_worker,
+        generator=g
     )
     
     # Build model

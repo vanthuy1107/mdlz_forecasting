@@ -31,6 +31,9 @@ from src.utils.visualization import plot_monthly_forecast
 from src.utils.metrics import generate_accuracy_report
 from src.utils.google_sheets import upload_history_prediction
 from src.utils.date import load_holidays
+from src.utils import spike_aware_huber, seed_everything, seed_worker, SEED
+
+seed_everything(SEED)
 
 
 def fill_missing_dates(
@@ -688,7 +691,7 @@ def main():
             output_path='outputs/accuracy_report.txt'
         )
 
-        print(report)
+        # print(report)
     else:
         print("  - No data available for accuracy report")
 
