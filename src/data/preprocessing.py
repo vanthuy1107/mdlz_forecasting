@@ -803,12 +803,15 @@ def add_early_month_low_volume_features(
         df['is_high_volume_weekday'] = weekday.isin([0, 2, 4]).astype(int)
     
     # Now create the explicit interaction feature with STRONGER negative signal for days 1-5
-    # Days 1-5: -2 (STRONG suppression of weekday effect)
-    # Days 6-10: -1 (moderate suppression of weekday effect)
+    # Days 1-5: -5 (VERY STRONG suppression of weekday effect - increased from -2 to override 4x weekday boost)
+    # Days 6-10: -2 (strong suppression of weekday effect - increased from -1)
     # Other days: 0 (no suppression)
+    # RATIONALE: The 4x weekday boost (Wed/Fri) was overpowering the -2 suppression signal,
+    # causing 4x over-predictions on early-month high-volume weekdays (e.g., Oct 1/3, 2025).
+    # Increasing to -5 for days 1-5 ensures early-month suppression dominates weekday patterns.
     df['is_high_vol_weekday_AND_early_month'] = 0  # Default: no suppression
-    df.loc[(df['is_high_volume_weekday'] == 1) & (day_of_month >= 6) & (day_of_month <= 10), 'is_high_vol_weekday_AND_early_month'] = -1  # Moderate suppression (days 6-10)
-    df.loc[(df['is_high_volume_weekday'] == 1) & (day_of_month <= 5), 'is_high_vol_weekday_AND_early_month'] = -2  # STRONG suppression (days 1-5)
+    df.loc[(df['is_high_volume_weekday'] == 1) & (day_of_month >= 6) & (day_of_month <= 10), 'is_high_vol_weekday_AND_early_month'] = -2  # Strong suppression (days 6-10) - INCREASED from -1
+    df.loc[(df['is_high_volume_weekday'] == 1) & (day_of_month <= 5), 'is_high_vol_weekday_AND_early_month'] = -5  # VERY STRONG suppression (days 1-5) - INCREASED from -2
     
     return df
 
