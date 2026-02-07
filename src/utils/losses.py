@@ -4,40 +4,32 @@ import torch.nn as nn
 from typing import Optional, Dict
 
 
-def get_dynamic_early_month_weight(day_of_month: torch.Tensor) -> torch.Tensor:
+def get_dynamic_early_month_weight(day_of_month: torch.Tensor, base_weight: float = 100.0) -> torch.Tensor:
     """
     Compute dynamic early month loss weight based on day of month.
     
-    SOLUTION 2: Dynamic Loss Weighting - HARD RESET STRATEGY V2 (STRENGTHENED)
+    SOLUTION 2: Dynamic Loss Weighting - HARD RESET STRATEGY V2 (CONFIGURABLE)
     This creates an EXTREME scheduled penalty with EXTENDED hard zone and EXPONENTIAL decay
     to fix residual over-prediction in Days 2-4 post-holiday period.
     
-    Weight Schedule (STRENGTHENED - increased from 50x to 100x for days 1-5):
-    - Days 1-5: MAXIMUM PENALTY (100x) - Extended zero-tolerance zone for entire first week
-    - Days 6-10: EXPONENTIAL decay from 100x down to 1x
+    Weight Schedule (configurable base_weight, default 100x):
+    - Days 1-5: MAXIMUM PENALTY (base_weight) - Extended zero-tolerance zone for entire first week
+    - Days 6-10: EXPONENTIAL decay from base_weight down to 1x
     - Days 11+: Standard weight (1x)
     
     Mathematical Formula:
-    - If day <= 5: weight = 100.0 (INCREASED from 50x to enforce low predictions EVEN on high-volume weekdays)
-    - If 6 <= day <= 10: weight = 100.0 * exp(-lambda * (day - 5))
-      * Lambda = 0.92 chosen so that Day 10 reaches 1.0x
-      * Day 6: 100.0 * exp(-0.92 * 1) = 39.9x (maintains high penalty)
-      * Day 7: 100.0 * exp(-0.92 * 2) = 15.9x (still significant)
-      * Day 8: 100.0 * exp(-0.92 * 3) = 6.3x
-      * Day 9: 100.0 * exp(-0.92 * 4) = 2.5x
-      * Day 10: 100.0 * exp(-0.92 * 5) = 1.0x (smooth landing)
+    - If day <= 5: weight = base_weight (default 100.0, configurable to 50.0 for balance with weekday patterns)
+    - If 6 <= day <= 10: weight = base_weight * exp(-lambda * (day - 5))
+      * Lambda calculated dynamically: ln(base_weight) / 5 so that Day 10 reaches 1.0x
+      * Day 6: base_weight * exp(-lambda * 1) (maintains high penalty)
+      * Day 10: base_weight * exp(-lambda * 5) = 1.0x (smooth landing)
     - If day > 10: weight = 1.0
-    
-    Why this strengthened version works:
-    - EXTREME penalty (100x instead of 50x) ensures days 1-5 are LOW even when weekday_volume_tier is high
-    - Extended hard zone (Days 1-5 at 100x) keeps model in "low volume mode" longer
-    - Exponential decay maintains weight >39x until Day 6, preventing LSTM momentum from taking over
-    - Smoother transition prevents the "inverse slump" issue seen with linear decay
-    - Addresses the "post-holiday bump" problem where Days 2-4 were still over-predicting
     
     Args:
         day_of_month: Tensor of day of month values (1-31).
                      Shape can be (batch,) or (batch, horizon).
+        base_weight: Base weight for Days 1-5 (default: 100.0).
+                    Can be reduced (e.g., 50.0) to allow weekday patterns to show through.
     
     Returns:
         Weight tensor with same shape as input, containing dynamic weights.
@@ -45,19 +37,18 @@ def get_dynamic_early_month_weight(day_of_month: torch.Tensor) -> torch.Tensor:
     # Initialize all weights to 1.0 (default)
     weights = torch.ones_like(day_of_month, dtype=torch.float32, device=day_of_month.device)
     
-    # Days 1-5: MAXIMUM PENALTY (100x) - STRENGTHENED from 50x to enforce low predictions
+    # Days 1-5: MAXIMUM PENALTY (configurable base_weight)
     # This keeps the model in "severe low volume" mode for the entire first 5 days
-    # EVEN when weekday_volume_tier indicates high volume (Mon/Wed/Fri)
     mask_days_1_5 = (day_of_month >= 1) & (day_of_month <= 5)
-    weights = torch.where(mask_days_1_5, torch.tensor(100.0, device=day_of_month.device), weights)
+    weights = torch.where(mask_days_1_5, torch.tensor(base_weight, device=day_of_month.device), weights)
     
-    # Days 6-10: EXPONENTIAL decay from 100 to 1
-    # Formula: weight = 100.0 * exp(-0.92 * (day - 5))
-    # This maintains high penalty longer than linear decay
-    # Lambda = 0.92 chosen so exp(-0.92 * 5) ≈ 0.01, giving 100 * 0.01 = 1.0 at Day 10
+    # Days 6-10: EXPONENTIAL decay from base_weight to 1
+    # Formula: weight = base_weight * exp(-lambda * (day - 5))
+    # Lambda dynamically calculated: ln(base_weight) / 5 so exp(-lambda * 5) = 1/base_weight
+    # This gives: base_weight * (1/base_weight) = 1.0 at Day 10
     mask_days_6_10 = (day_of_month >= 6) & (day_of_month <= 10)
-    lambda_decay = 0.92  # Decay rate for exponential function (adjusted for 100x base)
-    exponential_decay = 100.0 * torch.exp(-lambda_decay * (day_of_month - 5))
+    lambda_decay = torch.log(torch.tensor(base_weight, device=day_of_month.device)) / 5.0
+    exponential_decay = base_weight * torch.exp(-lambda_decay * (day_of_month - 5))
     weights = torch.where(mask_days_6_10, exponential_decay, weights)
     
     # Days 11+: Standard weight (1x) - already initialized to 1.0
@@ -80,6 +71,7 @@ def spike_aware_mse(
     early_month_loss_weight: float = 1.0,
     day_of_month: Optional[torch.Tensor] = None,
     use_dynamic_early_month_weight: bool = False,
+    dynamic_early_month_base_weight: float = 100.0,
     is_golden_window: Optional[torch.Tensor] = None,
     golden_window_weight: float = 1.0,
     is_peak_loss_window: Optional[torch.Tensor] = None,
@@ -131,8 +123,10 @@ def spike_aware_mse(
         day_of_month: Optional tensor of day of month values (1-31) for dynamic early month weighting.
                      Shape should match y_true (can be 1D for single-step or 2D for multi-step).
                      Used only when use_dynamic_early_month_weight=True.
-        use_dynamic_early_month_weight: If True, use dynamic weight schedule (Days 1-5: 100x, Days 6-10: exponential decay).
+        use_dynamic_early_month_weight: If True, use dynamic weight schedule (Days 1-5: configurable, Days 6-10: exponential decay).
                                        If False, use static early_month_loss_weight for all days 1-10 (default: False).
+        dynamic_early_month_base_weight: Base weight for Days 1-5 when use_dynamic_early_month_weight=True (default: 100.0).
+                                        Can be reduced (e.g., 50.0) to allow weekday patterns (Wed/Fri) to show through.
         is_golden_window: Optional tensor indicating Golden Window samples (1 for Golden Window, 0 otherwise).
                          For MOONCAKE: Gregorian August 1-31. Shape should match y_true.
         golden_window_weight: Weight multiplier for Golden Window samples (default: 1.0, typically 12.0 for MOONCAKE).
@@ -229,7 +223,7 @@ def spike_aware_mse(
             day_of_month = day_of_month[:, 0] if day_of_month.shape[1] > 0 else day_of_month.mean(dim=1)
         
         # Compute dynamic weight schedule
-        dynamic_weight = get_dynamic_early_month_weight(day_of_month)
+        dynamic_weight = get_dynamic_early_month_weight(day_of_month, base_weight=dynamic_early_month_base_weight)
         base_weight = base_weight * dynamic_weight
     elif is_early_month is not None and early_month_loss_weight > 1.0:
         # Legacy mode: Static weighting for all days 1-10

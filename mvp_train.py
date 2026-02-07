@@ -1734,9 +1734,16 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         if 'use_dynamic_early_month_weight' in cat_params:
             use_dynamic_early_month_weight = bool(cat_params['use_dynamic_early_month_weight'])
             if use_dynamic_early_month_weight:
-                print(f"  - SOLUTION 2: Dynamic Early Month Weighting ENABLED (Days 1-3: 20x, Days 4-10: linear decay, for {category_filter or 'default'})")
+                print(f"  - SOLUTION 2: Dynamic Early Month Weighting ENABLED (for {category_filter or 'default'})")
             else:
                 print(f"  - Using static early month weighting (for {category_filter or 'default'})")
+        
+        # Get dynamic early month base weight (configurable)
+        dynamic_early_month_base_weight = 100.0  # Default
+        if 'dynamic_early_month_base_weight' in cat_params:
+            dynamic_early_month_base_weight = float(cat_params['dynamic_early_month_base_weight'])
+            if use_dynamic_early_month_weight:
+                print(f"  - Dynamic Early Month Base Weight: {dynamic_early_month_base_weight}x (Days 1-5)")
         
         # Get Golden Window loss weight from config (for MOONCAKE category)
         golden_window_weight = 1.0  # Default (no additional weighting)
@@ -1830,7 +1837,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             print(f"  - is_august feature found at index {is_august_idx}")
         
         # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, Early Month weighting (static or dynamic), Golden Window weighting, and Balanced Distribution parameters
-        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, early_month_weight, use_dyn_early_month, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
+        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, early_month_weight, use_dyn_early_month, dyn_early_base_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
                             use_asym_penalty, over_penalty, under_penalty, apply_mean_constraint, mean_constraint_weight,
                             is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_early_month_low_idx, days_from_month_start_idx, dayofmonth_sin_idx, dayofmonth_cos_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
             def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
@@ -2082,6 +2089,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     early_month_loss_weight=early_month_weight,
                     day_of_month=day_of_month_horizon,
                     use_dynamic_early_month_weight=use_dyn_early_month,
+                    dynamic_early_month_base_weight=dyn_early_base_weight,
                     is_golden_window=is_golden_window_horizon,
                     golden_window_weight=golden_window_weight,
                     is_peak_loss_window=is_peak_loss_window_horizon,
@@ -2105,6 +2113,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             friday_loss_weight,
             early_month_loss_weight,
             use_dynamic_early_month_weight,
+            dynamic_early_month_base_weight,
             golden_window_weight,
             peak_loss_window_weight,
             august_boost_weight,
