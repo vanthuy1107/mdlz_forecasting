@@ -2308,7 +2308,8 @@ def main():
             historical_data_prepared,
             end_date=date(historical_year, 12, 31),
             config=config,
-            num_days=config.window['input_size']
+            num_days=config.window['input_size'],
+            use_full_months=True  # Use complete months for better trend capture
         )
         print(f"  - Historical window: {len(historical_window)} samples")
         print(f"  - Date range: {historical_window[data_config['time_col']].min()} to {historical_window[data_config['time_col']].max()}")
@@ -2634,7 +2635,8 @@ def main():
                     combined_history,
                     end_date=window_end_date,
                     config=config_cat,
-                    num_days=config_cat.window['input_size']
+                    num_days=config_cat.window['input_size'],
+                    use_full_months=True  # Use complete months for better trend capture
                 )
                 print(f"  - Historical window for {current_category}: last input day = {window_end_date} (uses prediction-period data before {prediction_start_date}), {len(historical_window_cat)} samples")
             else:
@@ -2642,7 +2644,8 @@ def main():
                     historical_data_prepared_cat,
                     end_date=window_end_date,
                     config=config_cat,
-                    num_days=config_cat.window['input_size']
+                    num_days=config_cat.window['input_size'],
+                    use_full_months=True  # Use complete months for better trend capture
                 )
                 print(f"  - Historical window for {current_category}: {len(historical_window_cat)} samples")
             

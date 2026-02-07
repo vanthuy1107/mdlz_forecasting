@@ -429,7 +429,10 @@ def predict_direct_multistep_rolling(
     historical_data: pd.DataFrame = None
 ):
     """
-    Predict for a long date range by looping through chunks of horizon days.
+    Predict for a long date range by looping through CALENDAR MONTH chunks.
+    
+    ENHANCED: Predictions are now aligned with calendar month boundaries.
+    Each chunk predicts one complete month (from 1st to last day of month).
     
     CRITICAL: For category-specific models (num_categories=1), cat_id should always be 0.
     
@@ -437,7 +440,7 @@ def predict_direct_multistep_rolling(
         model: Trained PyTorch model
         device: PyTorch device
         initial_window_data: DataFrame with last input_size days of historical data
-        start_date: First date to predict
+        start_date: First date to predict (will be adjusted to 1st of month if not already)
         end_date: Last date to predict
         config: Configuration object
         cat_id: Category ID (integer) - should be 0 for category-specific models
@@ -459,13 +462,22 @@ def predict_direct_multistep_rolling(
     time_col = data_config['time_col']
     cat_col = data_config.get('cat_col', 'CATEGORY')
     
-    if len(initial_window_data) < input_size:
-        raise ValueError(
-            f"Initial window must have at least {input_size} samples, "
-            f"got {len(initial_window_data)}"
-        )
+    # ENHANCED: Support full-month windows (don't truncate to input_size if using full months)
+    # Full-month windows capture monthly trends better than arbitrary N-day windows
+    use_full_month_window = len(initial_window_data) >= input_size
     
-    window = initial_window_data.tail(input_size).copy()
+    if len(initial_window_data) < input_size:
+        print(f"  [WARNING] Initial window has {len(initial_window_data)} samples, less than input_size={input_size}")
+        print(f"            Using all available data...")
+        window = initial_window_data.copy()
+    elif use_full_month_window and len(initial_window_data) > input_size:
+        # Use the full window if it's larger than input_size (e.g., full month data)
+        print(f"  [FULL-MONTH MODE] Using full window ({len(initial_window_data)} days) instead of truncating to input_size={input_size}")
+        window = initial_window_data.copy()
+    else:
+        # Standard mode: use last input_size days
+        window = initial_window_data.tail(input_size).copy()
+    
     window = window.sort_values(time_col).reset_index(drop=True)
     
     # Build combined historical dataset for YoY feature lookup
@@ -487,21 +499,53 @@ def predict_direct_multistep_rolling(
     chunk_num = 0
     
     total_days = (end_date - start_date).days + 1
-    print(f"  - Starting rolling prediction for {total_days} days (horizon={horizon} days per chunk)")
+    print(f"  - Starting rolling prediction for {total_days} days")
     print(f"  - Date range: {start_date} to {end_date}")
+    print(f"  - Prediction mode: CALENDAR MONTH chunks (each chunk = one complete month)")
     print(f"  - Initial window: {window[time_col].min()} to {window[time_col].max()}")
     if historical_data is not None:
         print(f"  - Historical data available: {len(historical_data)} rows for YoY feature lookup")
     
     while current_start <= end_date:
         chunk_num += 1
-        chunk_end = min(
-            current_start + timedelta(days=horizon - 1),
-            end_date
-        )
+        
+        # ENHANCED: Use calendar month boundaries instead of fixed horizon
+        # Each chunk predicts ONE COMPLETE MONTH from the 1st to the last day of that month
+        # This aligns predictions with natural business cycles
+        
+        # Get the month boundaries
+        chunk_year = current_start.year
+        chunk_month = current_start.month
+        
+        # If current_start is NOT the 1st of the month, adjust it
+        if current_start.day != 1:
+            print(f"  [WARNING] Current start date {current_start} is not the 1st of month. Adjusting to month start.")
+            current_start = date(chunk_year, chunk_month, 1)
+        
+        # Calculate the last day of this month
+        if chunk_month == 12:
+            next_month_year = chunk_year + 1
+            next_month = 1
+        else:
+            next_month_year = chunk_year
+            next_month = chunk_month + 1
+        
+        # Last day of current month = day before 1st of next month
+        from datetime import date as dt_date
+        first_of_next_month = dt_date(next_month_year, next_month, 1)
+        chunk_end = first_of_next_month - timedelta(days=1)
+        
+        # Don't exceed the requested end_date
+        chunk_end = min(chunk_end, end_date)
+        
         chunk_days = (chunk_end - current_start).days + 1
         
-        print(f"\n  [Chunk {chunk_num}] Predicting {current_start} to {chunk_end} ({chunk_days} days)...")
+        print(f"\n  [Chunk {chunk_num}] Predicting {current_start} to {chunk_end} ({chunk_days} days) - Month {chunk_month:02d}/{chunk_year}...")
+        
+        # Check if chunk_days exceeds model's horizon
+        if chunk_days > horizon:
+            print(f"  [WARNING] Month has {chunk_days} days but model horizon is {horizon}. Will predict {horizon} days.")
+            chunk_end = current_start + timedelta(days=horizon - 1)
         
         chunk_predictions = predict_direct_multistep(
             model=model,
@@ -684,11 +728,51 @@ def predict_direct_multistep_rolling(
                 else:
                     print(f"  - WARNING: No historical data available for YoY feature lookup")
             
-            # Keep only the last input_size rows for next iteration
-            window = window.tail(input_size).copy()
-            window = window.sort_values(time_col).reset_index(drop=True)
+            # ENHANCED: Maintain full-month window for next iteration
+            # Instead of truncating to input_size, keep data from start of previous month to current date
+            # This ensures consistent monthly context throughout the rolling prediction
+            if use_full_month_window and len(window) > input_size:
+                # Get the last date in the window
+                last_window_date = pd.to_datetime(window[time_col]).dt.date.max()
+                
+                # Calculate start of previous month
+                last_year = last_window_date.year
+                last_month = last_window_date.month
+                if last_month == 1:
+                    prev_month_year = last_year - 1
+                    prev_month = 12
+                else:
+                    prev_month_year = last_year
+                    prev_month = last_month - 1
+                
+                from datetime import date as dt_date
+                full_month_start = dt_date(prev_month_year, prev_month, 1)
+                
+                # Keep data from start of previous month onwards
+                window['_date_only'] = pd.to_datetime(window[time_col]).dt.date
+                window = window[window['_date_only'] >= full_month_start].copy()
+                window = window.drop(columns=['_date_only'])
+                window = window.sort_values(time_col).reset_index(drop=True)
+                print(f"  - Maintaining full-month window: {len(window)} rows from {window[time_col].min()} to {window[time_col].max()}")
+            else:
+                # Standard mode: keep only the last input_size rows for next iteration
+                window = window.tail(input_size).copy()
+                window = window.sort_values(time_col).reset_index(drop=True)
         
-        current_start = chunk_end + timedelta(days=1)
+        # ENHANCED: Move to the 1st day of the NEXT MONTH (not just +1 day)
+        # This ensures each chunk aligns with calendar month boundaries
+        chunk_month = current_start.month
+        chunk_year = current_start.year
+        
+        if chunk_month == 12:
+            next_month_year = chunk_year + 1
+            next_month = 1
+        else:
+            next_month_year = chunk_year
+            next_month = chunk_month + 1
+        
+        from datetime import date as dt_date
+        current_start = dt_date(next_month_year, next_month, 1)
     
     if all_predictions:
         final_predictions = pd.concat(all_predictions, ignore_index=True)
@@ -704,19 +788,24 @@ def get_historical_window_data(
     historical_data: pd.DataFrame,
     end_date: date,
     config,
-    num_days: int = 30
+    num_days: int = 30,
+    use_full_months: bool = True
 ):
     """
     Extract the last N days of historical data to initialize prediction window.
+    
+    ENHANCED: Supports full-month alignment mode for better trend capture.
+    When use_full_months=True, returns data from complete months (last month + current month).
     
     Args:
         historical_data: DataFrame with historical data
         end_date: Last date to include
         config: Configuration object
-        num_days: Number of days to extract
+        num_days: Number of days to extract (used when use_full_months=False)
+        use_full_months: If True, use full month boundaries instead of fixed num_days
     
     Returns:
-        DataFrame with last num_days of data, sorted by time
+        DataFrame with historical data, sorted by time
     """
     time_col = config.data['time_col']
     
@@ -727,18 +816,48 @@ def get_historical_window_data(
     historical_data = historical_data.sort_values(time_col).reset_index(drop=True)
     
     historical_data['date_only'] = pd.to_datetime(historical_data[time_col]).dt.date
-    unique_dates = historical_data['date_only'].unique()
-    unique_dates = sorted(unique_dates)
     
-    if len(unique_dates) < num_days:
-        print(f"  [WARNING] Only {len(unique_dates)} unique dates available, requested {num_days}")
-        selected_dates = unique_dates
+    if use_full_months:
+        # Use complete months: last month + current month (up to end_date)
+        # This captures monthly trends better than arbitrary N-day windows
+        
+        # Get the month boundaries
+        end_year = end_date.year
+        end_month = end_date.month
+        
+        # Calculate last month (previous month)
+        if end_month == 1:
+            last_month_year = end_year - 1
+            last_month = 12
+        else:
+            last_month_year = end_year
+            last_month = end_month - 1
+        
+        # Start from the first day of last month
+        from datetime import date as dt_date
+        start_date = dt_date(last_month_year, last_month, 1)
+        
+        print(f"  [FULL-MONTH MODE] Window: {start_date} to {end_date} (last month + current month)")
+        
+        # Select data from start_date to end_date
+        window_data = historical_data[
+            (historical_data['date_only'] >= start_date) &
+            (historical_data['date_only'] <= end_date)
+        ].copy()
     else:
-        selected_dates = unique_dates[-num_days:]
-    
-    window_data = historical_data[
-        historical_data['date_only'].isin(selected_dates)
-    ].copy()
+        # Original behavior: use last N days
+        unique_dates = historical_data['date_only'].unique()
+        unique_dates = sorted(unique_dates)
+        
+        if len(unique_dates) < num_days:
+            print(f"  [WARNING] Only {len(unique_dates)} unique dates available, requested {num_days}")
+            selected_dates = unique_dates
+        else:
+            selected_dates = unique_dates[-num_days:]
+        
+        window_data = historical_data[
+            historical_data['date_only'].isin(selected_dates)
+        ].copy()
     
     window_data = window_data.drop(columns=['date_only'])
     

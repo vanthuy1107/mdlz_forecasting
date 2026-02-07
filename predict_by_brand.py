@@ -444,7 +444,8 @@ def predict_brand_model(
         historical_data=brand_data,
         end_date=window_end_date,
         config=base_config,
-        num_days=window_size
+        num_days=window_size,
+        use_full_months=True  # Use complete months for better trend capture
     )
     
     print(f"  - Window size: {len(window_data)} samples")

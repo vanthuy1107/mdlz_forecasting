@@ -1083,6 +1083,17 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             is_monday_col="Is_Monday"
         )
     
+    # SOLUTION 1 & 2: Re-add early month features after aggregation (critical for early month over-prediction fix)
+    if "early_month_low_tier" not in filtered_data.columns or "post_peak_signal" not in filtered_data.columns:
+        print("  - Re-adding early month features (post_peak_signal, is_first_3_days, etc.) after aggregation...")
+        filtered_data = add_early_month_low_volume_features(
+            filtered_data,
+            time_col=time_col,
+            early_month_low_tier_col="early_month_low_tier",
+            is_early_month_low_col="is_early_month_low",
+            days_from_month_start_col="days_from_month_start"
+        )
+    
     # Ensure days_to_mid_autumn exists after aggregation
     if "days_to_mid_autumn" not in filtered_data.columns:
         print("  - Re-adding days_to_mid_autumn feature after aggregation...")
@@ -1706,6 +1717,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         wednesday_loss_weight = 1.0  # Default (no additional weighting)
         friday_loss_weight = 1.0  # Default (no additional weighting)
         early_month_loss_weight = 1.0  # Default (no additional weighting for DRY category)
+        use_dynamic_early_month_weight = False  # Default: use static weighting
         cat_params = get_category_params(category_specific_params, category_filter)
         if 'monday_loss_weight' in cat_params:
             monday_loss_weight = float(cat_params['monday_loss_weight'])
@@ -1718,7 +1730,13 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             print(f"  - Friday loss weight: {friday_loss_weight}x (for {category_filter or 'default'})")
         if 'early_month_loss_weight' in cat_params:
             early_month_loss_weight = float(cat_params['early_month_loss_weight'])
-            print(f"  - Early Month loss weight: {early_month_loss_weight}x (days 1-10, for {category_filter or 'default'})")
+            print(f"  - Early Month loss weight (static): {early_month_loss_weight}x (days 1-10, for {category_filter or 'default'})")
+        if 'use_dynamic_early_month_weight' in cat_params:
+            use_dynamic_early_month_weight = bool(cat_params['use_dynamic_early_month_weight'])
+            if use_dynamic_early_month_weight:
+                print(f"  - SOLUTION 2: Dynamic Early Month Weighting ENABLED (Days 1-3: 20x, Days 4-10: linear decay, for {category_filter or 'default'})")
+            else:
+                print(f"  - Using static early month weighting (for {category_filter or 'default'})")
         
         # Get Golden Window loss weight from config (for MOONCAKE category)
         golden_window_weight = 1.0  # Default (no additional weighting)
@@ -1747,6 +1765,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         day_of_week_sin_idx = None
         day_of_week_cos_idx = None
         is_early_month_low_idx = None
+        days_from_month_start_idx = None  # For dynamic early month weighting
+        dayofmonth_sin_idx = None  # Fallback for reconstructing day_of_month
+        dayofmonth_cos_idx = None  # Fallback for reconstructing day_of_month
         is_golden_window_idx = None
         if 'Is_Monday' in feature_cols:
             is_monday_idx = feature_cols.index('Is_Monday')
@@ -1758,6 +1779,13 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         if 'is_early_month_low' in feature_cols:
             is_early_month_low_idx = feature_cols.index('is_early_month_low')
             print(f"  - is_early_month_low feature found at index {is_early_month_low_idx}")
+        if 'days_from_month_start' in feature_cols:
+            days_from_month_start_idx = feature_cols.index('days_from_month_start')
+            print(f"  - days_from_month_start feature found at index {days_from_month_start_idx} (for dynamic early month weighting)")
+        if 'dayofmonth_sin' in feature_cols and 'dayofmonth_cos' in feature_cols:
+            dayofmonth_sin_idx = feature_cols.index('dayofmonth_sin')
+            dayofmonth_cos_idx = feature_cols.index('dayofmonth_cos')
+            print(f"  - dayofmonth_sin/cos features found at indices {dayofmonth_sin_idx}/{dayofmonth_cos_idx} (fallback for day reconstruction)")
         if 'is_golden_window' in feature_cols:
             is_golden_window_idx = feature_cols.index('is_golden_window')
             print(f"  - is_golden_window feature found at index {is_golden_window_idx}")
@@ -1772,9 +1800,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             is_august_idx = feature_cols.index('is_august')
             print(f"  - is_august feature found at index {is_august_idx}")
         
-        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, Early Month weighting, and Golden Window weighting
-        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, early_month_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
-                            is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_early_month_low_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
+        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, Early Month weighting (static or dynamic), and Golden Window weighting
+        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, early_month_weight, use_dyn_early_month, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
+                            is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_early_month_low_idx, days_from_month_start_idx, dayofmonth_sin_idx, dayofmonth_cos_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
             def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
                 # Extract day of week for the prediction horizon (for Monday/Wednesday/Friday weighting)
                 is_monday_horizon = None
@@ -1891,9 +1919,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                             is_wednesday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
                             is_friday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
                 
-                # Extract is_early_month_low for the prediction horizon (for DRY category)
+                # Extract is_early_month_low for the prediction horizon (for DRY category - static weighting)
                 is_early_month_horizon = None
-                if is_early_month_low_idx is not None and inputs is not None and early_month_weight > 1.0:
+                if is_early_month_low_idx is not None and inputs is not None and early_month_weight > 1.0 and not use_dyn_early_month:
                     # Extract is_early_month_low from the last timestep of input
                     # For multi-step forecasting, we use the last input day's early month status
                     # and apply it to all horizon days (simplified approach)
@@ -1908,6 +1936,56 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                         is_early_month_horizon = last_day_is_early.unsqueeze(-1).expand(batch_size, horizon)
                     else:  # Single-step
                         is_early_month_horizon = last_day_is_early
+                
+                # SOLUTION 2: Extract day_of_month for dynamic early month weighting (for DRY category)
+                day_of_month_horizon = None
+                if use_dyn_early_month and inputs is not None:
+                    # Method 1: Use days_from_month_start if available (most direct)
+                    if days_from_month_start_idx is not None:
+                        # days_from_month_start is 0-indexed (0 on 1st, 1 on 2nd, etc.)
+                        # Convert to 1-indexed day_of_month (1-31)
+                        last_day_from_start = inputs[:, -1, days_from_month_start_idx]  # (batch,) or (batch, 1)
+                        if last_day_from_start.ndim > 1:
+                            last_day_from_start = last_day_from_start.squeeze()
+                        day_of_month_last = last_day_from_start + 1  # Convert to 1-indexed
+                        
+                        if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                            batch_size = y_pred.shape[0]
+                            horizon = y_pred.shape[1]
+                            # For multi-step, we need to project forward
+                            # Simplified: assume the forecast horizon starts from day_of_month_last + 1
+                            # and increments by 1 for each horizon step (wrapping handled by loss function)
+                            day_of_month_horizon = day_of_month_last.unsqueeze(-1).expand(batch_size, horizon) + torch.arange(1, horizon + 1, device=day_of_month_last.device).unsqueeze(0)
+                            # Clip to valid day range (1-31, though month length varies)
+                            day_of_month_horizon = torch.clamp(day_of_month_horizon, 1, 31)
+                        else:  # Single-step
+                            day_of_month_horizon = day_of_month_last + 1  # Next day
+                            day_of_month_horizon = torch.clamp(day_of_month_horizon, 1, 31)
+                    # Method 2: Reconstruct from dayofmonth_sin/cos (fallback)
+                    elif dayofmonth_sin_idx is not None and dayofmonth_cos_idx is not None:
+                        # Reconstruct day_of_month from cyclical features
+                        # Formula: day = arctan2(sin, cos) * 31 / (2π) + 1
+                        last_sin = inputs[:, -1, dayofmonth_sin_idx]  # (batch,)
+                        last_cos = inputs[:, -1, dayofmonth_cos_idx]  # (batch,)
+                        if last_sin.ndim > 1:
+                            last_sin = last_sin.squeeze()
+                        if last_cos.ndim > 1:
+                            last_cos = last_cos.squeeze()
+                        
+                        # Reconstruct day_of_month (1-31)
+                        angle = torch.atan2(last_sin, last_cos)  # Range: [-π, π]
+                        day_of_month_last = (angle / (2 * np.pi)) * 31 + 1  # Convert to 1-31
+                        day_of_month_last = torch.clamp(torch.round(day_of_month_last), 1, 31).long()
+                        
+                        if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                            batch_size = y_pred.shape[0]
+                            horizon = y_pred.shape[1]
+                            # Project forward
+                            day_of_month_horizon = day_of_month_last.unsqueeze(-1).expand(batch_size, horizon) + torch.arange(1, horizon + 1, device=day_of_month_last.device).unsqueeze(0)
+                            day_of_month_horizon = torch.clamp(day_of_month_horizon, 1, 31)
+                        else:  # Single-step
+                            day_of_month_horizon = day_of_month_last + 1
+                            day_of_month_horizon = torch.clamp(day_of_month_horizon, 1, 31)
                 
                 # Extract is_golden_window for the prediction horizon (for MOONCAKE category)
                 is_golden_window_horizon = None
@@ -1972,6 +2050,8 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     friday_loss_weight=friday_weight,
                     is_early_month=is_early_month_horizon,
                     early_month_loss_weight=early_month_weight,
+                    day_of_month=day_of_month_horizon,
+                    use_dynamic_early_month_weight=use_dyn_early_month,
                     is_golden_window=is_golden_window_horizon,
                     golden_window_weight=golden_window_weight,
                     is_peak_loss_window=is_peak_loss_window_horizon,
@@ -1989,6 +2069,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             wednesday_loss_weight,
             friday_loss_weight,
             early_month_loss_weight,
+            use_dynamic_early_month_weight,
             golden_window_weight,
             peak_loss_window_weight,
             august_boost_weight,
@@ -1998,6 +2079,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             day_of_week_sin_idx, 
             day_of_week_cos_idx,
             is_early_month_low_idx,
+            days_from_month_start_idx,
+            dayofmonth_sin_idx,
+            dayofmonth_cos_idx,
             is_golden_window_idx,
             is_peak_loss_window_idx,
             is_august_idx,
@@ -2373,6 +2457,67 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print("GENERATING PLOTS")
     print("=" * 80)
     output_dir = config.output['output_dir']
+    
+    # Save test predictions to CSV for detailed analysis (including dates if available)
+    print("\n[9.5/9] Saving test predictions to CSV...")
+    predictions_csv_path = os.path.join(output_dir, 'test_predictions.csv')
+    
+    # Get test dates from the original filtered_data
+    # Calculate test start index: train_data + val_data
+    test_start_idx = len(train_data) + len(val_data)
+    test_end_idx = test_start_idx + len(test_dataset)
+    test_data_subset = filtered_data.iloc[test_start_idx:test_end_idx]
+    
+    # Flatten predictions for CSV export (each row = one prediction)
+    y_true_flat = y_true_original.reshape(-1) if y_true_original.ndim > 1 else y_true_original
+    y_pred_flat = y_pred_original.reshape(-1) if y_pred_original.ndim > 1 else y_pred_original
+    
+    # Create prediction dataframe
+    # Note: For multi-step predictions, we need to handle the horizon
+    if y_true_original.ndim == 2:  # Multi-step: (n_windows, horizon)
+        n_windows, horizon = y_true_original.shape
+        pred_records = []
+        
+        for i in range(n_windows):
+            # Get the date of the last input day for this window
+            if i < len(test_data_subset):
+                window_start_date = test_data_subset.iloc[i][time_col]
+                # Each prediction in the horizon is for the next 1, 2, ..., horizon days
+                for h in range(horizon):
+                    pred_date = window_start_date + pd.Timedelta(days=h+1)
+                    pred_records.append({
+                        'window_idx': i,
+                        'horizon_step': h + 1,
+                        'date': pred_date,
+                        'day_of_month': pred_date.day,
+                        'actual': y_true_original[i, h],
+                        'predicted': y_pred_original[i, h],
+                        'error': y_pred_original[i, h] - y_true_original[i, h],
+                        'abs_error': abs(y_pred_original[i, h] - y_true_original[i, h]),
+                    })
+        
+        predictions_df = pd.DataFrame(pred_records)
+    else:  # Single-step: (n_windows,)
+        pred_records = []
+        for i in range(len(y_true_original)):
+            if i < len(test_data_subset):
+                pred_date = test_data_subset.iloc[i][time_col]
+                pred_records.append({
+                    'date': pred_date,
+                    'day_of_month': pred_date.day,
+                    'actual': y_true_original[i],
+                    'predicted': y_pred_original[i],
+                    'error': y_pred_original[i] - y_true_original[i],
+                    'abs_error': abs(y_pred_original[i] - y_true_original[i]),
+                })
+        
+        predictions_df = pd.DataFrame(pred_records)
+    
+    # Save to CSV
+    predictions_df.to_csv(predictions_csv_path, index=False)
+    print(f"  - Test predictions saved to: {predictions_csv_path}")
+    print(f"  - Total prediction records: {len(predictions_df)}")
+    
     plot_path = os.path.join(output_dir, "test_predictions.png")
     
     # Use a reasonable number of samples for plotting

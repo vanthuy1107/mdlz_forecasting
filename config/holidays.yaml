@@ -89,6 +89,7 @@ business_holidays:
   2024:
     new_year:
       - [2023, 12, 31]
+      - [2024, 1, 1]  # New Year's Day 2024 - ensuring consistency with 2025
     tet:
       - [2024, 2, 7]
       - [2024, 2, 8]
@@ -110,6 +111,7 @@ business_holidays:
   2025:
     new_year:
       - [2024, 12, 31]
+      - [2025, 1, 1]  # CRITICAL: New Year's Day 2025 - was missing, caused Jan 1 over-prediction
     tet:
       - [2025, 1, 26]
       - [2025, 1, 27]
@@ -129,8 +131,9 @@ business_holidays:
       - [2025, 8, 31]
       - [2025, 9, 1]
   2026:
-    # new_year:
-    #   - [2025, 12, 31]
+    new_year:
+      - [2025, 12, 31]
+      - [2026, 1, 1]  # New Year's Day 2026 - ensuring consistency
     tet:
       - [2026, 2, 13]
       - [2026, 2, 14]

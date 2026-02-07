@@ -735,6 +735,10 @@ def add_early_month_low_volume_features(
     - is_early_month_low: Binary flag (1 for 1st-10th, 0 otherwise)
     - days_from_month_start: Days from the start of the month (0 on 1st, 1 on 2nd, etc.)
       * Helps model learn the gradient from low volume at start
+    - is_high_vol_weekday_AND_early_month: EXPLICIT INTERACTION FEATURE
+      * Binary flag (1 when BOTH is_high_volume_weekday==1 AND day<=10, 0 otherwise)
+      * Prevents the model from applying Monday/Wed/Fri boost during early month period
+      * Addresses the "Logic Collision" between weekday signal and early month signal
     
     Args:
         df: DataFrame with time column.
@@ -756,12 +760,13 @@ def add_early_month_low_volume_features(
     day_of_month = df[time_col].dt.day
     
     # Create early_month_low_tier feature with 3 tiers for better granularity
-    # 0 = 1st-5th (very low volume - critical pattern)
+    # STRONGER SIGNAL: Using more extreme negative values for days 1-5 to override weekday_volume_tier
+    # -10 = 1st-5th (EXTREME low volume - CRITICAL pattern, MUST override weekday signals)
     # 1 = 6th-10th (transitioning low volume)
     # 2 = Other days (normal)
     df[early_month_low_tier_col] = 2  # Default for normal days
     df.loc[(day_of_month >= 6) & (day_of_month <= 10), early_month_low_tier_col] = 1  # Transitioning
-    df.loc[day_of_month <= 5, early_month_low_tier_col] = 0  # Very low volume (1st-5th)
+    df.loc[day_of_month <= 5, early_month_low_tier_col] = -10  # EXTREME low volume (1st-5th) - STRONGER SIGNAL
     
     # Create binary indicator for early month low volume days (1st-10th)
     df[is_early_month_low_col] = (day_of_month <= 10).astype(int)
@@ -769,8 +774,41 @@ def add_early_month_low_volume_features(
     # Create binary indicator for VERY EARLY days (1st-5th) - CRITICAL for DRY severe drop
     df['is_first_5_days'] = (day_of_month <= 5).astype(int)
     
+    # Create binary indicator for FIRST 3 DAYS (1st-3rd) - MAXIMUM PENALTY period for early month fix
+    df['is_first_3_days'] = (day_of_month <= 3).astype(int)
+    
     # Create days from month start feature (0-based: 0 on 1st, 1 on 2nd, etc.)
     df[days_from_month_start_col] = day_of_month - 1
+    
+    # SOLUTION 1: Post-Peak Decay Feature
+    # This feature represents the "exhaustion" of demand after an EOM peak event
+    # It helps break the LSTM's "momentum" from the previous month's high volume
+    # Formula: V = exp(-lambda * t), where t = day of month (0-indexed)
+    # Day 1: 1.0 (maximum risk of over-prediction)
+    # Day 2: 0.74, Day 5: 0.30, Day 10: 0.06
+    # This allows the LSTM Forget Gate to learn to suppress high-volume hidden states
+    # carried over from the previous month's EOM spike
+    lambda_decay = 0.3  # Decay rate
+    df['post_peak_signal'] = np.exp(-lambda_decay * df[days_from_month_start_col])
+    
+    # SOLUTION 3: Explicit Feature Interaction - is_high_vol_weekday_AND_early_month
+    # This binary flag explicitly tells the model: "This is a Monday/Wed/Fri, BUT it's early month, so IGNORE the weekday boost"
+    # Instead of letting the model figure out the math (which it's failing at), we give it a pre-computed flag
+    # This breaks the "Logic Collision" where Is_Monday coefficient overpowers the early month features
+    # STRENGTHENED: Now using NEGATIVE value (-1) to actively suppress weekday boost, not just flag it
+    # If is_high_volume_weekday doesn't exist yet, we'll create it based on weekday
+    if 'is_high_volume_weekday' not in df.columns:
+        # Create is_high_volume_weekday on the fly (Monday=0, Wednesday=2, Friday=4)
+        weekday = df[time_col].dt.weekday
+        df['is_high_volume_weekday'] = weekday.isin([0, 2, 4]).astype(int)
+    
+    # Now create the explicit interaction feature with STRONGER negative signal for days 1-5
+    # Days 1-5: -2 (STRONG suppression of weekday effect)
+    # Days 6-10: -1 (moderate suppression of weekday effect)
+    # Other days: 0 (no suppression)
+    df['is_high_vol_weekday_AND_early_month'] = 0  # Default: no suppression
+    df.loc[(df['is_high_volume_weekday'] == 1) & (day_of_month >= 6) & (day_of_month <= 10), 'is_high_vol_weekday_AND_early_month'] = -1  # Moderate suppression (days 6-10)
+    df.loc[(df['is_high_volume_weekday'] == 1) & (day_of_month <= 5), 'is_high_vol_weekday_AND_early_month'] = -2  # STRONG suppression (days 1-5)
     
     return df
 

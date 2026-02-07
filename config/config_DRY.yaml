@@ -4,7 +4,7 @@
 # Window configuration - DRY needs longer lookback for weekly stability
 window:
   input_size: 28  # 28-day lookback for weekly pattern stability
-  horizon: 20      # 30-day forecast horizon
+  horizon: 30      # 30-day forecast horizon
 
 # Model Configuration - DRY-specific architecture
 model:
@@ -16,11 +16,11 @@ model:
 # Training Configuration - Lower learning rate for stability
 training:
   batch_size: 64
-  epochs: 20
+  epochs: 50  # Reduced from 100 to 50 for faster iteration
   learning_rate: 0.0005  # Lower LR for smooth convergence
   weight_decay: 1e-5     # Light regularization
   scheduler:
-    patience: 5  # Wait longer before reducing LR
+    patience: 8  # Moderate patience
     factor: 0.5
 
 # Category-specific loss weighting
@@ -30,8 +30,17 @@ category_specific_params:
     weight_decay: 1e-5
     patience: 5
     loss_weight: 1.0  # Standard weight for stable category
-    # Early month loss weighting to fix over-prediction (days 1-10)
-    early_month_loss_weight: 15.0  # 15x weight on early month days (days 1-10) - AGGRESSIVE FIX
+    # SOLUTION 2: Dynamic Early Month Loss Weighting - HARD RESET STRATEGY V2 (STRENGTHENED)
+    # Dynamic schedule (EXPONENTIAL DECAY with STRONGER penalty):
+    #   - Days 1-5: 100x (STRENGTHENED from 50x - Extended zero-tolerance zone enforces LOW even on high-volume weekdays)
+    #   - Days 6-10: Exponential decay from 100x to 1x (keeps weight >39x at Day 6)
+    #   - Days 11+: 1x
+    # This fixes the "post-holiday bump" issue where Days 2-4 were over-predicting
+    # STRONGER penalty ensures early month rule DOMINATES weekday_volume_tier signal
+    # Exponential decay maintains higher penalty longer than linear, preventing LSTM momentum takeover
+    use_dynamic_early_month_weight: true  # Enable gradient-based HARD RESET V2 penalty schedule (STRENGTHENED)
+    # Legacy static mode (commented out - use dynamic mode instead):
+    # early_month_loss_weight: 15.0  # 15x weight on early month days (days 1-10) - STATIC MODE
 
 # Seasonal configuration - DRY is not seasonal
 data:
@@ -50,17 +59,23 @@ data:
     - "day_of_week_sin"
     - "day_of_week_cos"
     - "weekday_volume_tier"        # CRITICAL: Strong Mon/Wed/Fri signal (tier 5)
-    - "is_high_volume_weekday"     # CRITICAL: Binary Mon/Wed/Fri indicator
-    - "Is_Monday"                  # CRITICAL: Monday-specific flag
+    - "is_high_volume_weekday"     # CRITICAL: Binary Mon/Wed/Fri indicator (NOT SCALED - preserves on/off impact)
+    - "Is_Monday"                  # CRITICAL: Monday-specific flag (NOT SCALED - preserves on/off impact)
     - "is_EOM"
     - "days_until_month_end"
     # - "mid_month_peak_tier"        # 8th-15th surge pattern
     # - "is_mid_month_peak"
     # - "days_to_mid_month_peak"
-    - "early_month_low_tier"       # CRITICAL: Days 1-10 low volume signal
-    - "is_early_month_low"         # CRITICAL: Binary early month indicator
-    - "is_first_5_days"            # CRITICAL: Days 1-5 severe drop indicator
+    - "early_month_low_tier"       # CRITICAL: Days 1-10 low volume signal (STRENGTHENED: -10 for days 1-5, overrides weekday_volume_tier)
+    - "is_early_month_low"         # CRITICAL: Binary early month indicator (NOT SCALED - preserves on/off impact)
+    - "is_first_5_days"            # CRITICAL: Days 1-5 severe drop indicator (NOT SCALED - preserves on/off impact)
+    - "is_first_3_days"            # CRITICAL: Days 1-3 maximum penalty period (NOT SCALED - preserves on/off impact)
     - "days_from_month_start"      # CRITICAL: Gradient signal (0, 1, 2, 3... 30)
+    - "post_peak_signal"           # SOLUTION 1: Post-Peak Decay - breaks EOM momentum (exp decay)
+    - "is_high_vol_weekday_AND_early_month"  # SOLUTION 3: Explicit Interaction - STRENGTHENED: -2 for days 1-5, -1 for days 6-10 (actively suppresses weekday boost in early month, NOT SCALED)
+    # NOTE: Binary interaction features (is_*) are NOT scaled by StandardScaler
+    # The scaler is only applied to the target column (Total CBM), preserving the sharp on/off impact of binary flags
+    # This prevents over-smoothing that would reduce their effectiveness
     # REMOVED: rolling_mean_7d, rolling_mean_30d, momentum_3d_vs_14d
     # These smooth out the weekday variations we want to capture!
     - "Total CBM"  # Historical target as feature
