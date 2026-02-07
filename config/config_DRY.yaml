@@ -30,8 +30,37 @@ category_specific_params:
     weight_decay: 1e-5
     patience: 5
     loss_weight: 1.0  # Standard weight for stable category
+    # Early month loss weighting to fix over-prediction (days 1-10)
+    early_month_loss_weight: 15.0  # 15x weight on early month days (days 1-10) - AGGRESSIVE FIX
 
 # Seasonal configuration - DRY is not seasonal
 data:
   seasonal_active_window: null  # No seasonal masking for DRY
   peak_event: null  # No peak event countdown
+
+  feature_cols:
+    - "month_sin"
+    - "month_cos"
+    - "dayofmonth_sin"
+    - "dayofmonth_cos"
+    - "holiday_indicator"
+    - "days_until_next_holiday"
+    - "days_since_holiday"
+    - "is_weekend"
+    - "day_of_week_sin"
+    - "day_of_week_cos"
+    - "weekday_volume_tier"        # CRITICAL: Strong Mon/Wed/Fri signal (tier 5)
+    - "is_high_volume_weekday"     # CRITICAL: Binary Mon/Wed/Fri indicator
+    - "Is_Monday"                  # CRITICAL: Monday-specific flag
+    - "is_EOM"
+    - "days_until_month_end"
+    # - "mid_month_peak_tier"        # 8th-15th surge pattern
+    # - "is_mid_month_peak"
+    # - "days_to_mid_month_peak"
+    - "early_month_low_tier"       # CRITICAL: Days 1-10 low volume signal
+    - "is_early_month_low"         # CRITICAL: Binary early month indicator
+    - "is_first_5_days"            # CRITICAL: Days 1-5 severe drop indicator
+    - "days_from_month_start"      # CRITICAL: Gradient signal (0, 1, 2, 3... 30)
+    # REMOVED: rolling_mean_7d, rolling_mean_30d, momentum_3d_vs_14d
+    # These smooth out the weekday variations we want to capture!
+    - "Total CBM"  # Historical target as feature

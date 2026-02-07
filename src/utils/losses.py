@@ -15,6 +15,8 @@ def spike_aware_mse(
     wednesday_loss_weight: float = 1.0,
     is_friday: Optional[torch.Tensor] = None,
     friday_loss_weight: float = 1.0,
+    is_early_month: Optional[torch.Tensor] = None,
+    early_month_loss_weight: float = 1.0,
     is_golden_window: Optional[torch.Tensor] = None,
     golden_window_weight: float = 1.0,
     is_peak_loss_window: Optional[torch.Tensor] = None,
@@ -29,8 +31,8 @@ def spike_aware_mse(
     
     This loss function assigns 3x weight to top 20% values (spikes) to better
     handle sudden demand surges. Optionally supports category-specific loss weights,
-    Monday/Wednesday/Friday-specific weighting for FRESH category, and Golden Window weighting for
-    MOONCAKE category (Gregorian August 1-31).
+    Monday/Wednesday/Friday-specific weighting for FRESH category, early month weighting
+    for DRY category, and Golden Window weighting for MOONCAKE category (Gregorian August 1-31).
     
     Args:
         y_pred: Predicted values tensor.
@@ -46,6 +48,9 @@ def spike_aware_mse(
         is_friday: Optional tensor indicating Friday samples (1 for Friday, 0 otherwise).
                   Shape should match y_true (can be 1D for single-step or 2D for multi-step).
         friday_loss_weight: Weight multiplier for Friday samples (default: 1.0).
+        is_early_month: Optional tensor indicating early month samples (1 for days 1-10, 0 otherwise).
+                       Shape should match y_true (can be 1D for single-step or 2D for multi-step).
+        early_month_loss_weight: Weight multiplier for early month samples (default: 1.0, typically 5.0 for DRY).
         is_golden_window: Optional tensor indicating Golden Window samples (1 for Golden Window, 0 otherwise).
                          For MOONCAKE: Gregorian August 1-31. Shape should match y_true.
         golden_window_weight: Weight multiplier for Golden Window samples (default: 1.0, typically 12.0 for MOONCAKE).
@@ -117,6 +122,23 @@ def spike_aware_mse(
             torch.tensor(1.0, device=y_true.device)
         )
         base_weight = base_weight * friday_weight
+    
+    # Apply Early Month-specific weighting if provided (for DRY category)
+    # This helps fix over-prediction in early month (days 1-10)
+    if is_early_month is not None and early_month_loss_weight > 1.0:
+        # Ensure is_early_month matches y_true shape
+        if is_early_month.ndim == 1 and y_true.ndim == 2:
+            is_early_month = is_early_month.unsqueeze(-1).expand_as(y_true)
+        elif is_early_month.ndim == 2 and y_true.ndim == 1:
+            is_early_month = is_early_month[:, 0] if is_early_month.shape[1] > 0 else is_early_month.mean(dim=1)
+        
+        # Apply Early Month weight for early month samples (days 1-10)
+        early_month_weight = torch.where(
+            is_early_month > 0.5,
+            torch.tensor(early_month_loss_weight, device=y_true.device),
+            torch.tensor(1.0, device=y_true.device)
+        )
+        base_weight = base_weight * early_month_weight
     
     # Apply Golden Window weighting if provided (for MOONCAKE category)
     # Peak-Phase Loss Amplification: Apply 10x weight when is_golden_window == 1

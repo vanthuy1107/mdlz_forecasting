@@ -729,8 +729,9 @@ def add_early_month_low_volume_features(
     
     Creates:
     - early_month_low_tier: Numeric tier representing the volume pattern
-      * 0 = 1st-10th (lowest volume days)
-      * 1 = Other days (normal volume)
+      * 0 = 1st-5th (very low volume days - critical for DRY)
+      * 1 = 6th-10th (transitioning low volume)
+      * 2 = Other days (normal volume)
     - is_early_month_low: Binary flag (1 for 1st-10th, 0 otherwise)
     - days_from_month_start: Days from the start of the month (0 on 1st, 1 on 2nd, etc.)
       * Helps model learn the gradient from low volume at start
@@ -754,14 +755,19 @@ def add_early_month_low_volume_features(
     # Extract day of month (1-31)
     day_of_month = df[time_col].dt.day
     
-    # Create early_month_low_tier feature
-    # 0 = 1st-10th (lowest volume)
-    # 1 = Other days (normal)
-    df[early_month_low_tier_col] = 1  # Default for normal days
-    df.loc[day_of_month <= 10, early_month_low_tier_col] = 0  # Low volume (1st through 10th)
+    # Create early_month_low_tier feature with 3 tiers for better granularity
+    # 0 = 1st-5th (very low volume - critical pattern)
+    # 1 = 6th-10th (transitioning low volume)
+    # 2 = Other days (normal)
+    df[early_month_low_tier_col] = 2  # Default for normal days
+    df.loc[(day_of_month >= 6) & (day_of_month <= 10), early_month_low_tier_col] = 1  # Transitioning
+    df.loc[day_of_month <= 5, early_month_low_tier_col] = 0  # Very low volume (1st-5th)
     
     # Create binary indicator for early month low volume days (1st-10th)
     df[is_early_month_low_col] = (day_of_month <= 10).astype(int)
+    
+    # Create binary indicator for VERY EARLY days (1st-5th) - CRITICAL for DRY severe drop
+    df['is_first_5_days'] = (day_of_month <= 5).astype(int)
     
     # Create days from month start feature (0-based: 0 on 1st, 1 on 2nd, etc.)
     df[days_from_month_start_col] = day_of_month - 1

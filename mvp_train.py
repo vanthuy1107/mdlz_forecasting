@@ -777,38 +777,48 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     # Get category-specific parameters from config (needed early for batch_size and other params)
     category_specific_params = config.category_specific_params
 
-    # Dynamically extend feature list with lunar cyclical + Tet/Mid-Autumn distance features
-    extra_features = [
-        "lunar_month_sin",
-        "lunar_month_cos",
-        "lunar_day_sin",
-        "lunar_day_cos",
-        "days_to_tet",
-        "days_to_mid_autumn",  # Days-to-Mid-Autumn countdown for MOONCAKE
-        "is_active_season",  # Seasonal active-window masking
-        "days_until_peak",  # Countdown to peak event
-        "is_golden_window",  # Golden Window indicator (Lunar Months 6.15 to 8.01 for MOONCAKE)
-        "is_peak_loss_window",  # Peak Loss Window indicator (Lunar Months 7.15 to 8.15 for MOONCAKE - critical peak period)
-        # Structural prior on payload density (CBM per QTY)
-        "cbm_per_qty",
-        "cbm_per_qty_last_year",
-        # Year-over-year volume features for seasonal products (MOONCAKE)
-        # NOTE: These are conditionally added later only for MOONCAKE category
-        # "cbm_last_year",
-        # "cbm_2_years_ago",
-        # Trend deviation features - compare recent trend vs year-over-year baseline
-        # NOTE: These are conditionally added later only for MOONCAKE category
-        # "rolling_mean_21d",
-        # "trend_vs_yoy_ratio",
-        # "trend_vs_yoy_diff",
-    ]
+    # Get current feature list from config
+    # IMPORTANT: If this is a category-specific config (config_DRY.yaml, config_FRESH.yaml, etc.),
+    # we should respect the feature_cols defined there and NOT add extra features automatically
     current_features = list(data_config["feature_cols"])
-    for feat in extra_features:
-        if feat not in current_features:
-            current_features.append(feat)
-    # Update config so downstream components see the full feature list
-    data_config["feature_cols"] = current_features
-    config.set("data.feature_cols", current_features)
+    
+    # Only add extra lunar/seasonal features if NOT already defined in category config
+    # Check if config has category-specific features by looking for early_month or mid_month features
+    has_category_specific_features = any(
+        feat in current_features 
+        for feat in ["early_month_low_tier", "is_early_month_low", "mid_month_peak_tier", "is_mid_month_peak"]
+    )
+    
+    if not has_category_specific_features:
+        # This is likely using base config, so add standard extra features
+        print(f"  [INFO] Using base config features, adding standard lunar/seasonal features...")
+        extra_features = [
+            "lunar_month_sin",
+            "lunar_month_cos",
+            "lunar_day_sin",
+            "lunar_day_cos",
+            "days_to_tet",
+            "days_to_mid_autumn",  # Days-to-Mid-Autumn countdown for MOONCAKE
+            "is_active_season",  # Seasonal active-window masking
+            "days_until_peak",  # Countdown to peak event
+            "is_golden_window",  # Golden Window indicator (Lunar Months 6.15 to 8.01 for MOONCAKE)
+            "is_peak_loss_window",  # Peak Loss Window indicator (Lunar Months 7.15 to 8.15 for MOONCAKE - critical peak period)
+            # Structural prior on payload density (CBM per QTY)
+            "cbm_per_qty",
+            "cbm_per_qty_last_year",
+        ]
+        for feat in extra_features:
+            if feat not in current_features:
+                current_features.append(feat)
+        # Update config so downstream components see the full feature list
+        data_config["feature_cols"] = current_features
+        config.set("data.feature_cols", current_features)
+    else:
+        # This is a category-specific config (e.g., config_DRY.yaml)
+        # Respect the feature_cols defined there
+        print(f"  [INFO] Using category-specific config features ({len(current_features)} features)")
+        print(f"  [INFO] Respecting feature_cols from config_{category_filter}.yaml")
+    
     
     # Create a copy of data for this training run
     filtered_data = data.copy()
@@ -1695,6 +1705,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         monday_loss_weight = 3.0  # Default
         wednesday_loss_weight = 1.0  # Default (no additional weighting)
         friday_loss_weight = 1.0  # Default (no additional weighting)
+        early_month_loss_weight = 1.0  # Default (no additional weighting for DRY category)
         cat_params = get_category_params(category_specific_params, category_filter)
         if 'monday_loss_weight' in cat_params:
             monday_loss_weight = float(cat_params['monday_loss_weight'])
@@ -1705,6 +1716,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         if 'friday_loss_weight' in cat_params:
             friday_loss_weight = float(cat_params['friday_loss_weight'])
             print(f"  - Friday loss weight: {friday_loss_weight}x (for {category_filter or 'default'})")
+        if 'early_month_loss_weight' in cat_params:
+            early_month_loss_weight = float(cat_params['early_month_loss_weight'])
+            print(f"  - Early Month loss weight: {early_month_loss_weight}x (days 1-10, for {category_filter or 'default'})")
         
         # Get Golden Window loss weight from config (for MOONCAKE category)
         golden_window_weight = 1.0  # Default (no additional weighting)
@@ -1732,6 +1746,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         is_monday_idx = None
         day_of_week_sin_idx = None
         day_of_week_cos_idx = None
+        is_early_month_low_idx = None
         is_golden_window_idx = None
         if 'Is_Monday' in feature_cols:
             is_monday_idx = feature_cols.index('Is_Monday')
@@ -1740,6 +1755,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             day_of_week_sin_idx = feature_cols.index('day_of_week_sin')
             day_of_week_cos_idx = feature_cols.index('day_of_week_cos')
             print(f"  - day_of_week_sin/cos features found at indices {day_of_week_sin_idx}/{day_of_week_cos_idx}")
+        if 'is_early_month_low' in feature_cols:
+            is_early_month_low_idx = feature_cols.index('is_early_month_low')
+            print(f"  - is_early_month_low feature found at index {is_early_month_low_idx}")
         if 'is_golden_window' in feature_cols:
             is_golden_window_idx = feature_cols.index('is_golden_window')
             print(f"  - is_golden_window feature found at index {is_golden_window_idx}")
@@ -1754,9 +1772,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             is_august_idx = feature_cols.index('is_august')
             print(f"  - is_august feature found at index {is_august_idx}")
         
-        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, and Golden Window weighting
-        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
-                            is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
+        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, Early Month weighting, and Golden Window weighting
+        def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, early_month_weight, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
+                            is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_early_month_low_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
             def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
                 # Extract day of week for the prediction horizon (for Monday/Wednesday/Friday weighting)
                 is_monday_horizon = None
@@ -1873,6 +1891,24 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                             is_wednesday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
                             is_friday_horizon = torch.zeros_like(y_pred, device=y_pred.device)
                 
+                # Extract is_early_month_low for the prediction horizon (for DRY category)
+                is_early_month_horizon = None
+                if is_early_month_low_idx is not None and inputs is not None and early_month_weight > 1.0:
+                    # Extract is_early_month_low from the last timestep of input
+                    # For multi-step forecasting, we use the last input day's early month status
+                    # and apply it to all horizon days (simplified approach)
+                    last_day_is_early = inputs[:, -1, is_early_month_low_idx]  # (batch,) or (batch, 1)
+                    if last_day_is_early.ndim > 1:
+                        last_day_is_early = last_day_is_early.squeeze()
+                    
+                    if y_pred.ndim == 2:  # Multi-step: (batch, horizon)
+                        batch_size = y_pred.shape[0]
+                        horizon = y_pred.shape[1]
+                        # Expand to match horizon shape
+                        is_early_month_horizon = last_day_is_early.unsqueeze(-1).expand(batch_size, horizon)
+                    else:  # Single-step
+                        is_early_month_horizon = last_day_is_early
+                
                 # Extract is_golden_window for the prediction horizon (for MOONCAKE category)
                 is_golden_window_horizon = None
                 if is_golden_window_idx is not None and inputs is not None and golden_window_weight > 1.0:
@@ -1934,6 +1970,8 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     wednesday_loss_weight=wednesday_weight,
                     is_friday=is_friday_horizon,
                     friday_loss_weight=friday_weight,
+                    is_early_month=is_early_month_horizon,
+                    early_month_loss_weight=early_month_weight,
                     is_golden_window=is_golden_window_horizon,
                     golden_window_weight=golden_window_weight,
                     is_peak_loss_window=is_peak_loss_window_horizon,
@@ -1950,6 +1988,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             monday_loss_weight,
             wednesday_loss_weight,
             friday_loss_weight,
+            early_month_loss_weight,
             golden_window_weight,
             peak_loss_window_weight,
             august_boost_weight,
@@ -1957,7 +1996,8 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             smooth_l1_beta,
             is_monday_idx, 
             day_of_week_sin_idx, 
-            day_of_week_cos_idx, 
+            day_of_week_cos_idx,
+            is_early_month_low_idx,
             is_golden_window_idx,
             is_peak_loss_window_idx,
             is_august_idx,

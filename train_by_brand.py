@@ -205,8 +205,9 @@ def main():
     parser.add_argument(
         '--category',
         type=str,
-        required=True,
-        help='Category to train brands for (e.g., DRY, FRESH, TET)'
+        required=False,
+        default=None,
+        help='Category to train brands for (e.g., DRY, FRESH, TET). If not specified, reads major_categories from config.yaml'
     )
     parser.add_argument(
         '--brands',
@@ -228,6 +229,68 @@ def main():
     
     args = parser.parse_args()
     
+    # If no category specified, read from config.yaml
+    if args.category is None:
+        print("=" * 80)
+        print(f"MDLZ FORECASTING: Brand-Level Training Pipeline")
+        print("=" * 80)
+        print("\n[INFO] No --category specified, reading from config.yaml...")
+        
+        base_config = load_config()
+        major_categories = base_config.data.get('major_categories', [])
+        
+        if not major_categories:
+            print("[ERROR] No major_categories found in config.yaml")
+            print("        Please either:")
+            print("        1. Set major_categories in config/config.yaml, or")
+            print("        2. Run with: python train_by_brand.py --category CATEGORY_NAME")
+            return 1
+        
+        print(f"[INFO] Found major_categories: {major_categories}\n")
+        
+        # Train each major category
+        overall_results = []
+        for category in major_categories:
+            print("\n" + "=" * 80)
+            print(f"CATEGORY: {category}")
+            print("=" * 80 + "\n")
+            
+            # Create a mock args object with the category set
+            class CategoryArgs:
+                pass
+            cat_args = CategoryArgs()
+            cat_args.category = category
+            cat_args.brands = args.brands
+            cat_args.brand_col = args.brand_col
+            cat_args.skip_existing = args.skip_existing
+            
+            # Call training logic for this category
+            result = train_category(cat_args)
+            overall_results.append((category, result))
+        
+        # Print overall summary
+        print("\n" + "=" * 80)
+        print("OVERALL TRAINING SUMMARY")
+        print("=" * 80)
+        successful_cats = sum(1 for _, r in overall_results if r == 0)
+        failed_cats = sum(1 for _, r in overall_results if r != 0)
+        print(f"Categories trained: {len(overall_results)}")
+        print(f"Successful: {successful_cats}")
+        print(f"Failed: {failed_cats}")
+        
+        for category, result in overall_results:
+            status = "✓" if result == 0 else "✗"
+            print(f"  {status} {category}")
+        
+        print("=" * 80)
+        return 0 if failed_cats == 0 else 1
+    
+    # If category is specified, train just that category
+    return train_category(args)
+
+
+def train_category(args):
+    """Train brand models for a single category."""
     print("=" * 80)
     print(f"MDLZ FORECASTING: Brand-Level Training Pipeline")
     print(f"Category: {args.category}")
