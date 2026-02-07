@@ -1744,6 +1744,13 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         august_boost_weight = 1.0  # Default (no additional weighting)
         use_smooth_l1 = False
         smooth_l1_beta = 1.0
+        # Balanced Distribution parameters (new)
+        use_asymmetric_penalty = False
+        over_pred_penalty = 2.0
+        under_pred_penalty = 1.0
+        apply_mean_error_constraint = False
+        mean_error_weight = 0.1
+        
         if 'golden_window_weight' in cat_params:
             golden_window_weight = float(cat_params['golden_window_weight'])
             print(f"  - Golden Window loss weight: {golden_window_weight}x (for {category_filter or 'default'})")
@@ -1759,6 +1766,28 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         if 'smooth_l1_beta' in cat_params:
             smooth_l1_beta = float(cat_params['smooth_l1_beta'])
             print(f"  - SmoothL1Loss beta: {smooth_l1_beta} (for {category_filter or 'default'})")
+        
+        # Balanced Distribution Mode parameters
+        if 'use_asymmetric_penalty' in cat_params:
+            use_asymmetric_penalty = bool(cat_params['use_asymmetric_penalty'])
+            if use_asymmetric_penalty:
+                print(f"  - BALANCED DISTRIBUTION MODE ENABLED: Asymmetric penalties active (for {category_filter or 'default'})")
+        if 'over_pred_penalty' in cat_params:
+            over_pred_penalty = float(cat_params['over_pred_penalty'])
+            if use_asymmetric_penalty:
+                print(f"  - Over-prediction penalty: {over_pred_penalty}x in non-peak periods (eliminates upward bias)")
+        if 'under_pred_penalty' in cat_params:
+            under_pred_penalty = float(cat_params['under_pred_penalty'])
+            if use_asymmetric_penalty:
+                print(f"  - Under-prediction penalty: {under_pred_penalty}x in non-peak periods")
+        if 'apply_mean_error_constraint' in cat_params:
+            apply_mean_error_constraint = bool(cat_params['apply_mean_error_constraint'])
+            if apply_mean_error_constraint:
+                print(f"  - Mean Error Constraint ENABLED: Forces monthly predictions to align with historical averages")
+        if 'mean_error_weight' in cat_params:
+            mean_error_weight = float(cat_params['mean_error_weight'])
+            if apply_mean_error_constraint:
+                print(f"  - Mean error weight: {mean_error_weight} (pulls down inflated predictions)")
         
         # Find feature indices for extracting from inputs
         is_monday_idx = None
@@ -1800,8 +1829,9 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             is_august_idx = feature_cols.index('is_august')
             print(f"  - is_august feature found at index {is_august_idx}")
         
-        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, Early Month weighting (static or dynamic), and Golden Window weighting
+        # Create a partial function that includes category loss weights, Mon/Wed/Fri weighting, Early Month weighting (static or dynamic), Golden Window weighting, and Balanced Distribution parameters
         def create_criterion(cat_loss_weights, monday_weight, wednesday_weight, friday_weight, early_month_weight, use_dyn_early_month, golden_window_weight, peak_loss_window_weight, august_boost_weight, use_smooth_l1, smooth_l1_beta,
+                            use_asym_penalty, over_penalty, under_penalty, apply_mean_constraint, mean_constraint_weight,
                             is_monday_feature_idx, day_of_week_sin_idx, day_of_week_cos_idx, is_early_month_low_idx, days_from_month_start_idx, dayofmonth_sin_idx, dayofmonth_cos_idx, is_golden_window_idx, is_peak_loss_window_idx, is_august_idx, horizon_days):
             def criterion_fn(y_pred, y_true, category_ids=None, inputs=None):
                 # Extract day of week for the prediction horizon (for Monday/Wednesday/Friday weighting)
@@ -2059,7 +2089,12 @@ def train_single_model(data, config, category_filter, output_suffix=""):
                     is_august=is_august_horizon,
                     august_boost_weight=august_boost_weight,
                     use_smooth_l1=use_smooth_l1,
-                    smooth_l1_beta=smooth_l1_beta
+                    smooth_l1_beta=smooth_l1_beta,
+                    use_asymmetric_penalty=use_asym_penalty,
+                    over_pred_penalty=over_penalty,
+                    under_pred_penalty=under_penalty,
+                    apply_mean_error_constraint=apply_mean_constraint,
+                    mean_error_weight=mean_constraint_weight
                 )
             return criterion_fn
         
@@ -2075,6 +2110,11 @@ def train_single_model(data, config, category_filter, output_suffix=""):
             august_boost_weight,
             use_smooth_l1,
             smooth_l1_beta,
+            use_asymmetric_penalty,
+            over_pred_penalty,
+            under_pred_penalty,
+            apply_mean_error_constraint,
+            mean_error_weight,
             is_monday_idx, 
             day_of_week_sin_idx, 
             day_of_week_cos_idx,

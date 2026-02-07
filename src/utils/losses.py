@@ -87,15 +87,27 @@ def spike_aware_mse(
     is_august: Optional[torch.Tensor] = None,
     august_boost_weight: float = 1.0,
     use_smooth_l1: bool = False,
-    smooth_l1_beta: float = 1.0
+    smooth_l1_beta: float = 1.0,
+    use_asymmetric_penalty: bool = False,
+    over_pred_penalty: float = 2.0,
+    under_pred_penalty: float = 1.0,
+    apply_mean_error_constraint: bool = False,
+    mean_error_weight: float = 0.1
 ) -> torch.Tensor:
     """
-    Spike-aware MSE loss that assigns higher weight to high values (spikes).
+    Spike-aware MSE loss with Balanced Distribution focus and optional asymmetric penalties.
     
-    This loss function assigns 3x weight to top 20% values (spikes) to better
-    handle sudden demand surges. Optionally supports category-specific loss weights,
-    Monday/Wednesday/Friday-specific weighting for FRESH category, early month weighting
-    for DRY category (static or dynamic), and Golden Window weighting for MOONCAKE category (Gregorian August 1-31).
+    This loss function can operate in two modes:
+    
+    1. PEAK-DEFENSE MODE (default, use_asymmetric_penalty=False):
+       - Assigns 3x weight to top 20% values (spikes) to avoid under-prediction
+       - Works well for preventing stock-outs but can cause upward bias
+    
+    2. BALANCED DISTRIBUTION MODE (use_asymmetric_penalty=True):
+       - Asymmetric penalties during non-peak periods to eliminate upward bias
+       - Over-predictions penalized more heavily than under-predictions in early month
+       - Mean error constraint ensures monthly totals align with historical averages
+       - Spike protection still active but balanced with downward correction
     
     Args:
         y_pred: Predicted values tensor.
@@ -119,7 +131,7 @@ def spike_aware_mse(
         day_of_month: Optional tensor of day of month values (1-31) for dynamic early month weighting.
                      Shape should match y_true (can be 1D for single-step or 2D for multi-step).
                      Used only when use_dynamic_early_month_weight=True.
-        use_dynamic_early_month_weight: If True, use dynamic weight schedule (Days 1-3: 20x, Days 4-10: linear decay).
+        use_dynamic_early_month_weight: If True, use dynamic weight schedule (Days 1-5: 100x, Days 6-10: exponential decay).
                                        If False, use static early_month_loss_weight for all days 1-10 (default: False).
         is_golden_window: Optional tensor indicating Golden Window samples (1 for Golden Window, 0 otherwise).
                          For MOONCAKE: Gregorian August 1-31. Shape should match y_true.
@@ -132,9 +144,19 @@ def spike_aware_mse(
         august_boost_weight: Weight multiplier for August samples (default: 1.0, typically 30.0 for MOONCAKE).
         use_smooth_l1: If True, use SmoothL1Loss instead of MSE (default: False).
         smooth_l1_beta: Beta parameter for SmoothL1Loss (default: 1.0).
+        use_asymmetric_penalty: If True, apply asymmetric penalties (over-predictions penalized more in non-peak periods).
+                               This eliminates upward bias while maintaining spike protection (default: False).
+        over_pred_penalty: Penalty multiplier for over-predictions when use_asymmetric_penalty=True (default: 2.0).
+                          Higher values more aggressively penalize over-prediction. Typical range: 1.5-3.0.
+        under_pred_penalty: Penalty multiplier for under-predictions when use_asymmetric_penalty=True (default: 1.0).
+                           Usually kept at 1.0 for balanced approach.
+        apply_mean_error_constraint: If True, add mean error constraint to force monthly predictions to align
+                                    with historical averages (default: False). This 'pulls down' inflated predictions.
+        mean_error_weight: Weight for mean error constraint loss component (default: 0.1).
+                          Higher values enforce stricter alignment with historical monthly averages.
     
     Returns:
-        Weighted loss (MSE or SmoothL1).
+        Weighted loss (MSE or SmoothL1) with optional asymmetric penalties and mean error constraint.
     """
     threshold = torch.quantile(y_true, 0.8)  # top 20%
     base_weight = torch.where(
@@ -321,7 +343,95 @@ def spike_aware_mse(
         # Use MSE
         loss = (y_pred - y_true)**2
     
-    return torch.mean(weight * loss)
+    # Apply Asymmetric Penalty for Balanced Distribution (optional)
+    # This addresses upward bias by penalizing over-predictions more heavily in non-peak periods
+    # The asymmetric weight is incorporated into the main weight tensor
+    if use_asymmetric_penalty:
+        # Compute error: positive when over-predicting (y_pred > y_true)
+        error = y_pred - y_true
+        
+        # Determine if we're in a peak period (where we want to maintain spike protection)
+        # Peak periods: high volume spikes (top 20%), Golden Window, Peak Loss Window, August
+        is_peak_period = (y_true > threshold)  # Spike detection (same as base_weight)
+        
+        # Add Golden Window to peak period mask if available
+        if is_golden_window is not None:
+            if is_golden_window.ndim == 1 and y_true.ndim == 2:
+                is_golden_window_expanded = is_golden_window.unsqueeze(-1).expand_as(y_true)
+            else:
+                is_golden_window_expanded = is_golden_window
+            is_peak_period = is_peak_period | (is_golden_window_expanded > 0.5)
+        
+        # Add Peak Loss Window to peak period mask if available
+        if is_peak_loss_window is not None:
+            if is_peak_loss_window.ndim == 1 and y_true.ndim == 2:
+                is_peak_loss_window_expanded = is_peak_loss_window.unsqueeze(-1).expand_as(y_true)
+            else:
+                is_peak_loss_window_expanded = is_peak_loss_window
+            is_peak_period = is_peak_period | (is_peak_loss_window_expanded > 0.5)
+        
+        # Add August to peak period mask if available (for MOONCAKE)
+        if is_august is not None:
+            if is_august.ndim == 1 and y_true.ndim == 2:
+                is_august_expanded = is_august.unsqueeze(-1).expand_as(y_true)
+            else:
+                is_august_expanded = is_august
+            is_peak_period = is_peak_period | (is_august_expanded > 0.5)
+        
+        # Apply asymmetric penalties ONLY in non-peak periods
+        # In peak periods, we maintain the original spike-aware behavior (weight=1.0)
+        asymmetric_weight = torch.ones_like(error, device=error.device)
+        
+        # Non-peak periods: Apply asymmetric penalty
+        non_peak_mask = ~is_peak_period
+        over_pred_mask = (error > 0) & non_peak_mask  # Over-predicting in non-peak period
+        under_pred_mask = (error <= 0) & non_peak_mask  # Under-predicting in non-peak period
+        
+        # Over-predictions get higher penalty (default 2.0x) to eliminate upward bias
+        asymmetric_weight = torch.where(
+            over_pred_mask,
+            torch.tensor(over_pred_penalty, device=error.device),
+            asymmetric_weight
+        )
+        
+        # Under-predictions get standard penalty (default 1.0x)
+        asymmetric_weight = torch.where(
+            under_pred_mask,
+            torch.tensor(under_pred_penalty, device=error.device),
+            asymmetric_weight
+        )
+        
+        # Incorporate asymmetric weight into main weight tensor
+        # This ensures asymmetric penalty works correctly with spike weights and other temporal weights
+        weight = weight * asymmetric_weight
+    
+    # Apply existing category/temporal weights
+    weighted_loss = weight * loss
+    
+    # Apply Mean Error Constraint (optional)
+    # This forces the model to ensure predicted monthly totals align with historical averages
+    # Effectively 'pulls down' inflated predictions across the entire month
+    if apply_mean_error_constraint and mean_error_weight > 0:
+        # Compute mean error (bias) across the batch
+        # Positive mean error = systematic over-prediction (upward bias)
+        # Negative mean error = systematic under-prediction
+        mean_error = torch.mean(y_pred - y_true)
+        
+        # Penalize positive mean error (over-prediction bias) more heavily
+        # This constraint ensures the model doesn't systematically over-predict
+        # We use squared mean error to penalize large biases more heavily
+        mean_error_loss = mean_error ** 2
+        
+        # Weight the mean error constraint
+        # Typical values: 0.05-0.2 (higher = stricter alignment with historical averages)
+        mean_error_loss = mean_error_weight * mean_error_loss
+        
+        # Combine main loss with mean error constraint
+        # Main loss ensures per-sample accuracy
+        # Mean error constraint ensures no systematic bias
+        return torch.mean(weighted_loss) + mean_error_loss
+    
+    return torch.mean(weighted_loss)
 
 
 def focal_loss(

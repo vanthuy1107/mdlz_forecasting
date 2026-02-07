@@ -592,6 +592,39 @@ def predict_direct_multistep_rolling(
             new_row['day_of_week_sin'] = np.sin(2 * np.pi * day_of_week / 7)
             new_row['day_of_week_cos'] = np.cos(2 * np.pi * day_of_week / 7)
             
+            # CRITICAL FIX: Root Cause #3 - LSTM State Reset via Input Window Adjustment
+            # When predicting the 1st day of a new month, we need to "signal" to the LSTM that
+            # there's a significant context change (month boundary crossing).
+            # Since we can't directly reset LSTM hidden states during inference, we use a 
+            # "Month-Boundary Signal Amplification" strategy:
+            # - Inject strong early-month penalty signals into the most recent days of the input window
+            # - This helps counteract the "momentum" from EOM high-volume data
+            # - Only applies when we're about to predict Day 1 of a new month
+            
+            if dayofmonth == 1:
+                # This is Day 1 prediction - apply LSTM state reset strategy
+                # Modify the last 3-5 days in the window to inject month-boundary signals
+                print(f"  [LSTM STATE RESET] Month boundary detected at {pred_date}. Amplifying early-month signals in input window...")
+                
+                # Get the last 3 rows of the window (the most recent context)
+                window_length = len(window)
+                amplification_zone_size = min(3, window_length)
+                
+                # For each row in the amplification zone, boost early-month penalty features
+                for amp_idx in range(amplification_zone_size):
+                    window_idx = window_length - amplification_zone_size + amp_idx
+                    
+                    # Amplify early-month signals (if features exist)
+                    if 'is_first_5_days' in window.columns:
+                        window.loc[window_idx, 'is_first_5_days'] = 1  # Signal upcoming month boundary
+                    if 'post_peak_signal' in window.columns:
+                        window.loc[window_idx, 'post_peak_signal'] = 1.0  # Maximum decay signal
+                    if 'is_high_vol_weekday_AND_early_month' in window.columns:
+                        # If this day in the window is a high-volume weekday, suppress it
+                        window_day_of_week = int(window.loc[window_idx, 'day_of_week_sin'] * 7 / (2 * np.pi))  # Approximate
+                        if window.loc[window_idx, 'is_high_volume_weekday'] == 1 if 'is_high_volume_weekday' in window.columns else False:
+                            window.loc[window_idx, 'is_high_vol_weekday_AND_early_month'] = -2
+            
             # Compute lunar calendar features
             lunar_month, lunar_day = _solar_to_lunar_date(pred_date)
             new_row['lunar_month'] = lunar_month
@@ -630,6 +663,61 @@ def predict_direct_multistep_rolling(
             if 'days_until_lunar_08_01' in new_row.columns:
                 from src.utils.lunar_utils import compute_days_until_lunar_08_01
                 new_row['days_until_lunar_08_01'] = compute_days_until_lunar_08_01(pred_date)
+            
+            # CRITICAL FIX: Root Cause #1 - Update Early Month Penalty Features Dynamically
+            # These features were previously inherited from the EOM template, causing Day 1 to miss the early-month signal
+            # Now we recompute them for each prediction date to ensure accurate penalty signals
+            
+            # 1. early_month_low_tier: Tiered penalty signal
+            if 'early_month_low_tier' in new_row.columns:
+                if dayofmonth <= 5:
+                    new_row['early_month_low_tier'] = -10  # EXTREME low volume (days 1-5)
+                elif dayofmonth <= 10:
+                    new_row['early_month_low_tier'] = 1    # Transitioning low volume (days 6-10)
+                else:
+                    new_row['early_month_low_tier'] = 2    # Normal days
+            
+            # 2. is_early_month_low: Binary flag for days 1-10
+            if 'is_early_month_low' in new_row.columns:
+                new_row['is_early_month_low'] = 1 if dayofmonth <= 10 else 0
+            
+            # 3. is_first_5_days: Binary flag for severe drop period (days 1-5)
+            if 'is_first_5_days' in new_row.columns:
+                new_row['is_first_5_days'] = 1 if dayofmonth <= 5 else 0
+            
+            # 4. is_first_3_days: Binary flag for maximum penalty period (days 1-3)
+            if 'is_first_3_days' in new_row.columns:
+                new_row['is_first_3_days'] = 1 if dayofmonth <= 3 else 0
+            
+            # 5. days_from_month_start: Gradient signal (0-based: 0 on 1st, 1 on 2nd, etc.)
+            if 'days_from_month_start' in new_row.columns:
+                new_row['days_from_month_start'] = dayofmonth - 1
+            
+            # 6. post_peak_signal: Exponential decay to break EOM momentum
+            if 'post_peak_signal' in new_row.columns:
+                lambda_decay = 0.15  # Same as preprocessing.py
+                new_row['post_peak_signal'] = np.exp(-lambda_decay * (dayofmonth - 1))
+            
+            # 7. is_high_vol_weekday_AND_early_month: Explicit interaction feature
+            # Suppresses weekday boost during early month (prevents "Logic Collision")
+            if 'is_high_vol_weekday_AND_early_month' in new_row.columns:
+                # First check if this is a high-volume weekday (Mon/Wed/Fri)
+                is_high_vol_weekday = day_of_week in [0, 2, 4]  # Monday=0, Wednesday=2, Friday=4
+                
+                if is_high_vol_weekday and dayofmonth <= 5:
+                    new_row['is_high_vol_weekday_AND_early_month'] = -2  # STRONG suppression (days 1-5)
+                elif is_high_vol_weekday and dayofmonth <= 10:
+                    new_row['is_high_vol_weekday_AND_early_month'] = -1  # Moderate suppression (days 6-10)
+                else:
+                    new_row['is_high_vol_weekday_AND_early_month'] = 0   # No suppression
+            
+            # 8. Update is_high_volume_weekday if present
+            if 'is_high_volume_weekday' in new_row.columns:
+                new_row['is_high_volume_weekday'] = 1 if day_of_week in [0, 2, 4] else 0
+            
+            # 9. Update Is_Monday if present
+            if 'Is_Monday' in new_row.columns:
+                new_row['Is_Monday'] = 1 if day_of_week == 0 else 0
             
             new_rows.append(new_row)
         

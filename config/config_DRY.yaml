@@ -30,6 +30,27 @@ category_specific_params:
     weight_decay: 1e-5
     patience: 5
     loss_weight: 1.0  # Standard weight for stable category
+    
+    # BALANCED DISTRIBUTION MODE: Eliminates upward bias while maintaining spike protection
+    # This mode shifts from "Peak-Defense" to "Balanced Distribution" focus
+    # Key benefits:
+    #   - Eliminates persistent over-prediction in early month (Days 1-5)
+    #   - Maintains spike protection during actual high-volume periods
+    #   - Forces monthly totals to align with historical averages
+    
+    # Asymmetric Penalty: Over-predictions penalized more heavily in non-peak periods
+    use_asymmetric_penalty: true  # Enable asymmetric penalty for balanced distribution
+    over_pred_penalty: 2.5  # 2.5x penalty for over-prediction in non-peak periods (eliminates upward bias)
+    under_pred_penalty: 1.0  # 1.0x penalty for under-prediction (standard)
+    # Rationale: 2.5x ratio ensures the model is "afraid" to over-predict in early month
+    # while still maintaining reasonable predictions during actual high-volume days
+    
+    # Mean Error Constraint: Forces monthly predictions to align with historical averages
+    apply_mean_error_constraint: true  # Enable mean error constraint
+    mean_error_weight: 0.15  # 0.15 weight for mean error constraint (pulls down inflated predictions)
+    # Rationale: 0.15 weight provides strong bias correction without overwhelming per-sample accuracy
+    # This constraint ensures the model doesn't systematically over-predict across the month
+    
     # SOLUTION 2: Dynamic Early Month Loss Weighting - HARD RESET STRATEGY V2 (STRENGTHENED)
     # Dynamic schedule (EXPONENTIAL DECAY with STRONGER penalty):
     #   - Days 1-5: 100x (STRENGTHENED from 50x - Extended zero-tolerance zone enforces LOW even on high-volume weekdays)
@@ -38,6 +59,7 @@ category_specific_params:
     # This fixes the "post-holiday bump" issue where Days 2-4 were over-predicting
     # STRONGER penalty ensures early month rule DOMINATES weekday_volume_tier signal
     # Exponential decay maintains higher penalty longer than linear, preventing LSTM momentum takeover
+    # NOTE: With balanced distribution mode, this can potentially be reduced or disabled
     use_dynamic_early_month_weight: true  # Enable gradient-based HARD RESET V2 penalty schedule (STRENGTHENED)
     # Legacy static mode (commented out - use dynamic mode instead):
     # early_month_loss_weight: 15.0  # 15x weight on early month days (days 1-10) - STATIC MODE

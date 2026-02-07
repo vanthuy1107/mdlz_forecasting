@@ -1813,6 +1813,20 @@ def fit_scaler(
     """
     Fit a StandardScaler on training data QTY values.
     
+    CRITICAL: Root Cause #2 - Scaling Strategy
+    ==========================================
+    This scaler is ONLY applied to the TARGET COLUMN (Total CBM), NOT to features.
+    
+    Why this matters:
+    - Binary penalty features (is_first_5_days, is_early_month_low, etc.) remain as 0/1
+    - Tier features (early_month_low_tier with values like -10, 1, 2) remain unscaled
+    - This preserves their sharp "on/off" impact and prevents signal erosion
+    
+    However, the target column IN THE FEATURE WINDOW is scaled, which means:
+    - Historical volume values fed to the LSTM are standardized (mean=0, std=1)
+    - This helps with gradient stability and convergence
+    - But it means penalty features must be strong enough to overcome scaled momentum
+    
     Args:
         train_data: Training DataFrame.
         target_col: Name of target column to scale.
