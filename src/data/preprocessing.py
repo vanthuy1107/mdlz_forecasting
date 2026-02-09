@@ -621,94 +621,53 @@ def add_mid_month_peak_features(
     peak_pattern: str = "default"
 ) -> pd.DataFrame:
     """
-    Add mid-month peak features to capture volume surge patterns.
-    
-    Supports two patterns:
-    
-    DEFAULT pattern (19th-25th surge):
-    - Volume starts building up from the 19th
-    - Volume gradually increases from 19th through 23rd
-    - Volume peaks on 24th and 25th (highest volume days)
-    - Volume declines after the 25th
-    
-    FRESH pattern (8th-15th surge):
-    - Volume starts building up from the 8th
-    - Volume gradually increases from 8th through 9th
-    - Volume peaks on 10th, 11th, 12th (highest volume days)
-    - Volume remains strong through 13th-15th
-    - Volume declines from 16th onwards
-    
-    Creates:
-    - mid_month_peak_tier: Numeric tier representing the volume pattern
-      * 4 = peak days (highest volume)
-      * 3 = strong build-up to peak
-      * 2 = moderate build-up
-      * 1 = early build-up and declining after peak
-      * 0 = other days (neutral)
-    - is_mid_month_peak: Binary flag (1 for peak days, 0 otherwise)
-    - days_to_mid_month_peak: Distance to the primary peak day (negative before, positive after)
-      * Helps model learn the gradient leading to and from the peak
-    
-    Args:
-        df: DataFrame with time column.
-        time_col: Name of time column (should be datetime or date).
-        mid_month_peak_tier_col: Name for mid_month_peak_tier column.
-        is_mid_month_peak_col: Name for is_mid_month_peak binary flag column.
-        days_to_peak_col: Name for days_to_mid_month_peak column.
-        peak_pattern: Pattern type - "default" (24th-25th peak) or "fresh" (8th-15th peak).
-    
-    Returns:
-        DataFrame with added mid-month peak features.
+    Add mid-month peak features to capture volume surge patterns for both FRESH and DRY categories.
     """
     df = df.copy()
     
-    # Ensure time column is datetime
+    # Ensure time column is in datetime format
     if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
         df[time_col] = pd.to_datetime(df[time_col])
     
-    # Extract day of month (1-31)
     day_of_month = df[time_col].dt.day
-    
-    # Initialize with zeros
     df[mid_month_peak_tier_col] = 0
     
+    # PATTERN 1: FRESH Category (Primary peak window: 8th-15th)
     if peak_pattern.lower() == "fresh":
-        # FRESH pattern: Peak from 8th-15th, with center on 11th
-        # 4 = 10th-12th (peak days, highest volume)
-        # 3 = 9th and 13th-15th (strong volume, build-up and sustained high volume)
-        # 2 = 8th (moderate build-up)
-        # 1 = 16th-18th (declining after peak)
-        # 0 = other days (neutral)
-        df.loc[day_of_month == 8, mid_month_peak_tier_col] = 2  # Moderate build-up
-        df.loc[day_of_month == 9, mid_month_peak_tier_col] = 3  # Strong build-up
-        df.loc[(day_of_month >= 10) & (day_of_month <= 12), mid_month_peak_tier_col] = 4  # Peak (10th, 11th, 12th)
-        df.loc[(day_of_month >= 13) & (day_of_month <= 15), mid_month_peak_tier_col] = 3  # Strong sustained volume
-        df.loc[(day_of_month >= 16) & (day_of_month <= 18), mid_month_peak_tier_col] = 1  # Declining
+        # Tier 4: Absolute peak days (10th-12th)
+        df.loc[(day_of_month >= 10) & (day_of_month <= 12), mid_month_peak_tier_col] = 4 
+        # Tier 3: Strong build-up and sustained high volume
+        df.loc[day_of_month == 9, mid_month_peak_tier_col] = 3
+        df.loc[(day_of_month >= 13) & (day_of_month <= 15), mid_month_peak_tier_col] = 3 
+        # Tier 2: Moderate build-up start
+        df.loc[day_of_month == 8, mid_month_peak_tier_col] = 2 
+        # Tier 1: Post-peak decline phase
+        df.loc[(day_of_month >= 16) & (day_of_month <= 18), mid_month_peak_tier_col] = 1 
         
-        # Binary indicator for peak days (10th, 11th, 12th)
+        # Binary indicator for FRESH peak period
         df[is_mid_month_peak_col] = ((day_of_month >= 10) & (day_of_month <= 12)).astype(int)
-        
-        # Distance to peak (distance to 11th - center of peak period)
+        # Gradient signal centered on the 11th
         df[days_to_peak_col] = day_of_month - 11
         
+    # PATTERN 2: DRY / DEFAULT Category (Optimized for 22nd-23rd bimodal peaks)
     else:
-        # DEFAULT pattern: Peak from 19th-25th, with center on 24th-25th
-        # 4 = 24th-25th (peak days)
-        # 3 = 23rd (strong build-up)
-        # 2 = 21st-22nd (moderate build-up)
-        # 1 = 19th-20th (early build-up) and 26th-30th (declining)
-        # 0 = other days (neutral)
-        df.loc[(day_of_month == 19) | (day_of_month == 20), mid_month_peak_tier_col] = 1  # Early build-up
-        df.loc[(day_of_month == 21) | (day_of_month == 22), mid_month_peak_tier_col] = 2  # Moderate build-up
-        df.loc[day_of_month == 23, mid_month_peak_tier_col] = 3  # Strong build-up
-        df.loc[(day_of_month == 24) | (day_of_month == 25), mid_month_peak_tier_col] = 4  # Peak
-        df.loc[(day_of_month >= 26) & (day_of_month <= 30), mid_month_peak_tier_col] = 1  # Declining
+        # Tier 5: MAXIMUM PEAK (22nd-23rd) - Strengthened signal to capture ~2K CBM spikes
+        df.loc[(day_of_month >= 22) & (day_of_month <= 23), mid_month_peak_tier_col] = 5
         
-        # Binary indicator for peak days (24th and 25th)
-        df[is_mid_month_peak_col] = ((day_of_month == 24) | (day_of_month == 25)).astype(int)
+        # Tier 4: Critical build-up and peak shoulders (21st and 24th)
+        df.loc[(day_of_month == 21) | (day_of_month == 24), mid_month_peak_tier_col] = 4
         
-        # Distance to peak (distance to 24th)
-        df[days_to_peak_col] = day_of_month - 24
+        # Tier 3: Early acceleration phase (19th-20th)
+        df.loc[(day_of_month >= 19) & (day_of_month <= 20), mid_month_peak_tier_col] = 3
+        
+        # Tier 1: Post-peak cooling period (25th-27th)
+        df.loc[(day_of_month >= 25) & (day_of_month <= 27), mid_month_peak_tier_col] = 1
+
+        # Binary flag covering the high-intensity window for DRY
+        df[is_mid_month_peak_col] = ((day_of_month >= 21) & (day_of_month <= 24)).astype(int)
+        
+        # Distance to peak centered on the 23rd to anchor the LSTM's attention
+        df[days_to_peak_col] = day_of_month - 23
     
     return df
 

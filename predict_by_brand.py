@@ -562,6 +562,35 @@ def predict_brand_model(
     
     print(f"    - Applied surge multiplier to {surge_count} pre-holiday dates")
     
+    # Apply special case override for DRY brands on specific days (hardcoded post-processing)
+    _cfg = getattr(base_config, '_config', base_config) if not isinstance(base_config, dict) else base_config
+    override_cfg = _cfg.get('special_case_override', {}) if isinstance(_cfg, dict) else {}
+    if category == "DRY" and override_cfg.get('enabled'):
+        overrides_list = override_cfg.get('overrides', [])
+        # Backward compat: single brand/days format
+        if not overrides_list and override_cfg.get('brand'):
+            overrides_list = [override_cfg]
+        brand_upper = str(brand).strip().upper()
+        total_override_count = 0
+        for ov in overrides_list:
+            if str(ov.get('brand', '')).strip().upper() != brand_upper:
+                continue
+            override_days = ov.get('days', [22, 23])
+            override_base = ov.get('base', 0)
+            override_mult = ov.get('multiplier', 2.0)
+            override_count = 0
+            for idx in predictions_df.index:
+                pred_date = predictions_df.loc[idx, 'date']
+                if isinstance(pred_date, pd.Timestamp):
+                    pred_date = pred_date.date()
+                if pred_date.day in override_days:
+                    original = predictions_df.loc[idx, 'predicted']
+                    predictions_df.loc[idx, 'predicted'] = override_base + (original * override_mult)
+                    override_count += 1
+            if override_count > 0:
+                print(f"  - Applied special case override (base={override_base}, mult={override_mult}) to {override_count} dates (days {override_days}) for {category}-{brand}")
+                total_override_count += override_count
+    
     # Apply Sunday-to-Monday carryover post-processing (same as mvp_predict.py)
     # This sets Sunday predictions to 0 and adds Sunday's value to Monday
     print("  - Applying Sunday-to-Monday carryover to predictions...")

@@ -8,9 +8,9 @@ window:
 
 # Model Configuration - DRY-specific architecture
 model:
-  hidden_size: 32
+  hidden_size: 64
   n_layers: 2
-  dropout_prob: 0.4  # Lower dropout for stable patterns
+  dropout_prob: 0.1  # Lower dropout for stable patterns
   use_layer_norm: true
 
 # Training Configuration - Lower learning rate for stability
@@ -26,7 +26,7 @@ training:
 # Category-specific loss weighting
 category_specific_params:
   DRY:
-    learning_rate: 0.0005
+    learning_rate: 0.0003
     weight_decay: 1e-5
     patience: 5
     loss_weight: 1.0  # Standard weight for stable category
@@ -47,7 +47,7 @@ category_specific_params:
     
     # Asymmetric Penalty: Over-predictions penalized more heavily in non-peak periods
     use_asymmetric_penalty: true  # Enable asymmetric penalty for balanced distribution
-    over_pred_penalty: 2.0  # 2.0x penalty for over-prediction in non-peak periods (REDUCED from 3.0)
+    over_pred_penalty: 0.8  # 2.0x penalty for over-prediction in non-peak periods (REDUCED from 3.0)
     under_pred_penalty: 1.0  # 1.0x penalty for under-prediction (standard)
     # Rationale: 2.0x ratio (reduced from 3.0) provides bias correction without causing severe under-prediction
     # This balances early month suppression with overall volume accuracy
@@ -76,6 +76,20 @@ category_specific_params:
     # Legacy static mode (commented out - use dynamic mode instead):
     # early_month_loss_weight: 15.0  # 15x weight on early month days (days 1-10) - STATIC MODE
 
+# DRY Category Special Case Override (post-processing, no model change)
+# Apply base + prediction * multiplier for specific brand/day combinations
+special_case_override:
+  enabled: true
+  overrides:
+    - brand: "AFC"
+      days: [23,24]
+      base: 0
+      multiplier: 1.5
+    - brand: "SLIDE"
+      days: [23]
+      base: 0
+      multiplier: 2.0
+
 # Seasonal configuration - DRY is not seasonal
 data:
   seasonal_active_window: null  # No seasonal masking for DRY
@@ -97,9 +111,9 @@ data:
     - "Is_Monday"                  # CRITICAL: Monday-specific flag (NOT SCALED - preserves on/off impact)
     - "is_EOM"
     - "days_until_month_end"
-    # - "mid_month_peak_tier"        # 8th-15th surge pattern
-    # - "is_mid_month_peak"
-    # - "days_to_mid_month_peak"
+    - "mid_month_peak_tier"        # 19th-23th surge pattern
+    - "is_mid_month_peak"
+    - "days_to_mid_month_peak"
     - "early_month_low_tier"       # CRITICAL: Days 1-10 low volume signal (STRENGTHENED: -10 for days 1-5, overrides weekday_volume_tier)
     - "is_early_month_low"         # CRITICAL: Binary early month indicator (NOT SCALED - preserves on/off impact)
     - "is_first_5_days"            # CRITICAL: Days 1-5 severe drop indicator (NOT SCALED - preserves on/off impact)
@@ -115,4 +129,4 @@ data:
     # This prevents over-smoothing that would reduce their effectiveness
     # REMOVED: rolling_mean_7d, rolling_mean_30d, momentum_3d_vs_14d
     # These smooth out the weekday variations we want to capture!
-    - "Total CBM"  # Historical target as feature
+    # - "Total CBM"  # Historical target as feature
