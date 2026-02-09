@@ -2496,7 +2496,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
     }
     
-    metadata_path = os.path.join(save_dir, 'metadata.json')
+    metadata_path = os.path.join(save_dir, 'metadata_dow-anchored.json')
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
     print(f"  - Metadata saved to: {metadata_path}")
@@ -2567,7 +2567,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     print(f"  - Test predictions saved to: {predictions_csv_path}")
     print(f"  - Total prediction records: {len(predictions_df)}")
     
-    plot_path = os.path.join(output_dir, "test_predictions.png")
+    plot_path = os.path.join(output_dir, "test_predictions_dow-anchored.png")
     
     # Use a reasonable number of samples for plotting
     n_samples = min(100, len(y_true_original))
@@ -2743,7 +2743,7 @@ def main():
         print(f"   - Output directory: {result['output_dir']}")
         print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
         print(f"   - Scaler: {os.path.join(result['model_dir'], 'scaler.pkl')}")
-        print(f"   - Metadata: {os.path.join(result['model_dir'], 'metadata.json')}")
+        print(f"   - Metadata: {os.path.join(result['model_dir'], 'metadata_dow-anchored.json')}")
         print(f"   - Test predictions plot: {result['plot_path']}")
         print(f"   - Test loss: {result['test_loss']:.4f}")
         print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")

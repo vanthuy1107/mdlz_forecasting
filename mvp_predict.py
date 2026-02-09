@@ -3416,7 +3416,7 @@ def main():
     print(f"    Found {len(previous_runs)} previous run(s)")
     
     # Save Teacher Forcing results
-    tf_output_path = output_dir / "predictions_teacher_forcing.csv"
+    tf_output_path = output_dir / "predictions_teacher_forcing_dow-anchored.csv"
     tf_results['date'] = pd.to_datetime(tf_results['date']).dt.strftime('%m/%d/%Y')
     # If any actuals are missing for TF, treat them as 0 so error still computed
     tf_results['actual'] = tf_results['actual'].fillna(0.0)
@@ -3427,7 +3427,7 @@ def main():
     print(f"  - Teacher Forcing results: {tf_output_path}")
     
     # Save Recursive results (use unscaled predictions for output)
-    rec_output_path = output_dir / "predictions_recursive.csv"
+    rec_output_path = output_dir / "predictions_recursive_dow-anchored.csv"
     recursive_results['date'] = pd.to_datetime(recursive_results['date']).dt.strftime('%m/%d/%Y')
     # Use unscaled predictions for error calculation if available
     pred_col_for_error = 'predicted_unscaled' if 'predicted_unscaled' in recursive_results.columns else 'predicted'
@@ -3491,7 +3491,7 @@ def main():
     
     # Copy metadata.json from model directory if it exists
     if metadata_source.exists():
-        metadata_dest = output_dir / "metadata.json"
+        metadata_dest = output_dir / "metadata_dow-anchored.json"
         shutil.copy2(metadata_source, metadata_dest)
         print(f"  - Copied metadata.json from model directory to: {metadata_dest}")
     
@@ -3512,7 +3512,7 @@ def main():
     improvement_analysis = analyze_improvement(current_metrics, previous_runs)
     
     # Save comparison summary (renamed to summary.txt)
-    summary_path = output_dir / "summary.txt"
+    summary_path = output_dir / "summary_dow-anchored.txt"
     with open(summary_path, 'w', encoding='utf-8') as f:
         # Use a generic title so it works for any configured window
         f.write("Prediction Comparison: Teacher Forcing vs Recursive\n")
@@ -3587,7 +3587,7 @@ def main():
     
     # Generate plots
     if len(y_true_tf) > 0:
-        plot_path_tf = output_dir / "predictions_teacher_forcing.png"
+        plot_path_tf = output_dir / "predictions_teacher_forcing_dow-anchored.png"
         n_samples = min(100, len(y_true_tf))
         plot_difference(
             y_true_tf[:n_samples],
@@ -3598,7 +3598,7 @@ def main():
         print(f"  - Teacher Forcing plot: {plot_path_tf}")
     
     if len(recursive_results_with_actuals) > 0:
-        plot_path_rec = output_dir / "predictions_recursive.png"
+        plot_path_rec = output_dir / "predictions_recursive_dow-anchored.png"
         pred_col_for_plot = 'predicted_unscaled' if 'predicted_unscaled' in recursive_results_with_actuals.columns else 'predicted'
         plot_difference(
             recursive_results_with_actuals['actual'].values,
