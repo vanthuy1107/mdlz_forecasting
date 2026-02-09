@@ -2705,8 +2705,8 @@ def main():
             if category_config.training.get('loss', 'spike_aware_mse') != 'quantile':
                 category_config.set('training.loss', 'spike_aware_mse')
             
-            # Create isolated output directory for this category
-            category_output_dir = os.path.join("outputs", category)
+            # Create isolated output directory for this category under a shared recursive root
+            category_output_dir = os.path.join("outputs", "recursive", category)
             category_models_dir = os.path.join(category_output_dir, "models")
             os.makedirs(category_output_dir, exist_ok=True)
             os.makedirs(category_models_dir, exist_ok=True)

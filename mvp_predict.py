@@ -3245,8 +3245,8 @@ def main():
     # Category-Specific Mode: Save predictions to a shared predictions directory
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # Use a shared predictions directory for all categories
-    predictions_base_dir = Path("outputs/predictions")
+    # Use a shared predictions directory for all categories under the recursive root
+    predictions_base_dir = Path("outputs/recursive/predictions")
     predictions_base_dir.mkdir(parents=True, exist_ok=True)
     output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
