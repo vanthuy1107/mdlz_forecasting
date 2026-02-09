@@ -846,7 +846,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     
     # Set output directories (should already be set in main() for category-specific paths)
     # But ensure they exist and are properly configured
-    mvp_output_dir = config.output.get('output_dir', os.path.join('outputs', category_filter))
+    mvp_output_dir = config.output.get('output_dir', os.path.join('outputs', 'spike-anchored', category_filter))
     mvp_models_dir = config.output.get('model_dir', os.path.join(mvp_output_dir, 'models'))
     
     os.makedirs(mvp_output_dir, exist_ok=True)
@@ -1532,7 +1532,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         
         if source_model_path is None:
             # Auto-detect TET model path
-            base_output_dir = config.output.get('output_dir', '../outputs')
+            base_output_dir = config.output.get('output_dir', '../outputs/spike-anchored')
             source_model_path = Path(base_output_dir) / source_category / 'models' / 'best_model.pth'
         
         source_model_path = Path(source_model_path)
@@ -2496,7 +2496,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
     }
     
-    metadata_path = os.path.join(save_dir, 'metadata.json')
+    metadata_path = os.path.join(save_dir, 'metadata_spike-anchored.json')
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
     print(f"  - Metadata saved to: {metadata_path}")
@@ -2686,7 +2686,7 @@ def main():
     
     print(f"\n[SUMMARY] Will train {len(categories_to_train)} independent model(s):")
     for i, cat in enumerate(categories_to_train, 1):
-        print(f"  {i}. {cat} -> outputs/{cat}/")
+        print(f"  {i}. {cat} -> outputs/spike-anchored/{cat}/")
     
     # Execute training tasks - each category is independent
     results = []
@@ -2705,8 +2705,8 @@ def main():
             if category_config.training.get('loss', 'spike_aware_mse') != 'quantile':
                 category_config.set('training.loss', 'spike_aware_mse')
             
-            # Create isolated output directory for this category under a shared recursive root
-            category_output_dir = os.path.join("outputs", "recursive", category)
+            # Create isolated output directory for this category directly under the spike-anchored root
+            category_output_dir = os.path.join("outputs", "spike-anchored", category)
             category_models_dir = os.path.join(category_output_dir, "models")
             os.makedirs(category_output_dir, exist_ok=True)
             os.makedirs(category_models_dir, exist_ok=True)
@@ -2743,7 +2743,7 @@ def main():
         print(f"   - Output directory: {result['output_dir']}")
         print(f"   - Model checkpoint: {os.path.join(result['model_dir'], 'best_model.pth')}")
         print(f"   - Scaler: {os.path.join(result['model_dir'], 'scaler.pkl')}")
-        print(f"   - Metadata: {os.path.join(result['model_dir'], 'metadata.json')}")
+        print(f"   - Metadata: {os.path.join(result['model_dir'], 'metadata_spike-anchored.json')}")
         print(f"   - Test predictions plot: {result['plot_path']}")
         print(f"   - Test loss: {result['test_loss']:.4f}")
         print(f"   - Training time: {result['training_time']:.2f} seconds ({result['training_time']/60:.2f} minutes)")

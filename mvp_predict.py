@@ -617,8 +617,8 @@ def scan_previous_runs(predictions_base_dir: Path):
             except Exception as e:
                 pass
             
-            # Try to extract loss function from metadata.json
-            metadata_path = item / "metadata.json"
+            # Try to extract loss function from metadata_spike-anchored.json
+            metadata_path = item / "metadata_spike-anchored.json"
             if metadata_path.exists():
                 try:
                     with open(metadata_path, 'r', encoding='utf-8') as f:
@@ -759,7 +759,7 @@ def load_model_for_prediction_old(model_path: str, config):
     """Load trained model from checkpoint and scaler."""
     # Load metadata first to get the training-time model/data config
     model_dir = Path(model_path).parent
-    metadata_path = model_dir / "metadata.json"
+    metadata_path = model_dir / "metadata_spike-anchored.json"
     
     # ------------------------------------------------------------------
     # 1) Recover num_categories and full model architecture from metadata
@@ -2220,15 +2220,15 @@ def main():
     print("\n[6/7] Checking for trained models for each category...")
     missing_models = []
     for cat in categories_to_predict:
-        # New directory structure: outputs/{CATEGORY}/models/best_model.pth
-        model_path = Path(f"outputs/{cat}/models/best_model.pth")
+        # New directory structure: outputs/spike-anchored/{CATEGORY}/models/best_model.pth
+        model_path = Path(f"outputs/spike-anchored/{cat}/models/best_model.pth")
         if not model_path.exists():
             missing_models.append(cat)
     if missing_models:
         raise FileNotFoundError(
             f"Models not found for categories: {missing_models}. "
             f"Please run mvp_train.py first to train all category models. "
-            f"Expected paths: outputs/{{CATEGORY}}/models/best_model.pth"
+            f"Expected paths: outputs/spike-anchored/{{CATEGORY}}/models/best_model.pth"
         )
     print(f"  - All required models found for {len(categories_to_predict)} category(ies)")
     
@@ -2246,8 +2246,8 @@ def main():
         print(f"{'=' * 80}")
         
         # Load this category's model from new directory structure
-        # outputs/{CATEGORY}/models/best_model.pth
-        model_dir_path = Path(f"outputs/{current_cat}/models")
+        # outputs/spike-anchored/{CATEGORY}/models/best_model.pth
+        model_dir_path = Path(f"outputs/spike-anchored/{current_cat}/models")
         model_path = model_dir_path / "best_model.pth"
         
         if not model_path.exists():
@@ -2524,8 +2524,8 @@ def main():
             print(f"PROCESSING CATEGORY: {current_category}")
             print(f"{'=' * 80}")
             print(f"  - Loading model for category: {current_category}")
-            # New directory structure: outputs/{CATEGORY}/models/best_model.pth
-            model_dir_path_cat = Path(f"outputs/{current_category}/models")
+            # New directory structure: outputs/spike-anchored/{CATEGORY}/models/best_model.pth
+            model_dir_path_cat = Path(f"outputs/spike-anchored/{current_category}/models")
             model_path_cat = model_dir_path_cat / "best_model.pth"
             
             if not model_path_cat.exists():
@@ -3245,8 +3245,8 @@ def main():
     # Category-Specific Mode: Save predictions to a shared predictions directory
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # Use a shared predictions directory for all categories under the recursive root
-    predictions_base_dir = Path("outputs/recursive/predictions")
+    # Use a shared predictions directory for all categories under the spike-anchored root
+    predictions_base_dir = Path("outputs/spike-anchored/predictions")
     predictions_base_dir.mkdir(parents=True, exist_ok=True)
     output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -3264,13 +3264,13 @@ def main():
     # Load metadata from model directory for comparison (before saving anything)
     # Use the same model_dir_path that was determined during model loading
     model_dir = model_dir_path  # Use the model_dir_path from earlier (line 1038)
-    metadata_source = model_dir / "metadata.json"
+    metadata_source = model_dir / "metadata_spike-anchored.json"
     if metadata_source.exists():
         with open(metadata_source, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         loss_function = metadata.get('training_config', {}).get('loss_function', 'Unknown')
     else:
-        print(f"  - Warning: metadata.json not found in model directory")
+        print(f"  - Warning: metadata_spike-anchored.json not found in model directory")
         loss_function = 'Unknown'
         metadata = None
     
@@ -3356,11 +3356,11 @@ def main():
     else:
         print("  - gspread not available; skipping Google Sheets upload.")
     
-    # Copy metadata.json from model directory if it exists
+    # Copy metadata_spike-anchored.json from model directory if it exists
     if metadata_source.exists():
-        metadata_dest = output_dir / "metadata.json"
+        metadata_dest = output_dir / "metadata_spike-anchored.json"
         shutil.copy2(metadata_source, metadata_dest)
-        print(f"  - Copied metadata.json from model directory to: {metadata_dest}")
+        print(f"  - Copied metadata_spike-anchored.json from model directory to: {metadata_dest}")
     
     # Prepare current run metrics
     current_metrics = {

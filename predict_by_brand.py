@@ -4,10 +4,10 @@ This script makes predictions for each BRAND within a category using
 the brand-specific models trained by train_by_brand.py.
 
 Each brand model is loaded from:
-- outputs/DRY_BRANDNAME/models/best_model.pth
+- outputs/spike-anchored/DRY_BRANDNAME/models/best_model.pth
 
 Predictions are saved to:
-- outputs/DRY_BRANDNAME/predictions_YYYY.csv
+- outputs/spike-anchored/DRY_BRANDNAME/predictions_YYYY.csv
 
 The script can also:
 - Compare predictions with actual values
@@ -117,9 +117,9 @@ def predict_brand_model(
     brand_data = filter_data_by_brand(data, category, brand, cat_col, brand_col)
     print(f"  - Filtered to {len(brand_data)} samples for {category} - {brand}")
     
-    # Get brand-specific paths under recursive root
+    # Get brand-specific paths directly under the configured output root
     brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
-    brand_output_dir = Path(base_config.output['output_dir']) / "recursive" / brand_output_name
+    brand_output_dir = Path(base_config.output['output_dir']) / brand_output_name
     brand_model_dir = brand_output_dir / 'models'
     brand_model_path = brand_model_dir / 'best_model.pth'
     brand_scaler_path = brand_model_dir / 'scaler.pkl'  # Fixed: scaler is in models subdirectory
@@ -974,7 +974,7 @@ def main():
             continue
         
         # Check which brands have trained models
-        base_output_dir = Path(category_config.output['output_dir']) / "recursive"
+        base_output_dir = Path(category_config.output['output_dir'])
         brands_with_models = []
         
         for brand in available_brands:
@@ -986,7 +986,7 @@ def main():
         print(f"  - Found {len(brands_with_models)} brand(s) with trained models:")
         for i, brand in enumerate(brands_with_models, 1):
             brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
-            print(f"    {i}. {brand} (outputs/recursive/{brand_output_name}/)")
+            print(f"    {i}. {brand} (outputs/spike-anchored/{brand_output_name}/)")
         
         if not brands_with_models:
             print(f"\n[ERROR] No trained models found for brands in category '{category}'")
@@ -1015,7 +1015,7 @@ def main():
         print(f"\n[4/4] Will predict {len(brands_to_predict)} brand(s) for category '{category}':")
         for i, brand in enumerate(brands_to_predict, 1):
             brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
-            print(f"  {i}. {brand} -> outputs/recursive/{brand_output_name}/")
+            print(f"  {i}. {brand} -> outputs/spike-anchored/{brand_output_name}/")
         
         # Predict each brand
         print(f"\n{'=' * 80}")

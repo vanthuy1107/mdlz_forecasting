@@ -4,9 +4,9 @@ This script trains separate models for each BRAND within the DRY category,
 using the DRY category configuration (config_DRY.yaml) as the base.
 
 Each brand gets its own:
-- Trained model: outputs/DRY_BRANDNAME/models/best_model.pth
-- Training logs and plots: outputs/DRY_BRANDNAME/
-- Scaler: outputs/DRY_BRANDNAME/scaler.pkl
+- Trained model: outputs/spike-anchored/DRY_BRANDNAME/models/best_model.pth
+- Training logs and plots: outputs/spike-anchored/DRY_BRANDNAME/
+- Scaler: outputs/spike-anchored/DRY_BRANDNAME/scaler.pkl
 
 Usage:
     python train_by_brand.py --category DRY --brands AFC COSY OREO
@@ -150,9 +150,9 @@ def train_brand_model(
     brand_data = filter_data_by_brand(data, category, brand, cat_col, brand_col)
     print(f"  - Filtered to {len(brand_data)} samples for {category} - {brand}")
     
-    # Create brand-specific output directory under recursive root
+    # Create brand-specific output directory directly under the configured output root
     brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
-    brand_output_dir = Path(base_config.output['output_dir']) / "recursive" / brand_output_name
+    brand_output_dir = Path(base_config.output['output_dir']) / brand_output_name
     brand_output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"  - Brand output directory: {brand_output_dir}")
@@ -371,7 +371,7 @@ def train_category(args):
     print(f"\n[4/5] Will train {len(brands_to_train)} brand model(s):")
     for i, brand in enumerate(brands_to_train, 1):
         brand_output_name = f"{args.category}_{brand.replace(' ', '_').replace('/', '_')}"
-        print(f"  {i}. {brand} -> outputs/recursive/{brand_output_name}/")
+        print(f"  {i}. {brand} -> outputs/spike-anchored/{brand_output_name}/")
     
     # Train each brand
     print(f"\n[5/5] Training brand models...")
@@ -436,7 +436,7 @@ def train_category(args):
         for res in results:
             if res['status'] == 'success':
                 brand_output_name = f"{res['category']}_{res['brand'].replace(' ', '_').replace('/', '_')}"
-                print(f"  - {res['brand']} -> outputs/recursive/{brand_output_name}/")
+                print(f"  - {res['brand']} -> outputs/spike-anchored/{brand_output_name}/")
     
     if failed > 0:
         print(f"\n✗ Failed to train {failed} brand model(s):")

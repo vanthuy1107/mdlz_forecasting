@@ -29,7 +29,7 @@ def load_model_for_prediction(model_path: str, config):
     """
     # Load metadata first to get the training-time model/data config
     model_dir = Path(model_path).parent
-    metadata_path = model_dir / "metadata.json"
+    metadata_path = model_dir / "metadata_spike-anchored.json"
     
     # ------------------------------------------------------------------
     # 1) Recover num_categories and full model architecture from metadata
