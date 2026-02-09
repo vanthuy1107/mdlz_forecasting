@@ -2509,7 +2509,7 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     
     # Save test predictions to CSV for detailed analysis (including dates if available)
     print("\n[9.5/9] Saving test predictions to CSV...")
-    predictions_csv_path = os.path.join(output_dir, 'test_predictions.csv')
+    predictions_csv_path = os.path.join(output_dir, 'test_predictions_dow-anchored.csv')
     
     # Get test dates from the original filtered_data
     # Calculate test start index: train_data + val_data
@@ -2686,7 +2686,7 @@ def main():
     
     print(f"\n[SUMMARY] Will train {len(categories_to_train)} independent model(s):")
     for i, cat in enumerate(categories_to_train, 1):
-        print(f"  {i}. {cat} -> outputs/{cat}/")
+        print(f"  {i}. {cat} -> output/dow-anchored/{cat}/")
     
     # Execute training tasks - each category is independent
     results = []
@@ -2706,7 +2706,7 @@ def main():
                 category_config.set('training.loss', 'spike_aware_mse')
             
             # Create isolated output directory for this category
-            category_output_dir = os.path.join("outputs", category)
+            category_output_dir = os.path.join("output", "dow-anchored", category)
             category_models_dir = os.path.join(category_output_dir, "models")
             os.makedirs(category_output_dir, exist_ok=True)
             os.makedirs(category_models_dir, exist_ok=True)

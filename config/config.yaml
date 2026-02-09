@@ -178,9 +178,9 @@ category_specific_params:
 
 # Output Configuration
 output:
-  output_dir: "./outputs"
+  output_dir: "./output/dow-anchored"
   save_model: true
-  model_dir: "./outputs/models"
+  model_dir: "./output/dow-anchored/models"
   
   # Visualization
   visualize:

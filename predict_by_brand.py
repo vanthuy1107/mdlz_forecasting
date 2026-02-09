@@ -986,7 +986,7 @@ def main():
         print(f"  - Found {len(brands_with_models)} brand(s) with trained models:")
         for i, brand in enumerate(brands_with_models, 1):
             brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
-            print(f"    {i}. {brand} (outputs/{brand_output_name}/)")
+            print(f"    {i}. {brand} (output/dow-anchored/{brand_output_name}_dow-anchored/)")
         
         if not brands_with_models:
             print(f"\n[ERROR] No trained models found for brands in category '{category}'")
@@ -1015,7 +1015,7 @@ def main():
         print(f"\n[4/4] Will predict {len(brands_to_predict)} brand(s) for category '{category}':")
         for i, brand in enumerate(brands_to_predict, 1):
             brand_output_name = f"{category}_{brand.replace(' ', '_').replace('/', '_')}"
-            print(f"  {i}. {brand} -> outputs/{brand_output_name}/")
+            print(f"  {i}. {brand} -> output/dow-anchored/{brand_output_name}_dow-anchored/")
         
         # Predict each brand
         print(f"\n{'=' * 80}")

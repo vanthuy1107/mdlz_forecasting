@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load predictions
-df = pd.read_csv('outputs/DRY/test_predictions.csv')
+df = pd.read_csv('output/dow-anchored/DRY/test_predictions_dow-anchored.csv')
 
 print("=" * 80)
 print("TEST SET DATA QUALITY ANALYSIS")

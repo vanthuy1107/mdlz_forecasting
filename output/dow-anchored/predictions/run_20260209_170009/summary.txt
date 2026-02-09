@@ -1,0 +1,43 @@
+Prediction Comparison: Teacher Forcing vs Recursive
+======================================================================
+
+Run ID: run_20260209_170009
+Timestamp: 2026-02-09 17:00:20
+Model: output\dow-anchored\DRY\models\best_model.pth
+Data: 2025-01-01 to 2025-12-31, DRY category only
+Data source: dataset/test/data_2025.csv
+
+Teacher Forcing Mode (Test Evaluation):
+----------------------------------------------------------------------
+  Description: Uses actual ground truth Total CBM values from 2025 as features
+  Suitable for: Model evaluation on test set
+  Number of predictions: 0
+  Date range: 2025-01-01 to 2025-12-02
+  MSE:  513637.5312
+  MAE:  568.4110
+  RMSE: 716.6851
+  Accuracy: 9.12%
+
+Recursive Mode (Production Forecast):
+----------------------------------------------------------------------
+  Description: Uses model's own predictions as inputs
+  Suitable for: Production forecasting of unknown future dates
+  Number of predictions: 358
+  Date range: 2025-01-01 to 2025-12-30
+  MSE:  119170.3411
+  MAE:  248.2777
+  RMSE: 345.2106
+  Accuracy: 79.68%
+
+Comparison:
+----------------------------------------------------------------------
+  MAE increase:  -56.32%
+  RMSE increase: -51.83%
+  MSE increase:  -76.80%
+
+  Note: Recursive mode shows higher error due to error accumulation.
+  This is expected and represents true production forecast performance.
+
+No previous runs found for comparison.
+
+No previous runs available for comparison.

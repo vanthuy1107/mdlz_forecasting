@@ -8,7 +8,7 @@ from typing import Union
 def plot_difference(
     y_true: Union[np.ndarray, list],
     y_pred: Union[np.ndarray, list],
-    save_path: str = "../outputs/prediction_vs_truth.png",
+    save_path: str = "../output/dow-anchored/prediction_vs_truth_dow-anchored.png",
     show: bool = True
 ):
     """
@@ -59,7 +59,7 @@ def plot_difference(
 def plot_learning_curve(
     train_losses: Union[list, np.ndarray],
     val_losses: Union[list, np.ndarray],
-    save_path: str = "../outputs/learning_curve.png",
+    save_path: str = "../output/dow-anchored/learning_curve_dow-anchored.png",
     show: bool = True
 ):
     """

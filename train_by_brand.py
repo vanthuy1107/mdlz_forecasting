@@ -371,7 +371,7 @@ def train_category(args):
     print(f"\n[4/5] Will train {len(brands_to_train)} brand model(s):")
     for i, brand in enumerate(brands_to_train, 1):
         brand_output_name = f"{args.category}_{brand.replace(' ', '_').replace('/', '_')}"
-        print(f"  {i}. {brand} -> outputs/{brand_output_name}/")
+        print(f"  {i}. {brand} -> output/dow-anchored/{brand_output_name}_dow-anchored/")
     
     # Train each brand
     print(f"\n[5/5] Training brand models...")
@@ -436,7 +436,7 @@ def train_category(args):
         for res in results:
             if res['status'] == 'success':
                 brand_output_name = f"{res['category']}_{res['brand'].replace(' ', '_').replace('/', '_')}"
-                print(f"  - {res['brand']} -> outputs/{brand_output_name}/")
+                print(f"  - {res['brand']} -> output/dow-anchored/{brand_output_name}_dow-anchored/")
     
     if failed > 0:
         print(f"\n✗ Failed to train {failed} brand model(s):")
