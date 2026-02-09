@@ -173,6 +173,110 @@ def _apply_sunday_to_monday_carryover_predictions(
     return df
 
 
+def _apply_dow_anchored_hybrid_baseline(
+    predictions_df: pd.DataFrame,
+    history_df: pd.DataFrame,
+    time_col: str,
+    target_col: str,
+    alpha: float = 0.5,
+    hist_weeks: int = 8,
+) -> pd.DataFrame:
+    """
+    Apply DOW-Anchored Hybrid Baseline smoothing to a sequence of predictions.
+
+    This implements the following decomposition for each forecast date T:
+        B_pred(T)   = 7-day rolling mean of model predictions
+        B_hist(T)   = historical mean for the same DOW over the last N weeks
+        B_hybrid(T) = alpha * B_pred(T) + (1 - alpha) * B_hist(T)
+
+        RNN_residual(T)   = Raw_Pred(T) - B_pred(T)
+        Final_Forecast(T) = B_hybrid(T) + RNN_residual(T)
+
+    which is equivalent to:
+        Final_Forecast(T) = Raw_Pred(T)
+                            + (1 - alpha) * (B_hist(T) - B_pred(T))
+
+    All computations are performed in the model's working scale
+    (typically StandardScaler space for the target column). The caller
+    is responsible for inverse-transforming back to absolute units.
+    """
+    if predictions_df is None or len(predictions_df) == 0:
+        return predictions_df
+    if history_df is None or len(history_df) == 0:
+        return predictions_df
+
+    preds = predictions_df.copy()
+
+    # Ensure we have a proper datetime column for history
+    if time_col not in history_df.columns:
+        return preds
+
+    hist = history_df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(hist[time_col]):
+        hist[time_col] = pd.to_datetime(hist[time_col])
+
+    # Restrict history to the most recent hist_weeks window when possible
+    try:
+        max_hist_date = hist[time_col].dt.date.max()
+        lookback_days = max(hist_weeks * 7, 7)
+        min_hist_date = max_hist_date - timedelta(days=lookback_days - 1)
+        mask_recent = hist[time_col].dt.date >= min_hist_date
+        hist_recent = hist.loc[mask_recent].copy()
+        if len(hist_recent) == 0:
+            hist_recent = hist
+    except Exception:
+        hist_recent = hist
+
+    if target_col not in hist_recent.columns:
+        return preds
+
+    # Coerce target to numeric to avoid dtype issues
+    hist_recent[target_col] = pd.to_numeric(hist_recent[target_col], errors="coerce")
+    hist_recent = hist_recent.dropna(subset=[target_col])
+    if len(hist_recent) == 0:
+        return preds
+
+    # Compute DOW -> historical mean mapping (B_hist)
+    hist_recent["_dow"] = hist_recent[time_col].dt.dayofweek
+    dow_means = hist_recent.groupby("_dow")[target_col].mean()
+    global_mean = hist_recent[target_col].mean()
+
+    # Sort predictions by date to enforce temporal order
+    preds = preds.sort_values("date").reset_index(drop=True)
+
+    def _get_weekday(d):
+        if isinstance(d, date):
+            return d.weekday()
+        if isinstance(d, pd.Timestamp):
+            return d.dayofweek
+        # Fallback for string / numpy.datetime64
+        return pd.to_datetime(d).dayofweek
+
+    dows = preds["date"].apply(_get_weekday)
+    b_hist_values = dows.map(lambda d: dow_means.get(d, global_mean)).to_numpy()
+
+    # Dynamic component: 7-day rolling mean of model predictions (B_pred)
+    y = preds["predicted"].astype(float).to_numpy()
+    if len(y) == 0:
+        return preds
+
+    b_pred_values = np.zeros_like(y, dtype=float)
+    for i in range(len(y)):
+        start_idx = max(0, i - 6)  # Up to 7 days including current
+        b_pred_values[i] = np.mean(y[start_idx : i + 1])
+
+    # Residual relative to dynamic baseline
+    residual_values = y - b_pred_values
+
+    # Hybrid baseline and final adjustment
+    alpha_clamped = float(np.clip(alpha, 0.0, 1.0))
+    b_hybrid_values = alpha_clamped * b_pred_values + (1.0 - alpha_clamped) * b_hist_values
+    final_values = b_hybrid_values + residual_values
+
+    preds["predicted"] = final_values
+    return preds
+
+
 def predict_direct_multistep(
     model,
     device,
@@ -209,6 +313,7 @@ def predict_direct_multistep(
     horizon = window_config['horizon']
     feature_cols = data_config['feature_cols']
     time_col = data_config['time_col']
+    target_col = data_config['target_col']
     
     if len(initial_window_data) < input_size:
         raise ValueError(
@@ -413,6 +518,30 @@ def predict_direct_multistep(
         )
         predictions_df.loc[predictions_df['_date_obj'].apply(lambda d: d.weekday() == 6), 'predicted'] = 0.0
         predictions_df = predictions_df.drop(columns=['_date_obj'])
+    
+    # ------------------------------------------------------------------
+    # DOW-Anchored Hybrid Baseline (optional, controlled via config)
+    # ------------------------------------------------------------------
+    # When enabled, re-center the prediction trajectory around a hybrid
+    # baseline that combines:
+    #   - B_pred(T): 7-day rolling mean of the model's own predictions
+    #   - B_hist(T): DOW-specific historical mean from recent weeks
+    # This is applied in the model's working scale; inverse-scaling is
+    # handled later by the calling pipeline.
+    inference_cfg = getattr(config, "inference", None)
+    if inference_cfg is not None:
+        dow_cfg = inference_cfg.get("dow_hybrid_baseline", {})
+        if dow_cfg.get("enabled", False):
+            alpha = float(dow_cfg.get("alpha", 0.5))
+            hist_weeks = int(dow_cfg.get("hist_weeks", 8))
+            predictions_df = _apply_dow_anchored_hybrid_baseline(
+                predictions_df=predictions_df,
+                history_df=initial_window_data,
+                time_col=time_col,
+                target_col=target_col,
+                alpha=alpha,
+                hist_weeks=hist_weeks,
+            )
     
     return predictions_df
 

@@ -205,6 +205,42 @@ inference:
   # "2025-01-01" and prediction_end to "2025-12-31" will automatically predict
   # the full year by looping through chunks of horizon days, updating the window
   # with predictions from each chunk for the next chunk.
-  prediction_data_path: "dataset/test/data_2026.csv"  # CSV with future period to predict
-  prediction_start: "2026-01-01"  # Inclusive start date (YYYY-MM-DD)
-  prediction_end: "2026-01-30"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
+  # prediction_data_path: "dataset/test/data_2026.csv"  # CSV with future period to predict
+  # prediction_start: "2026-01-01"  # Inclusive start date (YYYY-MM-DD)
+  # prediction_end: "2026-01-30"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
+
+  prediction_data_path: "dataset/test/data_2025.csv"  # CSV with future period to predict
+  prediction_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
+  prediction_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
+
+  # DOW-Anchored Hybrid Baseline (recursive / rolling production mode)
+  # ------------------------------------------------------------------
+  # This optional post-processing step stabilizes recursive forecasts by
+  # blending a short-term, model-driven baseline with a long-term
+  # day-of-week (DOW) anchor computed from recent history.
+  #
+  # For each forecast date T:
+  #   B_pred(T)  = 7-day rolling mean of the model's own predictions
+  #   B_hist(T)  = historical mean of actual demand for the same DOW
+  #                over the last N weeks (per category)
+  #   B_hybrid(T) = alpha * B_pred(T) + (1 - alpha) * B_hist(T)
+  #
+  # The final forecast is obtained by decomposing the raw model output
+  # into a residual around B_pred(T) and then re-centering that residual
+  # on the hybrid baseline:
+  #
+  #   RNN_residual(T)   = Raw_Pred(T) - B_pred(T)
+  #   Final_Forecast(T) = B_hybrid(T) + RNN_residual(T)
+  #
+  # which is equivalent to a DOW-anchored adjustment:
+  #
+  #   Final_Forecast(T) = Raw_Pred(T)
+  #                       + (1 - alpha) * (B_hist(T) - B_pred(T))
+  #
+  # When enabled, this logic is applied inside the prediction module
+  # (src/predict/predictor.py) for both single-horizon and rolling
+  # calendar-month forecasts.
+  dow_hybrid_baseline:
+    enabled: false          # Set to false to disable DOW-anchored smoothing
+    alpha: 0.2             # 0.0 = pure historical anchor, 1.0 = pure model baseline
+    hist_weeks: 2          # Number of weeks to use when computing B_hist(T)

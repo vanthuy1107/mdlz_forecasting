@@ -1110,28 +1110,56 @@ def aggregate_daily(
     if "Total QTY" in df.columns and "Total QTY" != target_col:
         agg_dict["Total QTY"] = "sum"
     
-    # For temporal/holiday/weekend features, take first value (should be same for all rows on same date)
+    # For temporal/holiday/weekend and engineered features, take first value
+    # (they should be identical for all rows on the same (date, category)).
+    #
+    # IMPORTANT:
+    # This list must include *all* potential feature-engineering columns that
+    # appear in any category config's `data.feature_cols`. If a column is not
+    # preserved here, it will be dropped during daily aggregation and later
+    # cause KeyError when building windows with that feature in `feature_cols`.
     feature_cols_to_keep = [
+        # Temporal / calendar basics
         'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
-        'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
         'is_weekend', 'day_of_week', 'day_of_week_sin', 'day_of_week_cos',
-        'weekday_volume_tier', 'is_high_volume_weekday',
-        'Is_Monday',  # Binary flag for Monday peak patterns (FRESH category)
+        'Is_Monday',
+        # Holiday features (Vietnam + model holidays)
+        'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
+        'pre_holiday_surge_tier', 'is_pre_holiday_surge',
+        # Lunar calendar + cyclical encodings
         'lunar_month', 'lunar_day',
-        'lunar_month_sin', 'lunar_month_cos', 'lunar_day_sin', 'lunar_day_cos',
-        'days_to_tet', 'days_to_mid_autumn',  # Tet and Mid-Autumn countdown features
-        'is_active_season', 'days_until_peak', 'is_golden_window',  # Seasonal active-window features
-        # Lunar cyclical encodings and Tet countdown should also persist after aggregation
         'lunar_month_sin', 'lunar_month_cos',
         'lunar_day_sin', 'lunar_day_cos',
-        'days_to_tet',
-        # EOM (End-of-Month) surge features
+        # Tet / Mid‑Autumn / seasonal countdowns
+        'days_to_tet', 'days_to_mid_autumn',
+        'days_until_lunar_08_01',
+        # Weekly pattern features
+        'weekday_volume_tier', 'is_high_volume_weekday',
+        # End‑of‑month surge
         'is_EOM', 'days_until_month_end',
-        # Seasonal active-window features
-        'is_active_season', 'days_until_peak',
-        # NEW: Gregorian-Anchored Peak Alignment features for MOONCAKE
-        'days_until_lunar_08_01',  # Countdown to Lunar 08-01
-        'is_august',  # Binary feature for Gregorian August (month == 8)
+        # Mid‑month peak features
+        'mid_month_peak_tier', 'is_mid_month_peak', 'days_to_mid_month_peak',
+        # Early‑month low‑volume features (DRY balanced-distribution mode)
+        'early_month_low_tier', 'is_early_month_low',
+        'is_first_5_days', 'is_first_3_days',
+        'days_from_month_start', 'post_peak_signal',
+        'is_high_vol_weekday_AND_early_month',
+        # Seasonal active‑window and loss‑masking
+        'is_active_season', 'days_until_peak', 'is_golden_window',
+        'is_peak_loss_window',
+        # Volume‑month (seasonality by month / lunar month)
+        'month', 'high_volume_month_tier',
+        'is_high_volume_month', 'is_low_volume_month',
+        # CBM density + YoY features
+        'cbm_per_qty', 'cbm_per_qty_last_year',
+        'cbm_last_year', 'cbm_2_years_ago',
+        # Rolling statistics and trend / momentum features
+        'rolling_mean_7d', 'rolling_mean_30d', 'momentum_3d_vs_14d',
+        'rolling_mean_21d', 'trend_vs_yoy_ratio', 'trend_vs_yoy_diff',
+        # Operational status flags
+        'operational_status', 'is_expected_zero', 'is_operational_anomaly',
+        # Gregorian‑anchored Mooncake helpers
+        'is_august',
     ]
     
     for col in feature_cols_to_keep:

@@ -2340,9 +2340,9 @@ def main():
         print(f"  - Filtered prediction windows to category '{categories_to_predict[0]}' (category ID: {cat_id})")
         print(f"  - Prediction windows after filtering: {len(X_pred)}")
     else:
-        # Category-Specific Mode: Teacher Forcing will be skipped (only Recursive mode processes all categories)
-        print("\n[NOTE] Teacher Forcing mode skipped for Category-Specific Mode.")
-        print("       All categories will be processed in Recursive mode with their respective models.")
+        # Category-Specific Mode: Teacher Forcing runs per-category inside the recursive loop
+        print("\n[NOTE] Teacher Forcing will run per-category inside the recursive loop.")
+        print("       Both modes will process all categories with their respective models.")
     
     # ========================================================================
     # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual prediction data values
@@ -2350,24 +2350,24 @@ def main():
     print("\n" + "=" * 80)
     print("MODE 1: TEACHER FORCING (Test Evaluation)")
     print("=" * 80)
-    # Category-Specific Mode: Skip Teacher Forcing, only Recursive mode processes categories
-    print("[NOTE] Teacher Forcing is skipped in Category-Specific Mode. Only Recursive mode processes categories.")
-    print("       This is expected - Recursive mode will handle all categories independently.")
+    # Category-Specific Mode: Teacher Forcing runs per-category inside the recursive loop
+    print("[NOTE] Teacher Forcing will run per-category inside the recursive loop.")
+    print("       Both Teacher Forcing and Recursive modes will process all categories.")
     
-    # Skip Teacher Forcing for Category-Specific Mode
-    if True:  # Always skip in category-specific mode
-        print("  - Skipping Teacher Forcing evaluation for 'each' mode")
-        y_true_tf = np.array([])
-        y_pred_tf = np.array([])
-        y_true_tf_unscaled = np.array([])
-        y_pred_tf_unscaled = np.array([])
-        mse_tf = np.nan
-        mae_tf = np.nan
-        rmse_tf = np.nan
-        accuracy_tf = np.nan
-        accuracy_tf_abs = np.nan
-        accuracy_tf_sum = np.nan
-    else:
+    # Teacher Forcing will run per-category inside the recursive loop
+    # Initialize TF outputs; populated from tf_results_list after the loop
+    y_true_tf = np.array([])
+    y_pred_tf = np.array([])
+    y_true_tf_unscaled = np.array([])
+    y_pred_tf_unscaled = np.array([])
+    mse_tf = np.nan
+    mae_tf = np.nan
+    rmse_tf = np.nan
+    accuracy_tf = np.nan
+    accuracy_tf_abs = np.nan
+    accuracy_tf_sum = np.nan
+    tf_results_list = []
+    if False:  # Legacy single-model path (deprecated)
         # Create dataset and dataloader
         pred_dataset = ForecastDataset(X_pred, y_actual, cat_pred)
         pred_loader = DataLoader(
@@ -2702,6 +2702,107 @@ def main():
             time_col
         ).reset_index(drop=True)
 
+        # --------------------------------------------------------------------
+        # Teacher Forcing per category (category-specific mode)
+        # --------------------------------------------------------------------
+        if 'config_cat' in locals() and 'historical_data_prepared_cat' in locals():
+            # Prepare prediction data WITH scaler for Teacher Forcing
+            prediction_data_prepared_cat = prepare_prediction_data(
+                prediction_data_cat,
+                config_cat,
+                cat2id_fallback,
+                scaler_cat,
+                trained_cat2id_cat,
+                current_category=current_category,
+                historical_data=historical_for_yoy if 'historical_for_yoy' in locals() else None,
+            )
+
+            # Concatenate full historical + prediction data so that all
+            # feature columns required by the model are present. Using
+            # an outer-style concat lets newer engineered features that
+            # only exist in one side appear with NaNs on the other.
+            combined_tf = pd.concat(
+                [historical_data_prepared_cat, prediction_data_prepared_cat],
+                ignore_index=True,
+                sort=False,
+            )
+            combined_tf = combined_tf.drop_duplicates(subset=[time_col], keep='last')
+            combined_tf = combined_tf.sort_values(time_col).reset_index(drop=True)
+
+            X_pred_tf, y_actual_tf, cat_pred_tf, pred_dates_tf_cat = create_prediction_windows(
+                combined_tf, config_cat
+            )
+
+            # Ensure pred_dates_tf_cat is always a pandas Series so .dt accessor works
+            # regardless of whether create_prediction_windows returned an Index, list,
+            # or array. This avoids AttributeError: 'DatetimeIndex' object has no attribute 'dt'.
+            pred_dates_tf_cat = pd.Series(pd.to_datetime(pred_dates_tf_cat))
+
+            # Filter windows to prediction period only
+            mask = (pred_dates_tf_cat.dt.date >= prediction_start_date) & (pred_dates_tf_cat.dt.date <= prediction_end_date)
+            if mask.any():
+                X_pred_tf = X_pred_tf[mask.values]
+                y_actual_tf = y_actual_tf[mask.values]
+                cat_pred_tf = cat_pred_tf[mask.values]
+                pred_dates_tf_cat = pred_dates_tf_cat[mask]
+
+            if len(X_pred_tf) > 0:
+                pred_dataset = ForecastDataset(X_pred_tf, y_actual_tf, cat_pred_tf)
+                pred_loader = DataLoader(
+                    pred_dataset,
+                    batch_size=config_cat.training.get('test_batch_size', config_cat.training.get('batch_size', 32)),
+                    shuffle=False
+                )
+                trainer = Trainer(
+                    model=model,
+                    criterion=nn.MSELoss(),
+                    optimizer=torch.optim.Adam(model.parameters()),
+                    device=device
+                )
+                y_true_tf_cat, y_pred_tf_cat = trainer.predict(pred_loader)
+
+                if scaler_cat is not None:
+                    y_true_tf_unscaled_cat = inverse_transform_scaling(y_true_tf_cat.flatten(), scaler_cat)
+                    y_pred_tf_unscaled_cat = inverse_transform_scaling(y_pred_tf_cat.flatten(), scaler_cat)
+                else:
+                    y_true_tf_unscaled_cat = y_true_tf_cat.flatten()
+                    y_pred_tf_unscaled_cat = y_pred_tf_cat.flatten()
+                y_pred_tf_unscaled_cat = np.maximum(y_pred_tf_unscaled_cat, 0.0)
+
+                # Build a safe DataFrame where all columns have the same length and
+                # no Series index alignment can introduce "array length X does not
+                # match index length Y" errors.
+                n_tf = min(
+                    len(pred_dates_tf_cat),
+                    len(y_pred_tf_unscaled_cat),
+                    len(y_true_tf_unscaled_cat),
+                )
+                if n_tf > 0:
+                    dates_tf = list(pred_dates_tf_cat.dt.date)[:n_tf]
+                    preds_tf = y_pred_tf_unscaled_cat[:n_tf]
+                    actuals_tf = y_true_tf_unscaled_cat[:n_tf]
+                    categories_tf = [current_category] * n_tf
+
+                    tf_pred_df = pd.DataFrame(
+                        {
+                            'date': dates_tf,
+                            'predicted': preds_tf,
+                            'actual': actuals_tf,
+                            data_config['cat_col']: categories_tf,
+                        }
+                    )
+
+                    # Apply Sunday-to-Monday carryover on the unscaled predictions
+                    tf_pred_df = apply_sunday_to_monday_carryover_predictions(
+                        tf_pred_df, date_col='date', pred_col='predicted'
+                    )
+                    tf_pred_df['predicted_unscaled'] = tf_pred_df['predicted']
+                    tf_results_list.append(
+                        tf_pred_df[
+                            ['date', 'actual', 'predicted_unscaled', data_config['cat_col']]
+                        ]
+                    )
+
         # Run direct multi-step prediction over configured prediction window
         # This addresses exposure bias by predicting entire horizon at once
         # If date range is longer than horizon, use rolling prediction
@@ -2784,6 +2885,27 @@ def main():
         recursive_results = pd.concat(recursive_results_list, ignore_index=True)
     else:
         recursive_results = pd.DataFrame(columns=['date', 'predicted', 'actual', data_config['cat_col']])
+
+    # Aggregate Teacher Forcing results and compute metrics
+    if len(tf_results_list) > 0:
+        tf_results_concat = pd.concat(tf_results_list, ignore_index=True)
+        tf_totals_by_day = tf_results_concat.groupby('date').agg(
+            actual=('actual', 'sum'),
+            predicted_unscaled=('predicted_unscaled', 'sum')
+        ).reset_index()
+        y_true_tf_unscaled = tf_totals_by_day['actual'].values
+        y_pred_tf_unscaled = tf_totals_by_day['predicted_unscaled'].values
+        pred_dates = tf_totals_by_day['date'].values
+        mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
+        mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
+        rmse_tf = np.sqrt(mse_tf)
+        # Accuracy (1 - MAPE-style): 1 - mean(|actual - pred|) / (mean(actual) + eps)
+        eps = 1e-8
+        denom = np.mean(np.abs(y_true_tf_unscaled)) + eps
+        accuracy_tf = (1 - mae_tf / denom) * 100 if denom > 0 else np.nan
+        accuracy_tf_abs = accuracy_tf
+        accuracy_tf_sum = accuracy_tf
+        print(f"\n  [Teacher Forcing] Aggregated {len(tf_results_list)} categories: MAE={mae_tf:.4f}, RMSE={rmse_tf:.4f}")
     
     # Inverse transformation is now done per-category above, so no need to do it here
     # If for some reason predicted_unscaled is missing, create it from predicted
@@ -3138,15 +3260,26 @@ def main():
         if len(tf_dates) != min_len:
             tf_dates = tf_dates[:min_len] if len(tf_dates) > min_len else tf_dates
         if len(y_pred_tf_trimmed) != min_len:
-            y_pred_tf_trimmed = y_pred_tf_trimmed[:min_len] if hasattr(y_pred_tf_trimmed, '__getitem__') else y_pred_tf_trimmed
+            y_pred_tf_trimmed = (
+                y_pred_tf_trimmed[:min_len]
+                if hasattr(y_pred_tf_trimmed, '__getitem__')
+                else y_pred_tf_trimmed
+            )
         if len(y_true_tf_trimmed) != min_len:
-            y_true_tf_trimmed = y_true_tf_trimmed[:min_len] if hasattr(y_true_tf_trimmed, '__getitem__') else y_true_tf_trimmed
-        
-        tf_results = pd.DataFrame({
-            'date': tf_dates,
-            'actual': y_true_tf_trimmed,
-            'predicted': y_pred_tf_trimmed
-        })
+            y_true_tf_trimmed = (
+                y_true_tf_trimmed[:min_len]
+                if hasattr(y_true_tf_trimmed, '__getitem__')
+                else y_true_tf_trimmed
+            )
+
+        # Build DataFrame with an explicit index of length min_len to avoid
+        # "array length X does not match index length Y" errors if any of the
+        # inputs are accidentally longer/shorter or broadcastable scalars.
+        tf_index = range(min_len)
+        tf_results = pd.DataFrame(index=tf_index)
+        tf_results['date'] = list(tf_dates)[:min_len]
+        tf_results['actual'] = list(y_true_tf_trimmed)[:min_len]
+        tf_results['predicted'] = list(y_pred_tf_trimmed)[:min_len]
     # Holiday Zero‑Constraint for Teacher Forcing as well:
     # mask predicted volume to 0 on Vietnam warehouse day‑off dates so that
     # evaluation and exported CSVs reflect the operational constraint.
