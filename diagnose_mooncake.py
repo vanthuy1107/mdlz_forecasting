@@ -30,7 +30,7 @@ def check_model_retraining():
     print("STEP 1: Verify Model Retraining Status")
     print("=" * 80)
     
-    model_path = Path("output/dow-anchored/MOONCAKE/models/best_model_dow-anchored.pth")
+    model_path = Path("outputs/dow-anchored/MOONCAKE/models/best_model_dow-anchored.pth")
     improvements_doc = Path("MOONCAKE_PREDICTION_IMPROVEMENTS.md")
     
     if not model_path.exists():
@@ -58,8 +58,8 @@ def check_model_retraining():
         print(f"   Model timestamp: {model_time}")
     
     # Check for scaler and metadata
-    scaler_path = Path("output/dow-anchored/MOONCAKE/models/scaler_dow-anchored.pkl")
-    metadata_path = Path("output/dow-anchored/MOONCAKE/models/metadata_dow-anchored.json")
+    scaler_path = Path("outputs/dow-anchored/MOONCAKE/models/scaler_dow-anchored.pkl")
+    metadata_path = Path("outputs/dow-anchored/MOONCAKE/models/metadata_dow-anchored.json")
     
     if scaler_path.exists():
         print(f"✅ Scaler found: {scaler_path}")

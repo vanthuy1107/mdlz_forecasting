@@ -2686,7 +2686,7 @@ def main():
     
     print(f"\n[SUMMARY] Will train {len(categories_to_train)} independent model(s):")
     for i, cat in enumerate(categories_to_train, 1):
-        print(f"  {i}. {cat} -> output/dow-anchored/{cat}/")
+        print(f"  {i}. {cat} -> outputs/dow-anchored/{cat}/")
     
     # Execute training tasks - each category is independent
     results = []
@@ -2706,7 +2706,7 @@ def main():
                 category_config.set('training.loss', 'spike_aware_mse')
             
             # Create isolated output directory for this category
-            category_output_dir = os.path.join("output", "dow-anchored", category)
+            category_output_dir = os.path.join("outputs", "dow-anchored", category)
             category_models_dir = os.path.join(category_output_dir, "models")
             os.makedirs(category_output_dir, exist_ok=True)
             os.makedirs(category_models_dir, exist_ok=True)

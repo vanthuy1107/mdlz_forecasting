@@ -139,7 +139,7 @@ def evaluate_early_month_performance(predictions_csv):
 
 if __name__ == "__main__":
     # Default path
-    default_path = "output/dow-anchored/DRY/test_predictions_dow-anchored.csv"
+    default_path = "outputs/dow-anchored/DRY/test_predictions_dow-anchored.csv"
     
     if len(sys.argv) > 1:
         predictions_csv = sys.argv[1]

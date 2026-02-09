@@ -2220,20 +2220,20 @@ def main():
     print("\n[6/7] Checking for trained models for each category...")
     missing_models = []
     for cat in categories_to_predict:
-        # New directory structure: output/dow-anchored/{CATEGORY}/models/best_model.pth
-        model_path = Path(f"output/dow-anchored/{cat}/models/best_model.pth")
+        # New directory structure: outputs/dow-anchored/{CATEGORY}/models/best_model.pth
+        model_path = Path(f"outputs/dow-anchored/{cat}/models/best_model.pth")
         if not model_path.exists():
             missing_models.append(cat)
     if missing_models:
         raise FileNotFoundError(
             f"Models not found for categories: {missing_models}. "
             f"Please run mvp_train.py first to train all category models. "
-            f"Expected paths: output/dow-anchored/{{CATEGORY}}/models/best_model.pth"
+            f"Expected paths: outputs/dow-anchored/{{CATEGORY}}/models/best_model.pth"
         )
     print(f"  - All required models found for {len(categories_to_predict)} category(ies)")
     
     # Load trained model (to get scaler before data preparation)
-    # Category-Specific Mode: Each category has its own model in output/dow-anchored/{CATEGORY}/models/
+    # Category-Specific Mode: Each category has its own model in outputs/dow-anchored/{CATEGORY}/models/
     print("\n[6/7] Loading trained models...")
     
     # Process each category separately with its own model
@@ -2246,8 +2246,8 @@ def main():
         print(f"{'=' * 80}")
         
         # Load this category's model from new directory structure
-        # output/dow-anchored/{CATEGORY}/models/best_model.pth
-        model_dir_path = Path(f"output/dow-anchored/{current_cat}/models")
+        # outputs/dow-anchored/{CATEGORY}/models/best_model.pth
+        model_dir_path = Path(f"outputs/dow-anchored/{current_cat}/models")
         model_path = model_dir_path / "best_model.pth"
         
         if not model_path.exists():
@@ -2524,8 +2524,8 @@ def main():
             print(f"PROCESSING CATEGORY: {current_category}")
             print(f"{'=' * 80}")
             print(f"  - Loading model for category: {current_category}")
-            # New directory structure: output/dow-anchored/{CATEGORY}/models/best_model.pth
-            model_dir_path_cat = Path(f"output/dow-anchored/{current_category}/models")
+            # New directory structure: outputs/dow-anchored/{CATEGORY}/models/best_model.pth
+            model_dir_path_cat = Path(f"outputs/dow-anchored/{current_category}/models")
             model_path_cat = model_dir_path_cat / "best_model.pth"
             
             if not model_path_cat.exists():
@@ -3379,7 +3379,7 @@ def main():
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     # Use a shared predictions directory for all categories
-    predictions_base_dir = Path("output/dow-anchored/predictions")
+    predictions_base_dir = Path("outputs/dow-anchored/predictions")
     predictions_base_dir.mkdir(parents=True, exist_ok=True)
     output_dir = predictions_base_dir / f"run_{run_timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
