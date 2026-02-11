@@ -1,12 +1,21 @@
-# MDLZ Warehouse Quantity Prediction System Configuration
+# ===============================
+# MDLZ Warehouse Quantity Forecast
+# Production Walk-Forward Setup
+# ===============================
 
+# -------------------------------
 # Data Configuration
+# -------------------------------
 data:
-  data_dir: "./dataset"  # Directory containing combined year files (data_2022.csv, data_2023.csv, etc.)
-  file_pattern: "data_{year}.csv"  # Pattern for combined year files
-  years: [2023, 2024]
-  
- 
+  data_dir: "./dataset"
+  file_pattern: "data_{year}.csv"
+  years: [2024, 2025]
+
+  target_col: "cube_out"
+  brand_col: "brand"
+  brand_id_col: "brand_id"
+  time_col: "date"
+
   feature_cols:
     - "month_sin"
     - "month_cos"
@@ -15,93 +24,66 @@ data:
     - "is_weekend"
     - "dow_sin"
     - "dow_cos"
-    # - "weekday_volume_tier"
-    # - "is_high_volume_weekday"
-    # - "is_EOM"
-    # - "days_until_month_end"
-    # - "lunar_month"
-    # - "lunar_day"
-    # - "lunar_month_sin"
-    # - "lunar_month_cos"
-    # - "lunar_day_sin"
-    # - "lunar_day_cos"
-    - "is_off_holiday"
-    - "is_other_holiday"
-    # - "days_until_next_holiday"
-    # - "days_since_holiday"
-    # - "days_to_tet"
-    # - "cbm_per_qty"
-    # - "cbm_per_qty_last_year"
-    # - "baseline"
-    # - "CUBE_OUT"
-  
-  # Target column
-  target_col: "CUBE_OUT"
-  
-  # Category column
-  brand_col: "BRAND"
-  brand_id_col: "BRAND_ID"
-  time_col: "DATE"
+    - "is_pre_off_holiday"
+    - "is_pre_other_holiday"
 
-# Window configuration
-# Direct Multi-step Forecasting: Use longer context (60 days) to predict entire horizon (30 days) at once
-# This prevents exposure bias from recursive forecasting where errors compound
+
+# -------------------------------
+# Window Configuration
+# -------------------------------
 window:
-  input_size: 7
-  horizon: 2    
+  input_size: 7        # context length (recommended 30–60 days)
+  horizon: 1            # recursive 1-step prediction
 
+
+# -------------------------------
 # Model Configuration
+# -------------------------------
 model:
-  name: "RNNForecastor" 
-  num_brands: null  # Will be set dynamically from data
+  name: "RNNForecastor"
+  num_brands: null      # auto-set from data
   brand_emb_dim: 4
-  input_dim: null  # Updated dynamically in code to match feature_cols length
+  input_dim: null       # auto-set from feature_cols
   hidden_size: 16
   n_layers: 2
-  output_dim: 2  # Changed from 1 to 30 to output entire forecast horizon at once (direct multi-step)
-  dropout_prob: 0.1  # Only for RNNForecastor
+  output_dim: 1         # MUST be 1 for recursive forecasting
+  dropout_prob: 0.1
 
+
+# -------------------------------
 # Training Configuration
+# -------------------------------
 training:
   batch_size: 64
-  val_batch_size: 16
-  test_batch_size: 16
+  val_batch_size: 32
   epochs: 20
   learning_rate: 0.001
+  log_interval: 5
   optimizer: "Adam"
   loss: "Huber"
-  
-  
-  # Learning rate scheduler
+
   scheduler:
     name: "ReduceLROnPlateau"
     mode: "min"
     factor: 0.5
     patience: 3
     min_lr: 0.00001
-  
-  # Logging
-  log_interval: 5  # Log every N epochs
-  
-  # Device
-  device: "auto"  # "auto", "cuda", or "cpu"
 
+  device: "auto"
+
+
+# -------------------------------
 # Output Configuration
+# -------------------------------
 output:
-  output_dir: "../outputs"
+  model_dir: "./outputs/models"
   save_model: true
-  model_dir: "../outputs/mvp_test/models"
-  
-  # Visualization
-  visualize:
-    save_plots: true
 
-# Inference Configuration
+
+# -------------------------------
+# Inference / Deployment
+# -------------------------------
 inference:
-  n_samples_for_plot: 100
+  test_start: "2025-01-01"
+  test_end: "2025-12-31"
   save_predictions: true
-  
-  test_data_path: "dataset/data_2025.csv"  # CSV with future period to predict
-  test_start: "2025-01-01"  # Inclusive start date (YYYY-MM-DD)
-  test_end: "2025-12-31"    # Inclusive end date (YYYY-MM-DD); rolling prediction automatically handles long ranges
-

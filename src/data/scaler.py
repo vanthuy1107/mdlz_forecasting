@@ -5,6 +5,11 @@ from sklearn.preprocessing import RobustScaler
 import pandas as pd
 import numpy as np
 
+from sklearn.preprocessing import RobustScaler
+import pandas as pd
+import numpy as np
+
+
 class RollingGroupScaler:
     def __init__(
         self,
@@ -13,7 +18,7 @@ class RollingGroupScaler:
         feature_cols,
         lookback_months=6,
         scaler_cls=RobustScaler,
-        scaler_kwargs=None
+        scaler_kwargs=None,
     ):
         self.group_col = group_col
         self.time_col = time_col
@@ -22,118 +27,78 @@ class RollingGroupScaler:
         self.scaler_cls = scaler_cls
         self.scaler_kwargs = scaler_kwargs or {"quantile_range": (1, 99)}
 
-        self.scalers = {}            # group_id -> scaler
-        self.valid_groups_ = set()   # ✅ groups actually fitted
-        self.origin = None
-
-    def fit(self, df, origin : pd.Timestamp):
-
         self.scalers = {}
         self.valid_groups_ = set()
-        self.origin = origin
 
-        start_date = origin - pd.DateOffset(months=self.lookback_months)
+    # ---------------- core ---------------- #
 
-        mask = (
-            (df[self.time_col] >= start_date) &
-            (df[self.time_col] < origin)
-        )
+    def fit(self, df: pd.DataFrame, origin: pd.Timestamp):
+        self.scalers.clear()
+        self.valid_groups_.clear()
 
-        df_window = df.loc[mask]
+        start = origin - pd.DateOffset(months=self.lookback_months)
+        window = df[(df[self.time_col] >= start) & (df[self.time_col] < origin)]
 
-        if df_window.empty:
-            raise ValueError("No data to fit scaler in lookback window")
+        if window.empty:
+            raise ValueError("No data in scaler lookback window")
 
-        for g, gdf in df_window.groupby(self.group_col):
+        for g, gdf in window.groupby(self.group_col):
             if len(gdf) < 5:
-                continue  # ❌ too little data → invalid group
+                continue
 
-            scaler = self.scaler_cls(**self.scaler_kwargs)
-
-            X = gdf[self.feature_cols].values
-            if X.ndim == 1:
-                X = X.reshape(-1, 1)
-
-            scaler.fit(X)
+            X = self._to_2d(gdf[self.feature_cols].values)
+            scaler = self.scaler_cls(**self.scaler_kwargs).fit(X)
 
             self.scalers[g] = scaler
-            self.valid_groups_.add(g)   # ✅ mark valid
+            self.valid_groups_.add(g)
 
         if not self.valid_groups_:
             raise ValueError("No valid groups after fitting scaler")
-        
-        print("Scaler feature_cols:", self.feature_cols)
-        print("Scaler center_:", scaler.center_)
-        print("Scaler scale_:", scaler.scale_)
+
         return self
 
-    def filter_invalid_groups(self, df):
-        """
-        Drop rows belonging to categories without fitted scaler
-        """
-        if not hasattr(self, "valid_groups_"):
-            raise RuntimeError("Scaler has not been fitted")
-
-        before = len(df)
-        df_filtered = df[df[self.group_col].isin(self.valid_groups_)].copy()
-        after = len(df_filtered)
-
-        dropped = before - after
-        if dropped > 0:
-            print(
-                f"[Scaler] Dropped {dropped} rows "
-                f"from {before} due to missing scaler "
-                f"(kept {len(self.valid_groups_)} groups)"
-            )
-        # print(f"[filter] using valid_groups_={self.valid_groups_}")
-
-        return df_filtered
-    
-    def transform(self, df):
-        if not hasattr(self, "valid_groups_"):
-            raise RuntimeError("Call fit() before transform()")
-
-        # ❗ Loại category không hợp lệ trước
-        df = self.filter_invalid_groups(df)
-
+    def transform(self, df: pd.DataFrame):
+        df = self._filter_valid(df)
         df = df.copy()
+
         for g, scaler in self.scalers.items():
             mask = df[self.group_col] == g
             if mask.any():
-                X = df.loc[mask, self.feature_cols].values
-                if X.ndim == 1:
-                    X = X.reshape(-1, 1)
-
+                X = self._to_2d(df.loc[mask, self.feature_cols].values)
                 df.loc[mask, self.feature_cols] = scaler.transform(X)
 
         return df
-    
+
+    # ---------------- inverse ---------------- #
+
     def inverse_transform_y(self, y_scaled, cat_ids):
-        """
-        Inverse transform target using group-specific RobustScaler
-
-        y_scaled: np.ndarray shape (N,) or (N, horizon)
-        cat_ids : np.ndarray shape (N,)
-        """
-        if not hasattr(self, "scalers"):
-            raise RuntimeError("Scaler has not been fitted")
-
         y_scaled = np.asarray(y_scaled)
-
-        if y_scaled.ndim == 1:
-            y_scaled = y_scaled[:, None]
+        y_scaled = self._to_2d(y_scaled)
 
         y_inv = np.zeros_like(y_scaled, dtype=float)
 
-        for i, cat in enumerate(cat_ids):
-            scaler = self.scalers.get(int(cat))
+        for i, g in enumerate(cat_ids):
+            scaler = self.scalers.get(int(g))
             if scaler is None:
-                continue  # should not happen if filtered correctly
+                continue
 
-            center = scaler.center_[0]
-            scale = scaler.scale_[0]
-
-            y_inv[i] = y_scaled[i] * scale + center
+            y_inv[i] = y_scaled[i] * scaler.scale_[0] + scaler.center_[0]
 
         return y_inv.squeeze()
+
+    # ---------------- helpers ---------------- #
+
+    def _filter_valid(self, df):
+        before = len(df)
+        df = df[df[self.group_col].isin(self.valid_groups_)].copy()
+        dropped = before - len(df)
+
+        if dropped:
+            print(f"[Scaler] Dropped {dropped} rows (invalid groups)")
+
+        return df
+
+    @staticmethod
+    def _to_2d(x):
+        return x.reshape(-1, 1) if x.ndim == 1 else x
 

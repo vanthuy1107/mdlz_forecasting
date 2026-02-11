@@ -1,6 +1,7 @@
 from config import load_holidays
 from datetime import date
 from typing import List, Tuple
+import pandas as pd
 ##############################################################################
 # Holiday and Lunar Calendar Utilities
 ###############################################################################
@@ -12,6 +13,11 @@ from typing import List, Tuple
 # Holidays are now loaded from config/holidays.yaml for easier maintenance.
 VIETNAM_HOLIDAYS_BY_YEAR = load_holidays()
 
+# Helper to get month boundaries
+def month_range(ts: pd.Timestamp):
+    start = ts.replace(day=1)
+    end = (start + pd.offsets.MonthEnd(0))
+    return start, end
 
 def get_vietnam_holidays(start_date: date, end_date: date) -> List[date]:
     """

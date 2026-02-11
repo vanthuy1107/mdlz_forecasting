@@ -1,5 +1,6 @@
 # Data files
 dataset/
+data_preprocess/
 
 # Python cache
 __pycache__/

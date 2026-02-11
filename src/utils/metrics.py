@@ -1,126 +1,59 @@
 """
-Clean, consistent metrics for demand / volume forecasting.
+Clean, vectorized metrics for demand / volume forecasting.
 
 Design principles:
-- Aggregate-first metrics (volume-weighted)
-- No per-row averaging for business KPIs
-- Safe handling of zeros
-- Clear separation between pointwise errors and business accuracy
-
-All functions accept numpy arrays or pandas Series.
+- Baseline-aware SFA
+- Zero-demand safe
+- Volume-weighted monthly aggregation
+- Brand-balanced overall score
+- Fully vectorized (no slow row-wise apply)
 """
 
 import numpy as np
 import pandas as pd
+import os
 
-# ---------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------
+# ============================================================
+# 1️⃣ Vectorized Daily SFA
+# ============================================================
 
-def _to_numpy(x):
-    if isinstance(x, (pd.Series, pd.DataFrame)):
-        return x.values
-    return np.asarray(x)
-
-def _first_step(y):
-    """
-    If horizon > 1, return y[..., 0].
-    Works for scalars, 1D, and 2D arrays.
-    """
-    y = _to_numpy(y)
-
-    if y.ndim >= 2:
-        return y[..., 0]
-
-    return y
-
-
-# def sfa_daily_accuracy(
-#     y_true,
-#     y_pred,
-#     baseline,
-#     p=0.1,
-#     min_eps=5.0
-# ):
-#     """
-#     Baseline-aware SFA daily accuracy.
-    
-#     Near-zero is defined relative to baseline:
-#         |y_true| <= max(p * |baseline|, min_eps)
-#     """
-
-#     # y_true = _first_step(y_true).astype(float)
-#     # y_pred = _first_step(y_pred).astype(float)
-#     # baseline = _first_step(baseline).astype(float)
-
-#     acc = np.zeros_like(y_true, dtype=float)
-
-#     # dynamic near-zero threshold
-#     dyn_eps = np.maximum(np.abs(baseline) * p, min_eps)
-
-#     near_zero = np.abs(y_true) <= dyn_eps
-#     non_zero = ~near_zero
-
-#     # standard SFA
-#     acc[non_zero] = 1.0 - np.abs(y_pred[non_zero] - y_true[non_zero]) / y_true[non_zero]
-
-#     # zero-demand logic (relative)
-#     acc[near_zero] = (np.abs(y_pred[near_zero]) <= dyn_eps[near_zero]).astype(float)
-
-#     return np.clip(acc, 0.0, 1.0)
-
-def sfa_daily_accuracy(
-    y_true: float,
-    y_pred: float,
-    baseline: float,
+def compute_daily_sfa(
+    y_true,
+    y_pred,
+    baseline,
     p: float = 0.1,
     eps: float = 1e-6,
 ):
     """
-    Scalar SFA accuracy for 1-day-ahead forecast with baseline-aware zero handling.
+    Vectorized SFA accuracy.
 
     near-zero threshold = p% of baseline
     """
 
-    y_true = float(y_true)
-    y_pred = float(y_pred)
-    baseline = max(float(baseline), eps)
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    baseline = np.maximum(np.asarray(baseline, dtype=float), eps)
 
-    # dynamic near-zero threshold
     near_zero_thresh = p * baseline
 
-    if abs(y_true) <= near_zero_thresh:
-        # zero-demand logic
-        return float(abs(y_pred) <= near_zero_thresh)
-    else:
-        acc = 1.0 - abs(y_pred - y_true) / max(abs(y_true), eps)
-        return float(np.clip(acc, 0.0, 1.0))
+    # Zero-demand mask
+    zero_mask = np.abs(y_true) <= near_zero_thresh
+
+    # Case 1: near-zero demand
+    zero_acc = (np.abs(y_pred) <= near_zero_thresh).astype(float)
+
+    # Case 2: normal demand
+    normal_acc = 1.0 - np.abs(y_pred - y_true) / np.maximum(np.abs(y_true), eps)
+    normal_acc = np.clip(normal_acc, 0.0, 1.0)
+
+    return np.where(zero_mask, zero_acc, normal_acc)
 
 
+# ============================================================
+# 2️⃣ Monthly SFA (Volume Weighted)
+# ============================================================
 
-def calculate_sfa_by_brand_and_date(
-    df,
-    actual_col="actual",
-    forecast_col="predicted",
-    brand_col="brand",
-    date_col="date",
-):
-    df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
-
-    df["sfa_accuracy"] = sfa_daily_accuracy(
-        df[actual_col].values,
-        df[forecast_col].values
-    )
-
-    return (
-        df
-        .groupby([brand_col, date_col])["sfa_accuracy"]
-        .mean()
-        .reset_index()
-    )
-
-def calculate_sfa_by_brand_and_month(
+def calculate_monthly_sfa(
     df: pd.DataFrame,
     brand_col: str,
     date_col: str,
@@ -129,28 +62,25 @@ def calculate_sfa_by_brand_and_month(
     baseline_col: str,
 ):
     df = df.copy()
-
-    # Ensure datetime
     df[date_col] = pd.to_datetime(df[date_col])
-    df["year_month"] = df[date_col].dt.to_period("M")
 
-    # ✅ DAILY SFA (row-wise, scalar-safe)
-    df["daily_sfa"] = df.apply(
-        lambda r: sfa_daily_accuracy(
-            r[actual_col],
-            r[forecast_col],
-            r[baseline_col],
-        ),
-        axis=1,
+    # Daily SFA
+    df["daily_sfa"] = compute_daily_sfa(
+        df[actual_col],
+        df[forecast_col],
+        df[baseline_col],
     )
 
-    # ✅ MONTHLY aggregation
+    # Year-Month period
+    df["year_month"] = df[date_col].dt.to_period("M")
+
+    # Volume-weighted monthly SFA
     monthly = (
         df.groupby([brand_col, "year_month"])
         .apply(
             lambda g: np.average(
                 g["daily_sfa"],
-                weights=g[actual_col].abs() + 1e-6,
+                weights=np.abs(g[actual_col]) + 1e-6,
             )
         )
         .reset_index(name="monthly_sfa")
@@ -159,114 +89,132 @@ def calculate_sfa_by_brand_and_month(
     return monthly
 
 
-# ---------------------------------------------------------------------
-# High-level report (text-friendly)
-# ---------------------------------------------------------------------
+# ============================================================
+# 3️⃣ Overall Business Accuracy
+# ============================================================
+
+def calculate_overall_sfa(monthly_sfa_df, brand_col):
+    """
+    Brand-balanced overall SFA.
+    Each brand contributes equally.
+    """
+
+    brand_level = (
+        monthly_sfa_df
+        .groupby(brand_col)["monthly_sfa"]
+        .mean()
+    )
+
+    return brand_level.mean()
+
+
+# ============================================================
+# 4️⃣ Full Text Report
+# ============================================================
 
 def generate_accuracy_report(
-    df,
+    df: pd.DataFrame,
     actual_col="actual",
     forecast_col="predicted",
     baseline_col="baseline",
     brand_col="brand",
     date_col="date",
-    brand_name_map=None,
     output_path=None,
 ):
     """
-    Generate a clean text report using DAILY-AVERAGED SFA accuracy.
+    Returns:
+        report_str (cumulative grouped report)
     """
-    if brand_name_map is None:
-        brand_name_map = {}
 
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col])
+    df = df.dropna(subset=[actual_col])
 
-    # ------------------------------------------------------------------
-    # Daily SFA (row-level)
-    # ------------------------------------------------------------------
-    df["daily_sfa"] = df.apply(
-        lambda r: sfa_daily_accuracy(r[actual_col], r[forecast_col], r[baseline_col]),
-        axis=1,
-    )
-
-    # ------------------------------------------------------------------
-    # Aggregations
-    # ------------------------------------------------------------------
-    monthly_sfa = calculate_sfa_by_brand_and_month(
+    # -----------------------------------
+    # Compute monthly SFA (UNCHANGED)
+    # -----------------------------------
+    monthly_sfa = calculate_monthly_sfa(
         df,
+        brand_col=brand_col,
+        date_col=date_col,
         actual_col=actual_col,
         forecast_col=forecast_col,
         baseline_col=baseline_col,
+    )
+
+    overall_acc = calculate_overall_sfa(
+        monthly_sfa,
         brand_col=brand_col,
-        date_col=date_col,
     )
 
-    # ------------------------------------------------------------------
-    # Overall accuracy = avg over brands (each brand = avg over months)
-    # ------------------------------------------------------------------
-    brand_level_acc = (
-        monthly_sfa
-        .groupby(brand_col)["monthly_sfa"]
-        .mean()
+    # -----------------------------------
+    # OPTIMIZATION: Precompute monthly sums ONCE
+    # -----------------------------------
+    df["year_month"] = df[date_col].dt.to_period("M")
+
+    monthly_sum = (
+        df.groupby([brand_col, "year_month"], as_index=False)
+          .agg(
+              actual_sum=(actual_col, "sum"),
+              forecast_sum=(forecast_col, "sum"),
+          )
     )
 
-    overall_acc = brand_level_acc.mean()
+    # -----------------------------------
+    # Merge SFA + sums
+    # -----------------------------------
+    report_df = (
+        monthly_sfa.merge(
+            monthly_sum,
+            on=[brand_col, "year_month"],
+            how="left"
+        )
+        .rename(columns={"monthly_sfa": "accuracy"})   
+        .assign(month=lambda x: x["year_month"].astype(str))
+        .sort_values([brand_col, "month"])
+        .reset_index(drop=True)
+    )
 
-    # daily_sfa = calculate_sfa_by_brand_and_date(
-    #     df,
-    #     actual_col=actual_col,
-    #     forecast_col=forecast_col,
-    #     brand_col=brand_col,
-    #     date_col=date_col,
-    # )
 
-    # ------------------------------------------------------------------
-    # Report rendering
-    # ------------------------------------------------------------------
+    # -----------------------------------
+    # Build cumulative text report
+    # -----------------------------------
     lines = []
     lines.append("=== FORECAST ACCURACY REPORT ===")
-    lines.append(f"Overall SFA Accuracy (Monthly/Brand Avg): {overall_acc * 100:.2f}%")
+    lines.append(f"Overall SFA Accuracy: {overall_acc * 100:.2f}%")
     lines.append("")
 
-    for brand, g_brand in monthly_sfa.groupby(brand_col):
-        brand_name = brand_name_map.get(brand, str(brand))
-        lines.append(f"--- Brand: {brand_name} ---")
+    for brand, g_brand in report_df.groupby(brand_col, sort=True):
 
-        for _, row in g_brand.sort_values("year_month").iterrows():
-            month = str(row["year_month"])   # Period → string
-            acc = row["monthly_sfa"]
+        lines.append(f"--- Brand: {brand} ---")
 
-            g_month_raw = df[
-                (df[brand_col] == brand) &
-                (df[date_col].dt.to_period("M") == row["year_month"])
-            ]
-
+        for _, r in g_brand.iterrows():
             lines.append(
-                f"  {month}: "
-                f"Accuracy={acc * 100:.1f}% | "
-                f"Actual={g_month_raw[actual_col].sum():.0f} | "
-                f"Forecast={g_month_raw[forecast_col].sum():.0f}"
+                f"  {r['month']}: "
+                f"Accuracy={r['accuracy'] * 100:.1f}% | "
+                f"Actual={r['actual_sum']:.0f} | "
+                f"Forecast={r['forecast_sum']:.0f}"
             )
 
         lines.append("")
 
     report_str = "\n".join(lines)
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
+
+    # -----------------------------------
+    # Save (overwrite)
+    # -----------------------------------
     if output_path:
-        import os
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(report_str)
-        print(f"✓ Accuracy report saved to: {output_path}")
 
-    return report_str
-
+    return report_df, report_str
 
 
 
-__all__ = [ 
-    'generate_accuracy_report', 
+
+__all__ = [
+    "generate_accuracy_report",
+    "calculate_monthly_sfa",
+    "calculate_overall_sfa",
 ]
