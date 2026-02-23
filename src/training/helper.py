@@ -23,6 +23,7 @@ def build_model_and_trainer(config, num_brands):
     )
 
     criterion = torch.nn.HuberLoss(delta=0.8)
+    criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.training["learning_rate"],
@@ -72,7 +73,7 @@ def train_model_for_cutoff(
     loader = DataLoader(
         dataset,
         batch_size=config.training["batch_size"],
-        shuffle=True,
+        shuffle=False,
     )
 
     # -------------------------------

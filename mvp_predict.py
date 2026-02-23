@@ -117,9 +117,21 @@ def main():
     # --------------------------------------------------
     output_dir = Path("outputs/mvp_test")
     output_dir.mkdir(parents=True, exist_ok=True)
-    commit_path = output_dir / "commit_forecast_monthly.csv"
-    commit_results.to_csv(commit_path, index=False)
-    print(f"[SAVED] Commit forecast → {commit_path}")
+    
+    # # Save commit forecasts
+    # commit_path = output_dir / "commit_forecast_monthly.csv"
+    # commit_results.to_csv(commit_path, index=False)
+    # print(f"[SAVED] Commit forecast → {commit_path}")
+    
+    # # Save evaluation results with actuals and predictions
+    # eval_path = output_dir / "evaluation_results.csv"
+    # # Select key columns: date, brand, actual, predicted, and other relevant columns
+    # eval_columns = ["date", "brand", "actual", "predicted", "residual", "baseline"]
+    # eval_to_save = eval_results[eval_columns] if all(col in eval_results.columns for col in eval_columns) else eval_results
+    # eval_to_save.to_csv(eval_path, index=False)
+    # print(f"[SAVED] Evaluation results (date, brand, actual, predicted) → {eval_path}")
+    # print(f"Columns saved: {list(eval_to_save.columns)}")
+    # print(f"Total records: {len(eval_to_save):,}")
 
     report_df, report_str = generate_accuracy_report(
         eval_results,

@@ -1,10 +1,7 @@
 from src.forecast import (
     forecast_commit_month,
 )
-from src.utils import (
-    month_range,
-    generate_accuracy_report
-)
+from src.utils import month_range
 from src.training import train_model_for_cutoff
 from src.data import FeatureEngineer
 import pandas as pd
@@ -157,7 +154,6 @@ def run_monthly_walkforward(
             print(f"  Total rows in history: {len(simulation_data):,}")
 
         current_month += pd.DateOffset(months=1)
-
 
     return (
         pd.concat(all_commit_results, ignore_index=True),

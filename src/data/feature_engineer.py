@@ -56,11 +56,11 @@ def add_calendar_features(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
 
 
 
-def add_baseline(df, target_col, time_col, brand_col):
+def add_baseline(df, target_col, time_col, brand_col, window_size):
     df = df.sort_values([brand_col, time_col]).copy()
     df["baseline"] = (
         df.groupby(brand_col)[target_col]
-          .rolling(7, min_periods=1)
+          .rolling(window_size, min_periods=1)
           .mean()
           .shift(1)
           .reset_index(level=0, drop=True)
@@ -70,10 +70,23 @@ def add_baseline(df, target_col, time_col, brand_col):
     return df
 
 
-def add_history_features(df, time_col, brand_col, target_col):
+def add_history_features(df, window_cfg, time_col, brand_col, target_col):
     df = add_calendar_features(df, time_col)
-    df = add_baseline(df, target_col, time_col, brand_col)
+    df = add_baseline(df, target_col, time_col, brand_col, window_size=window_cfg["input_size"])
     df["residual"] = df[target_col] - df["baseline"]
+
+    # Add Lag-residual
+    # df["res_lag_1"] = df.groupby(brand_col)["residual"].shift(1)
+    # df["res_lag_7"] = df.groupby(brand_col)["residual"].shift(7)
+
+    # df["res_roll_mean_7"] = (
+    #     df.groupby(brand_col)["residual"]
+    #       .shift(1)
+    #       .rolling(7)
+    #       .mean()
+    # )
+
+    df = df.fillna(0)
     return df
 
 
@@ -129,6 +142,7 @@ class FeatureEngineer:
     def _features(self, df):
         return add_history_features(
             df,
+            self.config.window,
             self.time_col,
             self.brand_col,
             self.target_col,
@@ -157,7 +171,7 @@ class FeatureEngineer:
             group_col=self.brand_id_col,
             time_col=self.time_col,
             feature_cols="residual",
-            lookback_months=1,
+            lookback_months=6,
         )
 
         self.scaler.fit(df, fit_end_date)

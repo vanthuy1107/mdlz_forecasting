@@ -11,7 +11,7 @@
   - [2023, 5, 1]  # Labor Day
   - [2023, 9, 2]  # Independence Day
   - [2023, 9, 3]  # Independence Day
-  - [2023, 3, 8]  # Women Day
+  # - [2023, 3, 8]  # Women Day
  "other":
   - [2023, 4, 29] # Hung's King
   - [2023, 9, 29] # Mid-Autumn
@@ -34,7 +34,7 @@
   - [2024, 5, 1]  # Labor Day
   - [2024, 9, 2]  # Independence Day
   - [2024, 9, 3]  # Independence Day
-  - [2024, 3, 8]  # Women Day
+  # - [2024, 3, 8]  # Women Day
  "other":
   - [2024, 4, 18] # Hung's King
   - [2024, 9, 17] # Mid-Autumn
@@ -52,11 +52,13 @@
   - [2025, 1, 29] # Tet
   - [2025, 1, 30] # Tet
   - [2025, 1, 31] # Tet
+  - [2025, 2, 1] # Tet
+  - [2025, 2, 2] # Tet
   - [2025, 4, 30] # Reunification Day
   - [2025, 5, 1]  # Labor Day
   - [2025, 9, 2]  # Independence Day
   - [2025, 9, 3]  # Independence Day
-  - [2025, 3, 8]  # Women Day
+  # - [2025, 3, 8]  # Women Day
  "other":
   - [2025, 4, 7]  # Hung's King
   - [2025, 10, 6] # Mid-Autumn

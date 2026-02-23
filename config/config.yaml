@@ -17,23 +17,29 @@ data:
   time_col: "date"
 
   feature_cols:
-    - "month_sin"
-    - "month_cos"
-    - "dayofmonth_sin"
-    - "dayofmonth_cos"
-    - "is_weekend"
+    # Calendar
+    # - "month_sin"
+    # - "month_cos"
+    # - "dayofmonth_sin"
+    # - "dayofmonth_cos"
+    # - "is_weekend"
     - "dow_sin"
     - "dow_cos"
-    - "is_pre_off_holiday"
-    - "is_pre_other_holiday"
+    # - "is_pre_off_holiday"
+    # - "is_pre_other_holiday"
+
+    # Lag
+    # - "res_lag_1"
+    # - "res_lag_7"
+    # - "res_roll_mean_7"
 
 
 # -------------------------------
 # Window Configuration
 # -------------------------------
 window:
-  input_size: 7        # context length (recommended 30–60 days)
-  horizon: 1            # recursive 1-step prediction
+  input_size: 28        # context length (recommended 30–60 days)
+  horizon: 7            # multi-step 7-day prediction
 
 
 # -------------------------------
@@ -44,9 +50,9 @@ model:
   num_brands: null      # auto-set from data
   brand_emb_dim: 4
   input_dim: null       # auto-set from feature_cols
-  hidden_size: 16
+  hidden_size: 32
   n_layers: 2
-  output_dim: 1         # MUST be 1 for recursive forecasting
+  output_dim: 7         # MUST match horizon for multi-step
   dropout_prob: 0.1
 
 
@@ -56,17 +62,17 @@ model:
 training:
   batch_size: 64
   val_batch_size: 32
-  epochs: 20
+  epochs: 40
   learning_rate: 0.001
   log_interval: 5
   optimizer: "Adam"
-  loss: "Huber"
+  loss: "MSE"
 
   scheduler:
     name: "ReduceLROnPlateau"
     mode: "min"
     factor: 0.5
-    patience: 3
+    patience: 5
     min_lr: 0.00001
 
   device: "auto"

@@ -28,7 +28,8 @@ class RNNForecastor(nn.Module):
             input_size=input_dim,
             hidden_size=hidden_size,
             num_layers=n_layers,
-            batch_first=True
+            batch_first=True,
+            dropout=self.dropout_prob if n_layers > 1 else 0
         )
 
         self.h0_fc = nn.Linear(brand_emb_dim, hidden_size)
