@@ -1,6 +1,7 @@
 # Data files
 dataset/
 data_preprocess/
+final_train_fe.csv
 
 # Python cache
 __pycache__/
