@@ -3,9 +3,8 @@ import os
 import yaml
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from datetime import date
+import datetime
 import torch
-
 
 class Config:
     """Configuration class to manage hyperparameters and paths."""
@@ -121,20 +120,19 @@ def load_config(config_path: Optional[str] = None) -> Config:
     return Config(config_path)
 
 
-def load_holidays(holidays_path: Optional[str] = None) -> Dict[int, Dict[str, List[date]]]:
+def load_holidays(holidays_path: Optional[str] = None) -> Dict[int, Dict[str, List[datetime.date]]]:
     """
     Load Vietnam holidays from holidays.yaml config file.
 
     YAML format:
     {
-      2024: {
-        off: [[2024, 1, 1], ...],
-        other: [[2024, 4, 18], ...]
-      }
+      2024: 
+        Tet: [[2024, 1, 1], ...]
+        other: [[2024, 2, 10], ...]
     }
 
     Returns:
-        {year: {group: [date, ...], ...}, ...}
+        {year: Tet: [date, ...], other: [date, ...]}
     """
     if holidays_path is None:
         holidays_path = Path(__file__).parent / "holidays.yaml"
@@ -146,16 +144,22 @@ def load_holidays(holidays_path: Optional[str] = None) -> Dict[int, Dict[str, Li
     with open(holidays_path, "r") as f:
         holidays_config = yaml.safe_load(f)
 
-    result: Dict[int, Dict[str, List[date]]] = {}
+    result: Dict[int, Dict[str, List[datetime.date]]] = {}
 
-    for year_str, groups in holidays_config.items():
+    for year_str, lists in holidays_config.items():
+        # YAML indentation error can produce None here (e.g. year key without nested map)
+        if lists is None:
+            raise ValueError(
+                f"Holidays for year {year_str} are not defined. "
+                "Check holidays.yaml indentation."
+            )
         year = int(year_str)
         result[year] = {}
-
-        for group_name, date_list in groups.items():
-            result[year][group_name] = [
-                date(y, m, d) for y, m, d in date_list
-            ]
+        for holiday_name, date_lists in lists.items():
+            result[year][holiday_name] = []
+            for date_list in date_lists:
+                date_obj = datetime.date(*date_list)
+                result[year][holiday_name].append(date_obj)
 
     return result
 

@@ -9,29 +9,41 @@
 data:
   data_dir: "./dataset"
   file_pattern: "data_{year}.csv"
-  years: [2024, 2025]
+  years: [2023, 2024, 2025]
 
-  target_col: "cube_out"
+  target_col: "total cbm"
   brand_col: "brand"
   brand_id_col: "brand_id"
-  time_col: "date"
+  time_col: "actualshipdate"
 
   feature_cols:
     # Calendar
-    # - "month_sin"
-    # - "month_cos"
-    # - "dayofmonth_sin"
-    # - "dayofmonth_cos"
+    - "is_holiday"
+    - "holiday_distance"
+    - "days_since_last_holiday"
+    - "days_to_next_holiday"
+    # - 'pre_tet'
+    # - 'post_tet'
+    - "month_sin"
+    - "month_cos"
+    - "dayofmonth_sin"
+    - "dayofmonth_cos"
+    # - "wom_sin"
+    # - "wom_cos"
     # - "is_weekend"
     - "dow_sin"
     - "dow_cos"
-    # - "is_pre_off_holiday"
-    # - "is_pre_other_holiday"
+    - "is_monday"
+    - "is_sunday"
+    # - "is_month_start"
 
-    # Lag
-    # - "res_lag_1"
-    # - "res_lag_7"
-    # - "res_roll_mean_7"
+    # historical level / lag features (enable as needed)
+    # - "lag_1"
+    # - "lag_7"
+    # - "lag_14"
+    # - "rolling_mean_7"
+    # - "rolling_mean_14"
+    # - "rolling_std_7"
 
 
 # -------------------------------
@@ -39,7 +51,7 @@ data:
 # -------------------------------
 window:
   input_size: 28        # context length (recommended 30–60 days)
-  horizon: 7            # multi-step 7-day prediction
+  horizon: 7            # 1-day prediction
 
 
 # -------------------------------
@@ -50,7 +62,7 @@ model:
   num_brands: null      # auto-set from data
   brand_emb_dim: 4
   input_dim: null       # auto-set from feature_cols
-  hidden_size: 32
+  hidden_size: 64
   n_layers: 2
   output_dim: 7         # MUST match horizon for multi-step
   dropout_prob: 0.1
@@ -62,7 +74,7 @@ model:
 training:
   batch_size: 64
   val_batch_size: 32
-  epochs: 40
+  epochs: 30
   learning_rate: 0.001
   log_interval: 5
   optimizer: "Adam"

@@ -15,7 +15,6 @@ from src.utils import (
     generate_accuracy_report, 
     seed_everything, 
     plot_all_monthly_forecasts,
-    plot_all_monthly_history,
     SEED
 )
 
@@ -55,7 +54,16 @@ def main():
 
     raw_data = reader.load(years=data_cfg["years"])
     raw_data.columns = raw_data.columns.str.lower()
-    raw_data = raw_data[~raw_data[brand_col].isin(["KINH DO CAKE", "LU"])]
+    main_brand = [
+        "AFC", 
+        "COSY", 
+        "OREO", 
+        "SLIDE", 
+        "SOLITE", 
+        "RITZ", 
+        "KINH DO BISCUIT"
+    ]
+    raw_data = raw_data[raw_data[brand_col].isin(main_brand)]
     raw_data = raw_data[
         [brand_col, time_col, target_col]
     ]
@@ -104,6 +112,7 @@ def main():
         test_start=test_start,
         test_end=test_end,
     )
+    eval_results = eval_results.sort_values([brand_col, time_col])
     eval_results = eval_results.rename(columns={"CUBE_OUT": "actual"})
 
     sim_end = time.perf_counter()
@@ -123,15 +132,15 @@ def main():
     # commit_results.to_csv(commit_path, index=False)
     # print(f"[SAVED] Commit forecast → {commit_path}")
     
-    # # Save evaluation results with actuals and predictions
-    # eval_path = output_dir / "evaluation_results.csv"
-    # # Select key columns: date, brand, actual, predicted, and other relevant columns
-    # eval_columns = ["date", "brand", "actual", "predicted", "residual", "baseline"]
-    # eval_to_save = eval_results[eval_columns] if all(col in eval_results.columns for col in eval_columns) else eval_results
-    # eval_to_save.to_csv(eval_path, index=False)
-    # print(f"[SAVED] Evaluation results (date, brand, actual, predicted) → {eval_path}")
-    # print(f"Columns saved: {list(eval_to_save.columns)}")
-    # print(f"Total records: {len(eval_to_save):,}")
+    # Save evaluation results with actuals and predictions
+    eval_path = output_dir / "evaluation_results.csv"
+    # Select key columns: date, brand, actual, predicted, and other relevant columns
+    eval_columns = ["date", "is_holidays", "brand", "actual", "predicted"]
+    eval_to_save = eval_results[eval_columns] if all(col in eval_results.columns for col in eval_columns) else eval_results
+    eval_to_save.to_csv(eval_path, index=False)
+    print(f"[SAVED] Evaluation results (date, brand, actual, predicted) → {eval_path}")
+    print(f"Columns saved: {list(eval_to_save.columns)}")
+    print(f"Total records: {len(eval_to_save):,}")
 
     report_df, report_str = generate_accuracy_report(
         eval_results,
@@ -142,7 +151,6 @@ def main():
     # --------------------------------------------------
     plot_all_monthly_forecasts(
         df=eval_results,
-        plot_baseline=True,
         report_df=report_df
     )
 

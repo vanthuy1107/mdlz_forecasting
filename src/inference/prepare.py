@@ -39,6 +39,7 @@ def prepare_inference_data(
     # 🔑 ADD FEATURES ONCE (continuous time)
     data = add_history_features(
         data,
+        window_cfg=config.window,
         time_col=time_col,
         brand_col=brand_col,
         target_col=target_col,

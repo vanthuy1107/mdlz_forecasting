@@ -1,11 +1,12 @@
 from src.models import RNNForecastor
 from pathlib import Path
 import json
-import pickle
 import torch
 
+# scaler support removed; predictions and training operate on raw units
+
 def load_model_for_test(model_path: str, config):
-    """Load trained model from checkpoint and scaler."""
+    """Load trained model from checkpoint."""
     # Load metadata first to get the training-time model/data config
     model_dir = Path(model_path).parent
     metadata_path = model_dir / "metadata.json"
@@ -73,14 +74,6 @@ def load_model_for_test(model_path: str, config):
     print(f"  - Model loaded from: {model_path}")
     print(f"  - Best validation loss: {ckpt.get('best_val_loss', 'N/A'):.4f}")
     
-    # Load scaler from same directory as model (model_dir already defined above)
-    scaler_path = model_dir / "scaler.pkl"
-    scaler = None
-    if scaler_path.exists():
-        with open(scaler_path, 'rb') as f:
-            scaler = pickle.load(f)
-        print(f"  - Scaler loaded from: {scaler_path}")
-    else:
-        print(f"  [WARNING] Scaler not found at {scaler_path}, test will be in scaled space")
     
-    return model, device, scaler
+    
+    return model, device

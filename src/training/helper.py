@@ -1,6 +1,7 @@
 from src.data import ForecastDataset, slicing_window
 from src.models import RNNForecastor
 from src.training import Trainer
+from src.utils.losses import QuantileLoss, WeightedMSE
 import torch
 from torch.utils.data import DataLoader
 import pandas as pd
@@ -22,8 +23,10 @@ def build_model_and_trainer(config, num_brands):
         output_dim=model_cfg["output_dim"],
     )
 
-    criterion = torch.nn.HuberLoss(delta=0.8)
+    # criterion = torch.nn.HuberLoss(delta=0.8)
+    # criterion = QuantileLoss(q=0.7)
     criterion = torch.nn.MSELoss()
+    # criterion = WeightedMSE(alpha=1.0)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.training["learning_rate"],
@@ -49,17 +52,16 @@ def train_model_for_cutoff(
 ):
     data_cfg = config.data
     window_cfg = config.window
-
+    print(f"  Features: {data_cfg["feature_cols"]}")
     # -------------------------------
     # Windowing
     # -------------------------------
-    X, y, _, cat = slicing_window(
+    X, y, brand = slicing_window(
         data,
         input_size=window_cfg["input_size"],
         horizon=window_cfg["horizon"],
         feature_cols=data_cfg["feature_cols"],
-        target_col="residual",
-        baseline_col="baseline",
+        target_col=data_cfg["target_col"],
         brand_id_col=data_cfg["brand_id_col"],
         time_col=data_cfg["time_col"],
         label_end_date=train_cutoff,
@@ -69,7 +71,7 @@ def train_model_for_cutoff(
     if len(X) == 0:
         raise ValueError(f"No training windows before {train_cutoff}")
 
-    dataset = ForecastDataset(X, y, cat)
+    dataset = ForecastDataset(X, y, brand)
     loader = DataLoader(
         dataset,
         batch_size=config.training["batch_size"],

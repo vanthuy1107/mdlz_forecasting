@@ -1,68 +1,50 @@
 2023:
- "off":
-  - [2023, 1, 1]  # New Year
-  - [2023, 1, 19] # Tet
-  - [2023, 1, 20] # Tet
-  - [2023, 1, 21] # Tet
-  - [2023, 1, 22] # Tet
-  - [2023, 1, 23] # Tet
-  - [2023, 1, 24] # Tet
-  - [2023, 4, 30] # Reunification Day
-  - [2023, 5, 1]  # Labor Day
-  - [2023, 9, 2]  # Independence Day
-  - [2023, 9, 3]  # Independence Day
-  # - [2023, 3, 8]  # Women Day
- "other":
-  - [2023, 4, 29] # Hung's King
-  - [2023, 9, 29] # Mid-Autumn
-  - [2023, 10, 20] # Women Day
-  - [2023, 12, 24] # Christmas
-  - [2023, 12, 25] # Christmas
-  - [2023, 12, 31] # New year eve
-  
+  Tet:
+    - [2023, 1, 19] # Tet
+    - [2023, 1, 20] # Tet
+    - [2023, 1, 21] # Tet
+    - [2023, 1, 22] # Tet
+    - [2023, 1, 23] # Tet
+    - [2023, 1, 24] # Tet
+  other:
+    - [2023, 1, 1]  # New Year
+    - [2023, 4, 30] # Reunification Day
+    - [2023, 5, 1]  # Labor Day
+    - [2023, 9, 2]  # Independence Day
+    - [2023, 9, 3]  # Independence Day
+    - [2023, 3, 8]  # Women Day
 2024:
- "off":
-  - [2024, 1, 1]  # New Year
-  - [2024, 2, 6]  # Tet
-  - [2024, 2, 7]  # Tet
-  - [2024, 2, 8]  # Tet
-  - [2024, 2, 9]  # Tet
-  - [2024, 2, 10] # Tet
-  - [2024, 2, 11] # Tet
-  - [2024, 2, 12] # Tet
-  - [2024, 4, 30] # Reunification Day
-  - [2024, 5, 1]  # Labor Day
-  - [2024, 9, 2]  # Independence Day
-  - [2024, 9, 3]  # Independence Day
-  # - [2024, 3, 8]  # Women Day
- "other":
-  - [2024, 4, 18] # Hung's King
-  - [2024, 9, 17] # Mid-Autumn
-  - [2024, 10, 20] # Women Day
-  - [2024, 12, 24] # Christmas
-  - [2024, 12, 25] # Christmas
-  - [2024, 12, 31] # New year eve
+  Tet:
+    - [2024, 2, 6]  # Tet
+    - [2024, 2, 7]  # Tet
+    - [2024, 2, 8]  # Tet
+    - [2024, 2, 9]  # Tet
+    - [2024, 2, 10] # Tet
+    - [2024, 2, 11] # Tet
+    - [2024, 2, 12] # Tet
+  other:
+    - [2024, 1, 1]  # New Year
+    - [2024, 4, 30] # Reunification Day
+    - [2024, 5, 1]  # Labor Day
+    - [2024, 9, 2]  # Independence Day
+    - [2024, 9, 3]  # Independence Day
+    - [2024, 3, 8]  # Women Day
+
 
 2025:
- "off":
-  - [2025, 1, 1]  # New Year
-  - [2025, 1, 26] # Tet
-  - [2025, 1, 27] # Tet
-  - [2025, 1, 28] # Tet
-  - [2025, 1, 29] # Tet
-  - [2025, 1, 30] # Tet
-  - [2025, 1, 31] # Tet
-  - [2025, 2, 1] # Tet
-  - [2025, 2, 2] # Tet
-  - [2025, 4, 30] # Reunification Day
-  - [2025, 5, 1]  # Labor Day
-  - [2025, 9, 2]  # Independence Day
-  - [2025, 9, 3]  # Independence Day
-  # - [2025, 3, 8]  # Women Day
- "other":
-  - [2025, 4, 7]  # Hung's King
-  - [2025, 10, 6] # Mid-Autumn
-  - [2025, 10, 20] # Women Day
-  - [2025, 12, 24] # Christmas
-  - [2025, 12, 25] # Christmas
-  - [2025, 12, 31] # New year eve
+  Tet:
+    - [2025, 1, 26] # Tet
+    - [2025, 1, 27] # Tet
+    - [2025, 1, 28] # Tet
+    - [2025, 1, 29] # Tet
+    - [2025, 1, 30] # Tet
+    - [2025, 1, 31] # Tet
+    - [2025, 2, 1] # Tet
+    - [2025, 2, 2] # Tet
+  other:
+    - [2025, 1, 1]  # New Year
+    - [2025, 4, 30] # Reunification Day
+    - [2025, 5, 1]  # Labor Day
+    - [2025, 9, 2]  # Independence Day
+    - [2025, 9, 3]  # Independence Day
+    - [2025, 3, 8]  # Women Day

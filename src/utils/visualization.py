@@ -9,17 +9,18 @@ def plot_monthly_forecast(
     df,
     brand,
     month_str,
+    time_col="actualshipdate",
+    brand_col="brand",
     output_dir: str = "outputs/plots",
     show: bool = False,
-    plot_baseline: bool = False,
     report_df: pd.DataFrame | None = None,
 ):
 
     # Filter data for this brand and month
-    mask = (df['brand'] == brand) & (
-        df['date'].dt.to_period('M').astype(str) == month_str
+    mask = (df[brand_col] == brand) & (
+        df[time_col].dt.to_period('M').astype(str) == month_str
     )
-    df_filtered = df[mask].sort_values('date')
+    df_filtered = df[mask].sort_values(time_col)
 
     if len(df_filtered) == 0:
         print(f"    [WARNING] No data for brand={brand}, month={month_str}")
@@ -34,9 +35,7 @@ def plot_monthly_forecast(
     # --------------------------------------------------
     y_true = df_filtered['actual'].values
     y_pred = df_filtered['predicted'].values
-    dates = df_filtered['date'].values
-    if plot_baseline:
-        y_base = df_filtered['baseline'].values
+    dates = df_filtered[time_col].values
 
     # Plot
     plt.figure(figsize=(14, 6))
@@ -52,17 +51,6 @@ def plot_monthly_forecast(
         markersize=6,
         color="blue"
     )
-
-    if plot_baseline:
-        plt.plot(
-            x_pos, y_base,
-            label="Baseline",
-            marker="s",
-            linewidth=2,
-            linestyle="--",
-            markersize=5,
-            color="gray"
-        )
 
     plt.plot(
         x_pos, y_pred,
@@ -125,9 +113,10 @@ def plot_monthly_forecast(
 
 def plot_all_monthly_forecasts(
     df,
+    time_col="actualshipdate",
+    brand_col="brand",
     output_dir: str = "outputs/plots",
     show: bool = False,
-    plot_baseline: bool = False,
     report_df: pd.DataFrame | None = None
 ):
     """
@@ -143,17 +132,17 @@ def plot_all_monthly_forecasts(
     """
 
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"])
+    df[time_col] = pd.to_datetime(df[time_col])
 
     # Get unique brands
-    brands = sorted(df["brand"].unique())
+    brands = sorted(df[brand_col].unique())
 
     for brand in brands:
 
         # Get available months for this brand
-        brand_df = df[df["brand"] == brand]
+        brand_df = df[df[brand_col] == brand]
         months = (
-            brand_df["date"]
+            brand_df[time_col]
             .dt.to_period("M")
             .astype(str)
             .unique()
@@ -169,7 +158,6 @@ def plot_all_monthly_forecasts(
                 month_str=month_str,
                 output_dir=output_dir,
                 show=show,
-                plot_baseline=plot_baseline,
                 report_df=report_df,
             )
 
@@ -180,6 +168,8 @@ def plot_monthly_history(
     brand,
     month_str,
     test_start,
+    time_col="actualshipdate",
+    brand_col="brand",
     output_dir: str = "outputs/history_plots",
     show: bool = False,
 ):
@@ -191,12 +181,12 @@ def plot_monthly_history(
 
     # Filter brand + month + before test_start
     mask = (
-        (df["brand"] == brand) &
-        (df["date"] < test_start) &
-        (df["date"].dt.to_period("M").astype(str) == month_str)
+        (df[brand_col] == brand) &
+        (df[time_col] < test_start) &
+        (df[time_col].dt.to_period("M").astype(str) == month_str)
     )
 
-    df_filtered = df[mask].sort_values("date")
+    df_filtered = df[mask].sort_values(time_col)
 
     if len(df_filtered) == 0:
         return
@@ -206,7 +196,7 @@ def plot_monthly_history(
     brand_output_dir.mkdir(parents=True, exist_ok=True)
 
     y_true = df_filtered["actual"].values
-    dates = df_filtered["date"].values
+    dates = df_filtered[time_col].values
 
     plt.figure(figsize=(14, 6))
 
@@ -251,6 +241,8 @@ def plot_monthly_history(
 def plot_all_monthly_history(
     df,
     test_start,
+    time_col="actualshipdate",
+    brand_col="brand",
     output_dir: str = "outputs/history_plots",
     show: bool = False,
 ):
@@ -267,20 +259,20 @@ def plot_all_monthly_history(
     """
 
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"])
+    df[time_col] = pd.to_datetime(df[time_col])
     test_start = pd.to_datetime(test_start)
 
     # Keep only history
-    df = df[df["date"] < test_start]
+    df = df[df[time_col] < test_start]
 
-    brands = sorted(df["brand"].unique())
+    brands = sorted(df[brand_col].unique())
 
     for brand in brands:
 
-        brand_df = df[df["brand"] == brand]
+        brand_df = df[df[brand_col] == brand]
 
         months = (
-            brand_df["date"]
+            brand_df[time_col]
             .dt.to_period("M")
             .astype(str)
             .unique()

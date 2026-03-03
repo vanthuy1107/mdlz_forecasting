@@ -43,10 +43,13 @@ def run_monthly_walkforward(
     all_eval_results = []
 
     current_month = test_start.replace(day=1)
+    last_train_fe = None
 
     while current_month < test_end:
 
         month_start, month_end = month_range(current_month)
+        
+        fe = FeatureEngineer(config)
 
         if verbose:
             print("\n" + "="*80)
@@ -65,16 +68,13 @@ def run_monthly_walkforward(
 
         if verbose:
             print(f"[TRAIN]")
-            print(f"  Train period: {train_raw[time_col].min()} → {train_raw[time_col].max()}")
+            print(f"  Train period: {train_raw[time_col].min().date()} → {train_raw[time_col].max().date()}")
             print(f"  Train rows:   {len(train_raw):,}")
             print(f"  Brands:       {train_raw[brand_col].nunique()}")
 
-        fe = FeatureEngineer(config)
-        train_fe = fe.fit_transform(train_raw, month_start)
-
-        if verbose:
-            print(f"  Feature rows: {len(train_fe):,}")
-
+        train_fe = fe.fit_transform(train_raw)
+        last_train_fe = train_fe.copy()
+          
         model = train_model_for_cutoff(
             data=train_fe,
             config=config,
@@ -101,10 +101,9 @@ def run_monthly_walkforward(
             brand_col=brand_col,
             brand_id_col=brand_id_col,
             feature_cols=feature_cols,
-            target_col="residual",
             input_size=config.window["input_size"],
             device=device,
-            verbose=False,   # change to True if debugging deep
+            horizon=config.window["horizon"]
         )
 
         commit_df["commit_month"] = month_start
@@ -141,19 +140,35 @@ def run_monthly_walkforward(
         all_eval_results.append(eval_df)
 
         # ==================================================
-        # STEP 5 — Update simulation_data
+        # STEP 5 — Update simulation_data with actuals
         # ==================================================
         simulation_data = (
             pd.concat([simulation_data, actual_month], ignore_index=True)
-            .sort_values(time_col)
+            .sort_values([brand_col, time_col])
+            .reset_index(drop=True)
         )
-
+        
         if verbose:
             print(f"\n[SIMULATION DATA UPDATED]")
             print(f"  New history max date: {simulation_data[time_col].max()}")
             print(f"  Total rows in history: {len(simulation_data):,}")
 
         current_month += pd.DateOffset(months=1)
+
+    # ==================================================
+    # SAVE FINAL TRAIN_FE
+    # ==================================================
+    if last_train_fe is not None:
+        output_df = (
+            last_train_fe
+            .sort_values([brand_col, time_col])
+            .reset_index(drop=True)
+        )[[brand_col] + [time_col] + [target_col] + feature_cols]
+
+        output_df.to_csv("final_train_fe.csv", index=False)
+
+        if verbose:
+            print("\n💾 Final train_fe saved to final_train_fe.csv")
 
     return (
         pd.concat(all_commit_results, ignore_index=True),
