@@ -4,8 +4,10 @@ from src.forecast import (
 from src.utils import month_range
 from src.training import train_model_for_cutoff
 from src.data import FeatureEngineer
+from src.training import Trainer          # for get_latest_walkforward_checkpoint
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 def run_monthly_walkforward(
     full_actuals: pd.DataFrame,
@@ -13,11 +15,40 @@ def run_monthly_walkforward(
     device,
     test_start: pd.Timestamp,
     test_end: pd.Timestamp,
+    checkpoint_dir: str = "checkpoints/walkforward",
+    resume_from_existing: bool = True,
     verbose: bool = True,
 ):
     """
     Strict production-style monthly walk-forward simulation
     using FeatureEngineer as single source of truth.
+
+    Warm-start / incremental training
+    ----------------------------------
+    Instead of re-training from random weights every month, each month
+    *fine-tunes* the weights produced by the previous month:
+
+    1. At the end of month N's training, the trainer saves
+       ``<checkpoint_dir>/ckpt_<YYYY-MM>.pth``.
+    2. At the start of month N+1, that file is loaded before any gradient
+       steps are taken, so the model only needs to adapt to the new month's
+       data rather than relearn everything from scratch.
+
+    ``resume_from_existing=True`` (default) means that if you re-run the
+    pipeline after an interruption the loop automatically picks up from the
+    latest saved checkpoint instead of starting cold.
+
+    Args:
+        full_actuals (pd.DataFrame):    Complete ground-truth time-series.
+        config:                         Config object.
+        device (torch.device):          Compute device.
+        test_start (pd.Timestamp):      First month to forecast.
+        test_end (pd.Timestamp):        Exclusive upper bound (loop stops before this).
+        checkpoint_dir (str):           Where to store monthly ``.pth`` files.
+        resume_from_existing (bool):    If True, auto-detect the latest checkpoint
+                                        already in *checkpoint_dir* and use it as
+                                        the warm-start for the first iteration.
+        verbose (bool):                 Print progress.
     """
 
     data_cfg = config.data
@@ -38,6 +69,19 @@ def run_monthly_walkforward(
     simulation_data = full_actuals[
         full_actuals[time_col] < test_start
     ].copy()
+
+    # --------------------------------------------------
+    # Checkpoint directory + warm-start seed
+    # --------------------------------------------------
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try to pick up where we left off if the caller allows it
+    last_checkpoint_path = None
+    if resume_from_existing:
+        last_checkpoint_path = Trainer.get_latest_walkforward_checkpoint(checkpoint_dir)
+        if last_checkpoint_path and verbose:
+            print(f"🔁 Warm-starting from existing checkpoint: {last_checkpoint_path.name}")
 
     all_commit_results = []
     all_eval_results = []
@@ -79,7 +123,13 @@ def run_monthly_walkforward(
             data=train_fe,
             config=config,
             train_cutoff=month_start,
+            checkpoint_path=last_checkpoint_path,
+            checkpoint_save_dir=checkpoint_dir,
+            month=month_start,
         )
+
+        # Track the checkpoint just saved so the next month can load it
+        last_checkpoint_path = Trainer.get_latest_walkforward_checkpoint(checkpoint_dir)
 
         model.to(device)
         model.eval()

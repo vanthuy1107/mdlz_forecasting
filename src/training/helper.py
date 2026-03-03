@@ -49,10 +49,52 @@ def train_model_for_cutoff(
     data: pd.DataFrame,
     config,
     train_cutoff: pd.Timestamp,
+    checkpoint_path=None,
+    checkpoint_save_dir=None,
+    month=None,
 ):
+    """
+    Build (or resume) a model and fine-tune it up to *train_cutoff*.
+
+    Warm-start behaviour
+    --------------------
+    When *checkpoint_path* is supplied the model and optimizer are
+    initialised from that file before training begins, so each monthly
+    retraining is a *fine-tuning* step rather than a cold restart.
+    This is much faster and usually yields better performance because
+    the model retains the patterns it already learned.
+
+    After training, if *checkpoint_save_dir* and *month* are both given,
+    the updated weights are saved as ``ckpt_<YYYY-MM>.pth`` in that
+    directory so the next month can pick them up.
+
+    Args:
+        data (pd.DataFrame):            Feature-engineered training data.
+        config:                         Config object with data/window/training sections.
+        train_cutoff (pd.Timestamp):    Only windows whose label ends before this
+                                        date are used for training.
+        checkpoint_path (str | Path | None):
+                                        Path to a ``.pth`` file written by
+                                        ``Trainer.save_walkforward_checkpoint``.
+                                        Pass ``None`` to start from random weights
+                                        (first month, or intentional cold-start).
+        checkpoint_save_dir (str | Path | None):
+                                        Directory in which to persist the newly
+                                        trained checkpoint.  Nothing is saved when
+                                        this is ``None``.
+        month (pd.Timestamp | None):    The forecast month; used to name the
+                                        saved checkpoint file.  Required when
+                                        *checkpoint_save_dir* is set.
+
+    Returns:
+        nn.Module: Trained (or fine-tuned) model in eval mode.
+    """
+    from pathlib import Path
+
     data_cfg = config.data
     window_cfg = config.window
-    print(f"  Features: {data_cfg["feature_cols"]}")
+    print(f"  Features: {data_cfg['feature_cols']}")
+
     # -------------------------------
     # Windowing
     # -------------------------------
@@ -80,12 +122,22 @@ def train_model_for_cutoff(
 
     # -------------------------------
     # Model + trainer
+    # Always build a fresh architecture first (guarantees correct shapes),
+    # then overwrite weights from the checkpoint if one is provided.
     # -------------------------------
     num_brands = data[data_cfg["brand_id_col"]].nunique()
     model, trainer = build_model_and_trainer(config, num_brands)
 
+    if checkpoint_path is not None:
+        checkpoint_path = Path(checkpoint_path)
+        if checkpoint_path.exists():
+            prior_month = trainer.load_walkforward_checkpoint(checkpoint_path)
+            print(f"  ✅ Resumed from checkpoint: {checkpoint_path.name} (month={prior_month})")
+        else:
+            print(f"  ⚠️  Checkpoint not found at {checkpoint_path} — starting from scratch")
+
     # -------------------------------
-    # Train
+    # Train (fine-tune if warm-started)
     # -------------------------------
     trainer.fit(
         train_loader=loader,
@@ -94,5 +146,12 @@ def train_model_for_cutoff(
         save_best=False,
         verbose=False,
     )
+
+    # -------------------------------
+    # Persist checkpoint for next month
+    # -------------------------------
+    if checkpoint_save_dir is not None and month is not None:
+        saved_path = trainer.save_walkforward_checkpoint(month, checkpoint_save_dir)
+        print(f"  💾 Checkpoint saved → {saved_path}")
 
     return model

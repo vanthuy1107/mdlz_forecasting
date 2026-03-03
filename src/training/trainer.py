@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 from pathlib import Path
+import copy
 
 
 class Trainer:
@@ -317,4 +318,95 @@ class Trainer:
             self.best_val_loss = checkpoint['best_val_loss']
         
         self.current_epoch = checkpoint.get('epoch', 0)
+
+    # ------------------------------------------------------------------
+    # Walk-forward helpers
+    # ------------------------------------------------------------------
+
+    def save_walkforward_checkpoint(self, month, save_dir):
+        """
+        Save a month-stamped checkpoint used by the walk-forward loop.
+
+        Written to ``<save_dir>/ckpt_<YYYY-MM>.pth`` so every month keeps
+        its own snapshot.  The latest is always discoverable via
+        ``get_latest_walkforward_checkpoint``.
+
+        Args:
+            month (pd.Timestamp): The forecast month this checkpoint belongs to.
+            save_dir (str | Path): Directory to hold walk-forward checkpoints.
+
+        Returns:
+            Path: Full path of the saved file.
+        """
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"ckpt_{month:%Y-%m}.pth"
+        checkpoint = {
+            "month": str(month.date()),
+            "model_state_dict": {k: v.clone() for k, v in self.model.state_dict().items()},
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "train_losses": list(self.train_losses),
+            "val_losses": list(self.val_losses),
+            "best_val_loss": self.best_val_loss,
+            "current_epoch": self.current_epoch,
+        }
+        if self.scheduler is not None:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        filepath = save_dir / filename
+        torch.save(checkpoint, filepath)
+        return filepath
+
+    @staticmethod
+    def get_latest_walkforward_checkpoint(save_dir):
+        """
+        Return the path to the most-recent ``ckpt_<YYYY-MM>.pth`` in
+        *save_dir*, or ``None`` if none exist.
+
+        Args:
+            save_dir (str | Path): Directory of walk-forward checkpoints.
+
+        Returns:
+            Path | None
+        """
+        save_dir = Path(save_dir)
+        if not save_dir.exists():
+            return None
+        candidates = sorted(save_dir.glob("ckpt_*.pth"))
+        return candidates[-1] if candidates else None
+
+    def load_walkforward_checkpoint(self, filepath, load_optimizer=True, load_scheduler=True):
+        """
+        Load a checkpoint produced by ``save_walkforward_checkpoint`` and
+        restore model + optimizer (+ scheduler) state in-place.
+
+        Keeping optimizer state preserves Adam/SGD momentum across months,
+        which gives smoother fine-tuning compared to a cold-start optimizer.
+
+        Args:
+            filepath (str | Path): Path to the ``.pth`` file.
+            load_optimizer (bool): Restore optimizer state.
+            load_scheduler (bool): Restore LR-scheduler state if present.
+
+        Returns:
+            str: The month string stored in the checkpoint (for logging).
+        """
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+
+        if load_optimizer and "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        if (
+            load_scheduler
+            and "scheduler_state_dict" in checkpoint
+            and self.scheduler is not None
+        ):
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        self.train_losses = checkpoint.get("train_losses", [])
+        self.val_losses = checkpoint.get("val_losses", [])
+        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        self.current_epoch = checkpoint.get("current_epoch", 0)
+
+        return checkpoint.get("month", "unknown")
 

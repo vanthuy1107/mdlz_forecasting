@@ -22,8 +22,8 @@ data:
     - "holiday_distance"
     - "days_since_last_holiday"
     - "days_to_next_holiday"
-    # - 'pre_tet'
-    # - 'post_tet'
+    - 'pre_tet'
+    - 'post_tet'
     - "month_sin"
     - "month_cos"
     - "dayofmonth_sin"
