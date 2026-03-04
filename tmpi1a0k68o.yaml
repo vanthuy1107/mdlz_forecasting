@@ -1,0 +1,124 @@
+data:
+  data_dir: ./dataset/data_cat
+  file_pattern: data_{year}.csv
+  years:
+  - 2024
+  - 2025
+  major_categories:
+  - DRY
+  minor_categories: null
+  use_residual_target: false
+  baseline_source_col: rolling_mean_30d
+  baseline_col: baseline_for_target
+  residual_col: target_residual
+  feature_cols:
+  - month_sin
+  - month_cos
+  - dayofmonth_sin
+  - dayofmonth_cos
+  - holiday_indicator
+  - days_until_next_holiday
+  - days_since_holiday
+  - is_weekend
+  - day_of_week_sin
+  - day_of_week_cos
+  - weekday_volume_tier
+  - is_high_volume_weekday
+  - Is_Monday
+  - days_until_month_end
+  - mid_month_peak_tier
+  - is_mid_month_peak
+  - days_to_mid_month_peak
+  - early_month_low_tier
+  - is_early_month_low
+  - is_first_5_days
+  - days_from_month_start
+  - post_peak_signal
+  - is_high_vol_weekday_AND_early_month
+  target_col: Total CBM
+  cat_col: CATEGORY
+  cat_id_col: CATEGORY_ID
+  time_col: ACTUALSHIPDATE
+  train_size: 0.7
+  val_size: 0.1
+  test_size: 0.2
+  seasonal_active_window: null
+  peak_event: null
+window:
+  input_size: 28
+  horizon: 30
+model:
+  name: RNNWithCategory
+  num_categories: null
+  cat_emb_dim: 5
+  input_dim: 15
+  hidden_size: 32
+  n_layers: 2
+  output_dim: 30
+  dropout_prob: 0.1
+  use_layer_norm: true
+training:
+  batch_size: 64
+  val_batch_size: 16
+  test_batch_size: 16
+  epochs: 100
+  learning_rate: 0.0003
+  optimizer: Adam
+  loss: MSE
+  scheduler:
+    name: ReduceLROnPlateau
+    mode: min
+    factor: 0.5
+    patience: 8
+    min_lr: 1.0e-05
+  log_interval: 5
+  device: cpu
+  weight_decay: 1e-5
+category_specific_params:
+  default:
+    learning_rate: 0.001
+    weight_decay: 1e-5
+    patience: 3
+    loss_weight: 1.0
+  DRY:
+    learning_rate: 0.0003
+    weight_decay: 1e-5
+    patience: 5
+    loss_weight: 1.0
+    monday_loss_weight: 6.0
+    wednesday_loss_weight: 4.0
+    friday_loss_weight: 4.0
+    use_asymmetric_penalty: true
+    over_pred_penalty: 0.65
+    under_pred_penalty: 1.15
+    apply_mean_error_constraint: true
+    mean_error_weight: 0.3
+    use_dynamic_early_month_weight: true
+    dynamic_early_month_base_weight: 100
+output:
+  output_dir: ./outputs/spike-anchored
+  save_model: true
+  model_dir: ./outputs/spike-anchored/models
+  visualize:
+    save_plots: true
+    show_plots: false
+inference:
+  n_samples_for_plot: 100
+  save_predictions: true
+  prediction_data_path: dataset/test/data_2026.csv
+  prediction_start: '2026-01-01'
+  prediction_end: '2026-01-31'
+special_case_override:
+  enabled: true
+  overrides:
+  - brand: AFC
+    days:
+    - 22
+    - 23
+    base: 0
+    multiplier: 1
+  - brand: SLIDE
+    days:
+    - 23
+    base: 0
+    multiplier: 1

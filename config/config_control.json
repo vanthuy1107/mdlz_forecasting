@@ -3,170 +3,5630 @@
     {
       "run_name": "Run_1_Baseline",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 50, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.8, "under_pred": 1.0, "monday_weight": 3.0, "mean_error_weight": 0.1 },
-      "data_scope": { "excluded_features": [] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 50,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 3.0,
+        "mean_error_weight": 0.1
+      },
+      "data_scope": {
+        "excluded_features": []
+      }
     },
     {
       "run_name": "Run_2_Reduce_Overpred",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 50, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.6, "under_pred": 1.0, "monday_weight": 3.0, "mean_error_weight": 0.1 },
-      "data_scope": { "excluded_features": [] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 50,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.6,
+        "under_pred": 1.0,
+        "monday_weight": 3.0,
+        "mean_error_weight": 0.1
+      },
+      "data_scope": {
+        "excluded_features": []
+      }
     },
     {
       "run_name": "Run_3_Feature_Tuning",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 50, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.5, "under_pred": 1.0, "monday_weight": 5.0, "mean_error_weight": 0.2 },
-      "data_scope": { "excluded_features": ["is_EOM"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 50,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.0,
+        "monday_weight": 5.0,
+        "mean_error_weight": 0.2
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM"
+        ]
+      }
     },
     {
       "run_name": "Run_4_Spike_Hunter",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.35, "under_pred": 1.0, "monday_weight": 5.5, "mean_error_weight": 0.25 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.35,
+        "under_pred": 1.0,
+        "monday_weight": 5.5,
+        "mean_error_weight": 0.25
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_5_Balanced_Final",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.65, "under_pred": 1.15, "monday_weight": 6.0, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.65,
+        "under_pred": 1.15,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_6_Extreme_Stability",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0002, "epochs": 120, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.75, "under_pred": 1.25, "monday_weight": 6.5, "mean_error_weight": 0.4 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days", "is_first_5_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 120,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.75,
+        "under_pred": 1.25,
+        "monday_weight": 6.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "is_first_5_days"
+        ]
+      }
     },
     {
       "run_name": "Run_7_Deep_Capacity",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 3, "dropout": 0.2 },
-      "train_params": { "lr": 0.0003, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.6, "under_pred": 1.2, "monday_weight": 6.0, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.6,
+        "under_pred": 1.2,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_8_Aggressive_Spike",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.2, "under_pred": 1.5, "monday_weight": 7.0, "mean_error_weight": 0.4 },
-      "data_scope": { "excluded_features": ["is_EOM"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.2,
+        "under_pred": 1.5,
+        "monday_weight": 7.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM"
+        ]
+      }
     },
     {
       "run_name": "Run_9_Minimalist_Feature",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.65, "under_pred": 1.15, "monday_weight": 5.0, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days", "is_first_5_days", "post_peak_signal"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.65,
+        "under_pred": 1.15,
+        "monday_weight": 5.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "is_first_5_days",
+          "post_peak_signal"
+        ]
+      }
     },
     {
       "run_name": "Run_10_Learning_Rate_Decay_Test",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.001, "epochs": 200, "batch_size": 32 },
-      "penalty_settings": { "over_pred": 0.65, "under_pred": 1.15, "monday_weight": 6.0, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.001,
+        "epochs": 200,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.65,
+        "under_pred": 1.15,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_11_The_Hybrid_Specialist",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.3, "under_pred": 1.4, "monday_weight": 6.5, "mean_error_weight": 0.35 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days", "is_first_5_days", "post_peak_signal"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.4,
+        "monday_weight": 6.5,
+        "mean_error_weight": 0.35
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "is_first_5_days",
+          "post_peak_signal"
+        ]
+      }
     },
     {
       "run_name": "Run_12_Monday_Extreme_Focus",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.6, "under_pred": 1.1, "monday_weight": 10.0, "mean_error_weight": 0.5 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.6,
+        "under_pred": 1.1,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_13_Spike_Recall_Max",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0002, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.15, "under_pred": 1.8, "monday_weight": 8.0, "mean_error_weight": 0.4 },
-      "data_scope": { "excluded_features": ["is_EOM"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.15,
+        "under_pred": 1.8,
+        "monday_weight": 8.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM"
+        ]
+      }
     },
     {
       "run_name": "Run_14_Bias_Correction_Balanced",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.8, "under_pred": 1.2, "monday_weight": 6.0, "mean_error_weight": 0.2 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_5_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.2,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.2
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_5_days"
+        ]
+      }
     },
     {
       "run_name": "Run_15_Wide_RNN_Capacity",
       "active": true,
-      "model_params": { "hidden_size": 64, "n_layers": 2, "dropout": 0.15 },
-      "train_params": { "lr": 0.0003, "epochs": 120, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.4, "under_pred": 1.3, "monday_weight": 7.0, "mean_error_weight": 0.35 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.15
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 120,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.4,
+        "under_pred": 1.3,
+        "monday_weight": 7.0,
+        "mean_error_weight": 0.35
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_16_Feature_Selection_Core",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.65, "under_pred": 1.15, "monday_weight": 6.0, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["holiday_indicator", "days_since_holiday", "is_EOM", "post_peak_signal"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.65,
+        "under_pred": 1.15,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "holiday_indicator",
+          "days_since_holiday",
+          "is_EOM",
+          "post_peak_signal"
+        ]
+      }
     },
     {
       "run_name": "Run_17_High_Precision_Decay",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0001, "epochs": 200, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.5, "under_pred": 1.2, "monday_weight": 6.5, "mean_error_weight": 0.4 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0001,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.2,
+        "monday_weight": 6.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_18_Deep_Reg_Dropout",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 3, "dropout": 0.3 },
-      "train_params": { "lr": 0.0003, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.35, "under_pred": 1.4, "monday_weight": 7.5, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["is_EOM"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 3,
+        "dropout": 0.3
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.35,
+        "under_pred": 1.4,
+        "monday_weight": 7.5,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM"
+        ]
+      }
     },
     {
       "run_name": "Run_19_Hybrid_Penalty_Mix",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.00025, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.25, "under_pred": 1.6, "monday_weight": 9.0, "mean_error_weight": 0.45 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days", "post_peak_signal"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.00025,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.25,
+        "under_pred": 1.6,
+        "monday_weight": 9.0,
+        "mean_error_weight": 0.45
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      }
     },
     {
       "run_name": "Run_20_Small_Batch_Generalization",
       "active": true,
-      "model_params": { "hidden_size": 32, "n_layers": 2, "dropout": 0.1 },
-      "train_params": { "lr": 0.0003, "epochs": 100, "batch_size": 16 },
-      "penalty_settings": { "over_pred": 0.65, "under_pred": 1.15, "monday_weight": 6.0, "mean_error_weight": 0.3 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days"] }
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 100,
+        "batch_size": 16
+      },
+      "penalty_settings": {
+        "over_pred": 0.65,
+        "under_pred": 1.15,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days"
+        ]
+      }
     },
     {
       "run_name": "Run_21_Champion_Candidate",
       "active": true,
-      "model_params": { "hidden_size": 48, "n_layers": 2, "dropout": 0.2 },
-      "train_params": { "lr": 0.0003, "epochs": 150, "batch_size": 64 },
-      "penalty_settings": { "over_pred": 0.3, "under_pred": 1.5, "monday_weight": 8.5, "mean_error_weight": 0.4 },
-      "data_scope": { "excluded_features": ["is_EOM", "is_first_3_days", "post_peak_signal"] }
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      }
+    },
+    {
+      "run_name": "Run_22_BiasBalance_v1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Equal penalty \u2014 test if ratio=1.0 fixes bias"
+    },
+    {
+      "run_name": "Run_23_BiasBalance_v2",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.2,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Inverted penalty \u2014 aggressively penalize overpred"
+    },
+    {
+      "run_name": "Run_24_BiasBalance_v3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.5,
+        "under_pred": 0.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Strongly inverted penalty"
+    },
+    {
+      "run_name": "Run_25_BiasBalance_v4",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Both penalties moderate and equal"
+    },
+    {
+      "run_name": "Run_26_BiasBalance_v5",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 0.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Both penalties low \u2014 near MSE behavior"
+    },
+    {
+      "run_name": "Run_27_MeanError_Heavy",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Double mean_error_weight to constrain bias explicitly"
+    },
+    {
+      "run_name": "Run_28_MeanError_VeryHeavy",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 1.2
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "mean_error_weight=1.2 \u2014 max constraint on bias"
+    },
+    {
+      "run_name": "Run_29_MeanError_Extreme",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 2.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "mean_error_weight=2.0 \u2014 test upper bound"
+    },
+    {
+      "run_name": "Run_30_SymmetricLoss",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Full symmetry + strong mean error constraint"
+    },
+    {
+      "run_name": "Run_31_NearMSE_Control",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.0,
+        "under_pred": 0.0,
+        "monday_weight": 0.0,
+        "mean_error_weight": 0.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Pure MSE baseline \u2014 zero custom weights"
+    },
+    {
+      "run_name": "Run_32_Monday_NoWeight",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 1.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday weight=1.0 \u2014 is special weighting hurting?"
+    },
+    {
+      "run_name": "Run_33_Monday_w4",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 4.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday weight=4.0 \u2014 gap between 3.0 and 5.5"
+    },
+    {
+      "run_name": "Run_34_Monday_w11",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 11.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday weight=11.0 \u2014 push beyond 10"
+    },
+    {
+      "run_name": "Run_35_Monday_w15",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 15.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday weight=15.0 \u2014 extreme Monday focus"
+    },
+    {
+      "run_name": "Run_36_Monday_w20",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 20.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday weight=20.0 \u2014 test ceiling effect"
+    },
+    {
+      "run_name": "Run_37_Monday_w8_Balanced",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday\u00d78.5 + balanced penalties"
+    },
+    {
+      "run_name": "Run_38_Monday_LargerModel",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Larger capacity for Monday pattern"
+    },
+    {
+      "run_name": "Run_39_Monday_MoreEpochs",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 300,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "More training time for Monday"
+    },
+    {
+      "run_name": "Run_40_WedFri_w6",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4,
+        "wednesday_weight": 6.0,
+        "friday_weight": 6.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Increase Wed/Fri weights (currently fixed at 4.0)"
+    },
+    {
+      "run_name": "Run_41_WedFri_w8_Mon12",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.4,
+        "wednesday_weight": 8.0,
+        "friday_weight": 8.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "All high-vol days boosted aggressively"
+    },
+    {
+      "run_name": "Run_42_Arch_Hidden16",
+      "active": true,
+      "model_params": {
+        "hidden_size": 16,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Very small model \u2014 can simple beat complex?"
+    },
+    {
+      "run_name": "Run_43_Arch_Hidden24",
+      "active": true,
+      "model_params": {
+        "hidden_size": 24,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Small model gap between 16 and 32"
+    },
+    {
+      "run_name": "Run_44_Arch_Hidden80",
+      "active": true,
+      "model_params": {
+        "hidden_size": 80,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Between 64 and 96"
+    },
+    {
+      "run_name": "Run_45_Arch_Hidden96",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Larger hidden"
+    },
+    {
+      "run_name": "Run_46_Arch_Hidden128",
+      "active": true,
+      "model_params": {
+        "hidden_size": 128,
+        "n_layers": 2,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Large model test"
+    },
+    {
+      "run_name": "Run_47_Arch_1Layer",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 1,
+        "dropout": 0.0
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Single layer RNN \u2014 simpler is better?"
+    },
+    {
+      "run_name": "Run_48_Arch_4Layer",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 4,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "4 layer deep RNN"
+    },
+    {
+      "run_name": "Run_49_Arch_Drop0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.0
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "No dropout \u2014 is it helping or hurting?"
+    },
+    {
+      "run_name": "Run_50_Arch_Drop05",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.05
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Very light dropout"
+    },
+    {
+      "run_name": "Run_51_Arch_Drop25",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Between 0.2 and 0.3"
+    },
+    {
+      "run_name": "Run_52_Arch_Drop40",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.4
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Heavy dropout \u2014 strong regularizer"
+    },
+    {
+      "run_name": "Run_53_Arch_Drop50",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.5
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Extreme dropout 0.5"
+    },
+    {
+      "run_name": "Run_54_Arch_Wide1Layer",
+      "active": true,
+      "model_params": {
+        "hidden_size": 128,
+        "n_layers": 1,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Wide shallow \u2014 single wide layer"
+    },
+    {
+      "run_name": "Run_55_Arch_Deep3_Large",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "3 layers with larger hidden"
+    },
+    {
+      "run_name": "Run_56_Arch_Slim3Layer",
+      "active": true,
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 3,
+        "dropout": 0.15
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "3 layers slim \u2014 compare depth vs width"
+    },
+    {
+      "run_name": "Run_57_LR_5e4",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0005,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR=5e-4 \u2014 gap between 3e-4 and 1e-3"
+    },
+    {
+      "run_name": "Run_58_LR_7e4",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0007,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR=7e-4"
+    },
+    {
+      "run_name": "Run_59_LR_1e3_Long",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.001,
+        "epochs": 300,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "High LR + longer training with same architecture"
+    },
+    {
+      "run_name": "Run_60_LR_1e4_Long",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0001,
+        "epochs": 300,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Low LR + long training"
+    },
+    {
+      "run_name": "Run_61_LR_5e5",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 5e-05,
+        "epochs": 300,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Very low LR \u2014 fine-grained convergence"
+    },
+    {
+      "run_name": "Run_62_BatchSize_8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 8
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Micro-batch 8 \u2014 noisy gradient for escaping local minima"
+    },
+    {
+      "run_name": "Run_63_BatchSize_32",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Batch 32 \u2014 between 16 and 64"
+    },
+    {
+      "run_name": "Run_64_BatchSize_128",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0005,
+        "epochs": 150,
+        "batch_size": 128
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Large batch 128"
+    },
+    {
+      "run_name": "Run_65_LR_Warmup_Cosine",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Conceptual: use CosineAnnealingLR instead of ReduceLR"
+    },
+    {
+      "run_name": "Run_66_LR_Cyclic",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.001,
+        "epochs": 200,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "High LR + small batch \u2014 cyclic-like training"
+    },
+    {
+      "run_name": "Run_67_Feat_RemoveWeakPair",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak",
+          "is_high_vol_weekday_AND_early_month"
+        ]
+      },
+      "_note": "Remove both low-impact features"
+    },
+    {
+      "run_name": "Run_68_Feat_RemoveMidPeak",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak"
+        ]
+      },
+      "_note": "Remove is_mid_month_peak (impact=1.025)"
+    },
+    {
+      "run_name": "Run_69_Feat_RemoveInteraction",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_high_vol_weekday_AND_early_month"
+        ]
+      },
+      "_note": "Remove weak interaction feature"
+    },
+    {
+      "run_name": "Run_70_Feat_RemoveWeekdayTier",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "weekday_volume_tier"
+        ]
+      },
+      "_note": "Remove weekday tier (redundant with sin/cos?)"
+    },
+    {
+      "run_name": "Run_71_Feat_CoreOnly",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak",
+          "is_high_vol_weekday_AND_early_month",
+          "weekday_volume_tier",
+          "is_first_5_days"
+        ]
+      },
+      "_note": "Aggressive feature reduction \u2014 core temporal only"
+    },
+    {
+      "run_name": "Run_72_Feat_NoHoliday",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "holiday_indicator",
+          "days_until_next_holiday",
+          "days_since_holiday"
+        ]
+      },
+      "_note": "Remove all holiday features"
+    },
+    {
+      "run_name": "Run_73_Feat_NoEarlyMonth",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "early_month_low_tier",
+          "is_early_month_low",
+          "is_first_5_days"
+        ]
+      },
+      "_note": "Remove all early-month features"
+    },
+    {
+      "run_name": "Run_74_Feat_NoMidMonth",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "mid_month_peak_tier",
+          "is_mid_month_peak",
+          "days_to_mid_month_peak"
+        ]
+      },
+      "_note": "Remove all mid-month features"
+    },
+    {
+      "run_name": "Run_75_Feat_OnlyCyclic",
+      "active": true,
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak",
+          "is_high_vol_weekday_AND_early_month",
+          "weekday_volume_tier",
+          "is_high_volume_weekday",
+          "Is_Monday",
+          "is_weekend",
+          "holiday_indicator",
+          "days_until_next_holiday",
+          "days_since_holiday",
+          "early_month_low_tier",
+          "is_early_month_low",
+          "is_first_5_days",
+          "mid_month_peak_tier",
+          "days_to_mid_month_peak",
+          "days_from_month_start",
+          "days_until_month_end"
+        ]
+      },
+      "_note": "Only cyclic sin/cos features + is_first_5_days"
+    },
+    {
+      "run_name": "Run_76_Feat_NoIsMonday",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "Is_Monday"
+        ]
+      },
+      "_note": "Remove Is_Monday flag (day_of_week_sin/cos already encodes it)"
+    },
+    {
+      "run_name": "Run_77_Feat_NoWeekend",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_weekend"
+        ]
+      },
+      "_note": "Remove is_weekend (redundant with dow sin/cos)"
+    },
+    {
+      "run_name": "Run_78_Feat_NoHighVol",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_high_volume_weekday",
+          "weekday_volume_tier"
+        ]
+      },
+      "_note": "Remove both high-volume weekday features"
+    },
+    {
+      "run_name": "Run_79_Feat_MinimalSet12",
+      "active": true,
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak",
+          "is_high_vol_weekday_AND_early_month",
+          "weekday_volume_tier",
+          "is_high_volume_weekday",
+          "is_weekend",
+          "is_early_month_low",
+          "early_month_low_tier"
+        ]
+      },
+      "_note": "Minimal 12-feature set + balanced penalty"
+    },
+    {
+      "run_name": "Run_80_Feat_AllIn",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": []
+      },
+      "_note": "Use ALL features including EOM, first_3_days, post_peak_signal"
+    },
+    {
+      "run_name": "Run_81_Feat_MaxExclusion",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak",
+          "is_high_vol_weekday_AND_early_month",
+          "weekday_volume_tier",
+          "is_high_volume_weekday",
+          "Is_Monday",
+          "is_weekend",
+          "is_early_month_low",
+          "early_month_low_tier",
+          "is_first_5_days"
+        ]
+      },
+      "_note": "Maximum feature removal \u2014 stress test"
+    },
+    {
+      "run_name": "Run_82_Spike_PrecisionFocus",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Test spike threshold 0.9x \u2014 reduce false positives"
+    },
+    {
+      "run_name": "Run_83_Spike_Conservative",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.3
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Balanced + heavy reg \u2014 force conservative predictions"
+    },
+    {
+      "run_name": "Run_84_Spike_F1Optimal",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.2,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Moderate asymmetry \u2014 optimize F1 balance"
+    },
+    {
+      "run_name": "Run_85_Spike_HighRecall",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.1,
+        "under_pred": 2.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Push recall even higher \u2014 test if precision drops further"
+    },
+    {
+      "run_name": "Run_86_Spike_HiddenLarge",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Larger model for spike distinction"
+    },
+    {
+      "run_name": "Run_87_Spike_3Layer_v2",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "3-layer for spike: more temporal depth"
+    },
+    {
+      "run_name": "Run_88_Spike_SmallBatch",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 16
+      },
+      "penalty_settings": {
+        "over_pred": 0.2,
+        "under_pred": 1.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Small batch + aggressive spike penalty"
+    },
+    {
+      "run_name": "Run_89_Spike_MEW_Zero",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Disable mean_error_weight \u2014 test its contribution to spike behavior"
+    },
+    {
+      "run_name": "Run_90_Spike_Under2p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.2,
+        "under_pred": 2.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "under_pred=2.0 \u2014 beyond current max of 1.8"
+    },
+    {
+      "run_name": "Run_91_Spike_Under2p5",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.1,
+        "under_pred": 2.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "under_pred=2.5 \u2014 extreme spike hunt with bias control"
+    },
+    {
+      "run_name": "Run_92_Combo_BiasArch_v1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Best arch \u00d7 best bias settings"
+    },
+    {
+      "run_name": "Run_93_Combo_BiasArch_v2",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Symmetric loss + larger model"
+    },
+    {
+      "run_name": "Run_94_Combo_BiasArch_v3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Large model + small batch + bias fix"
+    },
+    {
+      "run_name": "Run_95_Combo_SpikeBias",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.5,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Balanced spike + bias + deep model"
+    },
+    {
+      "run_name": "Run_96_Combo_Monday_Bias",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 200,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.7
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Monday focus + bias fix combined"
+    },
+    {
+      "run_name": "Run_97_Combo_AllFix",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal",
+          "is_mid_month_peak",
+          "is_high_vol_weekday_AND_early_month"
+        ]
+      },
+      "_note": "All fixes combined: bias + Monday + feature cleanup"
+    },
+    {
+      "run_name": "Run_98_Combo_Conservative",
+      "active": true,
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.15
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Conservative: small model + symmetric loss"
+    },
+    {
+      "run_name": "Run_99_Combo_Aggressive",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 3,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 250,
+        "batch_size": 32
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Aggressive: large model + spike focus + long training"
+    },
+    {
+      "run_name": "Run_100_Combo_HiddenDrop",
+      "active": true,
+      "model_params": {
+        "hidden_size": 80,
+        "n_layers": 2,
+        "dropout": 0.3
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.2,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Medium-large + high dropout combo"
+    },
+    {
+      "run_name": "Run_101_Combo_LRArch",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0005,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.2,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Higher LR + larger model"
+    },
+    {
+      "run_name": "Run_102_PenaltyGrid_over10_under10",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=1.0"
+    },
+    {
+      "run_name": "Run_103_PenaltyGrid_over09_under11",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.9,
+        "under_pred": 1.1,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=1.22"
+    },
+    {
+      "run_name": "Run_104_PenaltyGrid_over07_under11",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.7,
+        "under_pred": 1.1,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=1.57"
+    },
+    {
+      "run_name": "Run_105_PenaltyGrid_over06_under12",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.6,
+        "under_pred": 1.2,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=2.0"
+    },
+    {
+      "run_name": "Run_106_PenaltyGrid_over05_under15",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=3.0"
+    },
+    {
+      "run_name": "Run_107_PenaltyGrid_over04_under15",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.4,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=3.75"
+    },
+    {
+      "run_name": "Run_108_PenaltyGrid_over03_under18",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=6.0"
+    },
+    {
+      "run_name": "Run_109_PenaltyGrid_over02_under18",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.2,
+        "under_pred": 1.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=9.0"
+    },
+    {
+      "run_name": "Run_110_PenaltyGrid_over01_under20",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.1,
+        "under_pred": 2.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=20.0"
+    },
+    {
+      "run_name": "Run_111_PenaltyGrid_over12_under08",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.2,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Systematic penalty grid: ratio=0.67"
+    },
+    {
+      "run_name": "Run_112_MEW_sweep_0p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=0.0"
+    },
+    {
+      "run_name": "Run_113_MEW_sweep_0p1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.1
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=0.1"
+    },
+    {
+      "run_name": "Run_114_MEW_sweep_0p2",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.2
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=0.2"
+    },
+    {
+      "run_name": "Run_115_MEW_sweep_0p3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.3
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=0.3"
+    },
+    {
+      "run_name": "Run_116_MEW_sweep_0p5",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=0.5"
+    },
+    {
+      "run_name": "Run_117_MEW_sweep_0p7",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.7
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=0.7"
+    },
+    {
+      "run_name": "Run_118_MEW_sweep_1p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 1.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=1.0"
+    },
+    {
+      "run_name": "Run_119_MEW_sweep_1p5",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 1.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=1.5"
+    },
+    {
+      "run_name": "Run_120_MEW_sweep_2p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 2.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=2.0"
+    },
+    {
+      "run_name": "Run_121_MEW_sweep_3p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 3.0
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "MEW systematic sweep: mean_error_weight=3.0"
+    },
+    {
+      "run_name": "Run_122_WeightDecay_0p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.0
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.0 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_123_WeightDecay_1en06",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 1e-06
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=1e-06 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_124_WeightDecay_5en06",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 5e-06
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=5e-06 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_125_WeightDecay_5en05",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 5e-05
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=5e-05 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_126_WeightDecay_0p0001",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.0001
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.0001 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_127_WeightDecay_0p0005",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.0005
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.0005 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_128_WeightDecay_0p001",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.001
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.001 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_129_WeightDecay_0p01",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.01
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.01 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_130_WeightDecay_0p1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.1
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.1 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_131_WeightDecay_0p5",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64,
+        "weight_decay": 0.5
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "weight_decay=0.5 \u2014 ch\u01b0a \u0111\u01b0\u1ee3c explore"
+    },
+    {
+      "run_name": "Run_132_WindowSize_7",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=7 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_133_WindowSize_14",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=14 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_134_WindowSize_21",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=21 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_135_WindowSize_35",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=35 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_136_WindowSize_42",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=42 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_137_WindowSize_56",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=56 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_138_WindowSize_14",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=14 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_139_WindowSize_21",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=21 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_140_WindowSize_28",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=28 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_141_WindowSize_42",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "input_size=42 \u2014 test lookback window"
+    },
+    {
+      "run_name": "Run_142_Horizon_7",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "output horizon=7 days"
+    },
+    {
+      "run_name": "Run_143_Horizon_14",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "output horizon=14 days"
+    },
+    {
+      "run_name": "Run_144_Horizon_21",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "output horizon=21 days"
+    },
+    {
+      "run_name": "Run_145_Horizon_45",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "output horizon=45 days"
+    },
+    {
+      "run_name": "Run_146_Horizon_60",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "output horizon=60 days"
+    },
+    {
+      "run_name": "Run_147_EmbDim_1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2,
+        "cat_emb_dim": 1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "cat_emb_dim=1"
+    },
+    {
+      "run_name": "Run_148_EmbDim_2",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2,
+        "cat_emb_dim": 2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "cat_emb_dim=2"
+    },
+    {
+      "run_name": "Run_149_EmbDim_3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2,
+        "cat_emb_dim": 3
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "cat_emb_dim=3"
+    },
+    {
+      "run_name": "Run_150_EmbDim_8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2,
+        "cat_emb_dim": 8
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "cat_emb_dim=8"
+    },
+    {
+      "run_name": "Run_151_EmbDim_10",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2,
+        "cat_emb_dim": 10
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.3,
+        "under_pred": 1.5,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "cat_emb_dim=10"
+    },
+    {
+      "run_name": "Run_152_PenFine_over0p9_under1p1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.9,
+        "under_pred": 1.1,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.9, under=1.1, ratio=1.22"
+    },
+    {
+      "run_name": "Run_153_PenFine_over0p85_under1p05",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.85,
+        "under_pred": 1.05,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.85, under=1.05, ratio=1.24"
+    },
+    {
+      "run_name": "Run_154_PenFine_over0p75_under1p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.75,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.75, under=1.0, ratio=1.33"
+    },
+    {
+      "run_name": "Run_155_PenFine_over0p7_under1p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.7,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.7, under=1.0, ratio=1.43"
+    },
+    {
+      "run_name": "Run_156_PenFine_over0p65_under1p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.65,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.65, under=1.0, ratio=1.54"
+    },
+    {
+      "run_name": "Run_157_PenFine_over0p6_under1p0",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.6,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.6, under=1.0, ratio=1.67"
+    },
+    {
+      "run_name": "Run_158_PenFine_over1p1_under0p9",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.1,
+        "under_pred": 0.9,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=1.1, under=0.9, ratio=0.82"
+    },
+    {
+      "run_name": "Run_159_PenFine_over1p3_under0p7",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.3,
+        "under_pred": 0.7,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=1.3, under=0.7, ratio=0.54"
+    },
+    {
+      "run_name": "Run_160_PenFine_over1p0_under0p8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=1.0, under=0.8, ratio=0.8"
+    },
+    {
+      "run_name": "Run_161_PenFine_over0p9_under0p9",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.9,
+        "under_pred": 0.9,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.9, under=0.9, ratio=1.0"
+    },
+    {
+      "run_name": "Run_162_PenFine_over0p8_under1p1",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.1,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.8, under=1.1, ratio=1.38"
+    },
+    {
+      "run_name": "Run_163_PenFine_over0p7_under1p2",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.7,
+        "under_pred": 1.2,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.7, under=1.2, ratio=1.71"
+    },
+    {
+      "run_name": "Run_164_PenFine_over0p6_under1p3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.6,
+        "under_pred": 1.3,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.6, under=1.3, ratio=2.17"
+    },
+    {
+      "run_name": "Run_165_PenFine_over0p5_under1p3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.5,
+        "under_pred": 1.3,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.5, under=1.3, ratio=2.6"
+    },
+    {
+      "run_name": "Run_166_PenFine_over0p4_under1p3",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.4,
+        "under_pred": 1.3,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.4
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Fine-tune penalty: over=0.4, under=1.3, ratio=3.25"
+    },
+    {
+      "run_name": "Run_167_MonMEW_mon6p0_mew0p6",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=6.0 \u00d7 mean_error_weight=0.6"
+    },
+    {
+      "run_name": "Run_168_MonMEW_mon8p5_mew0p6",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=8.5 \u00d7 mean_error_weight=0.6"
+    },
+    {
+      "run_name": "Run_169_MonMEW_mon10p0_mew0p6",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=10.0 \u00d7 mean_error_weight=0.6"
+    },
+    {
+      "run_name": "Run_170_MonMEW_mon6p0_mew0p8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 6.0,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=6.0 \u00d7 mean_error_weight=0.8"
+    },
+    {
+      "run_name": "Run_171_MonMEW_mon8p5_mew0p8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=8.5 \u00d7 mean_error_weight=0.8"
+    },
+    {
+      "run_name": "Run_172_MonMEW_mon10p0_mew0p8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=10.0 \u00d7 mean_error_weight=0.8"
+    },
+    {
+      "run_name": "Run_173_MonMEW_mon12p0_mew0p6",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=12.0 \u00d7 mean_error_weight=0.6"
+    },
+    {
+      "run_name": "Run_174_MonMEW_mon12p0_mew0p8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=12.0 \u00d7 mean_error_weight=0.8"
+    },
+    {
+      "run_name": "Run_175_MonMEW_mon15p0_mew0p6",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 15.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=15.0 \u00d7 mean_error_weight=0.6"
+    },
+    {
+      "run_name": "Run_176_MonMEW_mon15p0_mew0p8",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 15.0,
+        "mean_error_weight": 0.8
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Joint grid: monday_weight=15.0 \u00d7 mean_error_weight=0.8"
+    },
+    {
+      "run_name": "Run_177_ArchPen_Small_Sym",
+      "active": true,
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Small_Sym"
+    },
+    {
+      "run_name": "Run_178_ArchPen_Mid_Sym",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Mid_Sym"
+    },
+    {
+      "run_name": "Run_179_ArchPen_Large_Sym",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Large_Sym"
+    },
+    {
+      "run_name": "Run_180_ArchPen_XLarge_Sym",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: XLarge_Sym"
+    },
+    {
+      "run_name": "Run_181_ArchPen_Small_Inv",
+      "active": true,
+      "model_params": {
+        "hidden_size": 32,
+        "n_layers": 2,
+        "dropout": 0.1
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.2,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Small_Inv"
+    },
+    {
+      "run_name": "Run_182_ArchPen_Mid_Inv",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.2,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Mid_Inv"
+    },
+    {
+      "run_name": "Run_183_ArchPen_Large_Inv",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.2,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Large_Inv"
+    },
+    {
+      "run_name": "Run_184_ArchPen_XLarge_Inv",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.2,
+        "under_pred": 0.8,
+        "monday_weight": 8.5,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: XLarge_Inv"
+    },
+    {
+      "run_name": "Run_185_ArchPen_Deep3_Sym",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Deep3_Sym"
+    },
+    {
+      "run_name": "Run_186_ArchPen_Deep3Large_Sym",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 1.0,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Deep3Large_Sym"
+    },
+    {
+      "run_name": "Run_187_ArchPen_Mid_HiDrop_Balanced",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.3
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Mid_HiDrop_Balanced"
+    },
+    {
+      "run_name": "Run_188_ArchPen_Large_HiDrop_Balanced",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.3
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.6
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Large_HiDrop_Balanced"
+    },
+    {
+      "run_name": "Run_189_ArchPen_Mid_Mon12_MEW07",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.7
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Mid_Mon12_MEW07"
+    },
+    {
+      "run_name": "Run_190_ArchPen_Large_Mon12_MEW07",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.7
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: Large_Mon12_MEW07"
+    },
+    {
+      "run_name": "Run_191_ArchPen_XLarge_Deep3_Mon12",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 3,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 12.0,
+        "mean_error_weight": 0.7
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "Architecture \u00d7 penalty combo: XLarge_Deep3_Mon12"
+    },
+    {
+      "run_name": "Run_192_LRArch_h64l2_lr0p0001",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0001,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0001, hidden=64, layers=2"
+    },
+    {
+      "run_name": "Run_193_LRArch_h64l2_lr0p0002",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0002, hidden=64, layers=2"
+    },
+    {
+      "run_name": "Run_194_LRArch_h64l2_lr0p0005",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0005,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0005, hidden=64, layers=2"
+    },
+    {
+      "run_name": "Run_195_LRArch_h96l2_lr0p0001",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0001,
+        "epochs": 250,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0001, hidden=96, layers=2"
+    },
+    {
+      "run_name": "Run_196_LRArch_h96l2_lr0p0002",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0002, hidden=96, layers=2"
+    },
+    {
+      "run_name": "Run_197_LRArch_h96l2_lr0p0003",
+      "active": true,
+      "model_params": {
+        "hidden_size": 96,
+        "n_layers": 2,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 150,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0003, hidden=96, layers=2"
+    },
+    {
+      "run_name": "Run_198_LRArch_h48l3_lr0p0001",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0001,
+        "epochs": 250,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0001, hidden=48, layers=3"
+    },
+    {
+      "run_name": "Run_199_LRArch_h48l3_lr0p0002",
+      "active": true,
+      "model_params": {
+        "hidden_size": 48,
+        "n_layers": 3,
+        "dropout": 0.2
+      },
+      "train_params": {
+        "lr": 0.0002,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0002, hidden=48, layers=3"
+    },
+    {
+      "run_name": "Run_200_LRArch_h64l3_lr0p0003",
+      "active": true,
+      "model_params": {
+        "hidden_size": 64,
+        "n_layers": 3,
+        "dropout": 0.25
+      },
+      "train_params": {
+        "lr": 0.0003,
+        "epochs": 200,
+        "batch_size": 64
+      },
+      "penalty_settings": {
+        "over_pred": 0.8,
+        "under_pred": 1.0,
+        "monday_weight": 10.0,
+        "mean_error_weight": 0.5
+      },
+      "data_scope": {
+        "excluded_features": [
+          "is_EOM",
+          "is_first_3_days",
+          "post_peak_signal"
+        ]
+      },
+      "_note": "LR\u00d7Arch grid: lr=0.0003, hidden=64, layers=3"
     }
   ]
 }

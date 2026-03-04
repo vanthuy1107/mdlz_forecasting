@@ -1349,7 +1349,34 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
     print(f"    - Mean: {test_target_before_scaling.mean():.4f}")
     print(f"    - Non-zero count: {np.sum(test_target_before_scaling != 0)} / {len(test_target_before_scaling)}")
     print(f"    - Zero count: {np.sum(test_target_before_scaling == 0)} / {len(test_target_before_scaling)}")
-    
+
+    # ------------------------------------------------------------------
+    # Feature correlation with target ("Total CBM") on TRAINING set only
+    # ------------------------------------------------------------------
+    try:
+        feature_cols_for_corr = [
+            c for c in data_config.get("feature_cols", []) if c in train_data.columns
+        ]
+        target_for_corr = train_data[target_col_name].astype(float)
+        feature_correlations = {}
+        for fname in feature_cols_for_corr:
+            series = train_data[fname].astype(float)
+            # Skip constant features to avoid NaN correlations
+            if series.nunique(dropna=True) <= 1:
+                corr_val = 0.0
+            else:
+                corr_val = float(series.corr(target_for_corr))
+            feature_correlations[fname] = corr_val
+
+        correlations_path = os.path.join(
+            mvp_output_dir, f"{category_filter}_feature_target_correlations.json"
+        )
+        with open(correlations_path, "w", encoding="utf-8") as f:
+            json.dump(feature_correlations, f, ensure_ascii=False, indent=2)
+        print(f"  - Saved feature/target correlations to: {correlations_path}")
+    except Exception as e:
+        print(f"  - WARNING: Failed to compute feature correlations: {e}")
+
     # Fit scaler on training data and apply to all splits
     # CRITICAL: Scaler is category-specific because train_data is already filtered to category_filter
     # This ensures FRESH data is scaled independently from DRY/TET, preserving signal intensity
@@ -2273,7 +2300,7 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
         pickle.dump(scaler, f)
     print(f"  - Scaler saved to: {scaler_path}")
     
-    # Evaluate on test set
+    # Evaluate on test / train / validation sets
     print("\n" + "=" * 80)
     print("EVALUATION")
     print("=" * 80)
@@ -2284,6 +2311,19 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
     )
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test samples: {len(y_true)}")
+
+    # Also evaluate on training and validation sets so we can emit
+    # detailed prediction/residual outputs for all splits.
+    train_loss_eval, y_train, y_train_pred = trainer.evaluate(
+        train_loader,
+        return_predictions=True
+    )
+    print(f"Train loss (eval): {train_loss_eval:.4f}, samples: {len(y_train)}")
+    val_loss_eval, y_val, y_val_pred = trainer.evaluate(
+        val_loader,
+        return_predictions=True
+    )
+    print(f"Val loss (eval): {val_loss_eval:.4f}, samples: {len(y_val)}")
     
     # Calculate quantile coverage if using quantile loss (primary metric for P90)
     if loss_function_name == "quantile":
@@ -2356,31 +2396,35 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
     print(f"    - Non-zero count: {np.sum(y_true != 0)} / {len(y_true)}")
     print(f"    - Zero count: {np.sum(y_true == 0)} / {len(y_true)}")
     
-    # CRITICAL: Inverse transform predictions and true values back to original scale
+    # CRITICAL: Inverse transform TEST predictions and true values back to original scale
     # For direct multi-step forecasting, y_true and y_pred have shape (N_samples, horizon)
     # We need to flatten them for inverse transform, then reshape back if needed
-    print("  - Inverse transforming predictions to supervised target scale...")
+    print("  - Inverse transforming TEST predictions to supervised target scale...")
     print(f"  - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
-    
+
     # Flatten for inverse transform (StandardScaler expects 1D or 2D with single feature)
-    y_true_flat = y_true.reshape(-1, 1) if y_true.ndim > 1 else y_true.reshape(-1, 1)
-    y_pred_flat = y_pred.reshape(-1, 1) if y_pred.ndim > 1 else y_pred.reshape(-1, 1)
-    
-    y_true_supervised_flat = inverse_transform_scaling(y_true_flat, scaler, target_col=target_col_for_model)
-    y_pred_supervised_flat = inverse_transform_scaling(y_pred_flat, scaler, target_col=target_col_for_model)
-    
+    y_true_flat = y_true.reshape(-1, 1)
+    y_pred_flat = y_pred.reshape(-1, 1)
+
+    y_true_supervised_flat = inverse_transform_scaling(
+        y_true_flat, scaler, target_col=target_col_for_model
+    )
+    y_pred_supervised_flat = inverse_transform_scaling(
+        y_pred_flat, scaler, target_col=target_col_for_model
+    )
+
     # Reshape back to (N_samples, horizon) if multi-step
     if y_true.ndim > 1:
         y_true_supervised = y_true_supervised_flat.reshape(y_true.shape)
         y_pred_supervised = y_pred_supervised_flat.reshape(y_pred.shape)
     else:
-        y_true_supervised = y_true_supervised_flat
-        y_pred_supervised = y_pred_supervised_flat
+        y_true_supervised = y_true_supervised_flat.reshape(-1)
+        y_pred_supervised = y_pred_supervised_flat.reshape(-1)
 
     # If residual learning is enabled, reconstruct absolute Total CBM by
     # adding back the baseline that was subtracted during target creation.
     if use_residual and y_test_baseline is not None:
-        print("  - Reconstructing absolute Total CBM from residuals + baseline...")
+        print("  - Reconstructing absolute Total CBM from residuals + baseline (TEST split)...")
         baseline_flat = y_test_baseline.reshape(-1)
         y_true_resid_flat = y_true_supervised.reshape(-1)
         y_pred_resid_flat = y_pred_supervised.reshape(-1)
@@ -2393,8 +2437,8 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
         y_true_original = y_true_supervised.reshape(-1)
         y_pred_original = y_pred_supervised.reshape(-1)
     
-    # DEBUG: Check y_true_original values (should be in original scale)
-    print("  - DEBUG: Checking y_true_original values (after inverse transform):")
+    # DEBUG: Check y_true_original values (should be in original scale, TEST split)
+    print("  - DEBUG: Checking y_true_original values for TEST split (after inverse transform):")
     print(f"    - Min: {y_true_original.min():.4f}")
     print(f"    - Max: {y_true_original.max():.4f}")
     print(f"    - Mean: {y_true_original.mean():.4f}")
@@ -2502,8 +2546,9 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
     # Ensure category_mapping keys are strings (JSON serializable)
     category_mapping = {str(k): int(v) for k, v in cat2id.items()}
     # --- Segmented error analysis (spike vs non-spike, weekday, prediction bias) ---
-    y_true_flat = y_true_original.reshape(-1) if y_true_original.ndim > 1 else y_true_original
-    y_pred_flat = y_pred_original.reshape(-1) if y_pred_original.ndim > 1 else y_pred_original
+    # NOTE: This analysis is based on TEST split.
+    y_true_flat = y_true_original.reshape(-1) if np.ndim(y_true_original) > 1 else y_true_original
+    y_pred_flat = y_pred_original.reshape(-1) if np.ndim(y_pred_original) > 1 else y_pred_original
     test_start_idx = len(train_data) + len(val_data)
     test_end_idx = test_start_idx + len(test_dataset)
     test_data_subset_meta = filtered_data.iloc[test_start_idx:test_end_idx]
@@ -2530,6 +2575,154 @@ def train_single_model(data, config, category_filter, output_suffix="", run_name
                 dow_list.append(-1)
         day_of_week_arr = np.array(dow_list)
     segmented = calculate_segmented_metrics(y_true_flat, y_pred_flat, day_of_week=day_of_week_arr)
+
+    # ------------------------------------------------------------------
+    # Detailed prediction outputs & residual time series (TEST split)
+    # ------------------------------------------------------------------
+    print("  - Building detailed prediction outputs and residual time series (TEST split)...")
+
+    # Recreate 2D arrays for TEST from shapes of y_true/y_pred (window, horizon)
+    if y_true.ndim > 1:
+        test_n_windows, test_horizon = y_true.shape
+        y_true_test_2d = y_true_original.reshape(test_n_windows, test_horizon)
+        y_pred_test_2d = y_pred_original.reshape(test_n_windows, test_horizon)
+    else:
+        y_true_test_2d = y_true_original.reshape(-1, 1)
+        y_pred_test_2d = y_pred_original.reshape(-1, 1)
+
+    def _build_test_rows(y_true_2d, y_pred_2d, data_subset):
+        """Create per-window, per-horizon rows with dates for TEST split."""
+        n_windows, hor = y_true_2d.shape
+        rows = []
+        for i in range(n_windows):
+            if i < len(data_subset):
+                start_dt = pd.to_datetime(data_subset.iloc[i][time_col])
+            else:
+                start_dt = None
+
+            for h_idx in range(hor):
+                if start_dt is not None:
+                    pred_dt = start_dt + pd.Timedelta(days=h_idx + 1)
+                else:
+                    pred_dt = pd.NaT
+
+                rows.append(
+                    {
+                        "date": pred_dt.normalize() if pd.notnull(pred_dt) else None,
+                        "y_true": float(y_true_2d[i, h_idx]),
+                        "y_pred": float(y_pred_2d[i, h_idx]),
+                        "split": "test",
+                        "horizon_step": int(h_idx + 1),
+                        "window_id": int(i),
+                    }
+                )
+        return rows
+
+    all_rows = _build_test_rows(y_true_test_2d, y_pred_test_2d, test_data_subset_meta)
+
+    if all_rows:
+        predictions_df = pd.DataFrame(all_rows)
+        predictions_df = predictions_df[predictions_df["date"].notna()].copy()
+
+        # Residuals and basic date-derived columns
+        predictions_df["residual"] = predictions_df["y_pred"] - predictions_df["y_true"]
+        predictions_df["weekday"] = predictions_df["date"].dt.weekday
+        predictions_df["month"] = predictions_df["date"].dt.month
+
+        # Spike threshold based on TRAIN y_true distribution if available, else all data
+        if (predictions_df["split"] == "train").any():
+            spike_threshold = float(
+                predictions_df.loc[predictions_df["split"] == "train", "y_true"].quantile(0.8)
+            )
+        else:
+            spike_threshold = float(predictions_df["y_true"].quantile(0.8))
+        predictions_df["is_spike"] = predictions_df["y_true"] > spike_threshold
+
+        # Heuristic spike_reason based on original feature flags per date
+        try:
+            fd = filtered_data.copy()
+            fd_dates = pd.to_datetime(fd[time_col]).dt.normalize()
+            reason_candidates = []
+            for _, row_fd in fd.iterrows():
+                reason = None
+                if "holiday_indicator" in fd.columns and row_fd.get("holiday_indicator", 0) == 1:
+                    reason = "holiday_effect"
+                if "is_pre_holiday_surge" in fd.columns and row_fd.get("is_pre_holiday_surge", 0) == 1:
+                    reason = "holiday_effect"
+                if "is_EOM" in fd.columns and row_fd.get("is_EOM", 0) == 1:
+                    # Prefer explicit EOM rush label if present
+                    reason = "EOM_rush"
+                reason_candidates.append(reason)
+            fd["spike_reason_candidate"] = reason_candidates
+            reason_map = (
+                fd.groupby(fd_dates)["spike_reason_candidate"]
+                .agg(lambda x: next((r for r in x if isinstance(r, str) and r), None))
+            )
+            predictions_df = predictions_df.merge(
+                reason_map.rename("spike_reason"),
+                left_on=predictions_df["date"].dt.normalize(),
+                right_index=True,
+                how="left",
+            )
+            # Only keep a reason where the point is actually a spike
+            predictions_df["spike_reason"] = predictions_df["spike_reason"].where(
+                predictions_df["is_spike"], None
+            )
+        except Exception as e:
+            print(f"  - WARNING: Failed to attach spike_reason heuristics: {e}")
+            predictions_df["spike_reason"] = None
+
+        # 1) Save full predictions output file
+        predictions_path = os.path.join(
+            mvp_output_dir, f"{category_filter}_predictions_detailed.csv"
+        )
+        predictions_df.to_csv(predictions_path, index=False)
+        print(f"  - Saved detailed predictions to: {predictions_path}")
+
+        # 2) Spike labels (per date, per split)
+        spike_labels_df = (
+            predictions_df.groupby(["date", "split"], as_index=False)
+            .agg(
+                is_spike=("is_spike", "any"),
+                spike_reason=("spike_reason", lambda x: next(
+                    (r for r in x if isinstance(r, str) and r), None
+                )),
+            )
+        )
+        spike_labels_path = os.path.join(
+            mvp_output_dir, f"{category_filter}_spike_labels.csv"
+        )
+        spike_labels_df.to_csv(spike_labels_path, index=False)
+        print(f"  - Saved spike labels to: {spike_labels_path}")
+
+        # 3) Per-horizon error breakdown across all windows/splits
+        per_horizon_errors = []
+        for h in sorted(predictions_df["horizon_step"].unique()):
+            subset = predictions_df[predictions_df["horizon_step"] == h]
+            if len(subset) == 0:
+                continue
+            err = subset["y_pred"] - subset["y_true"]
+            mae_h = float(np.mean(np.abs(err)))
+            rmse_h = float(np.sqrt(np.mean(err**2)))
+            per_horizon_errors.append(
+                {"horizon_step": int(h), "mae": mae_h, "rmse": rmse_h}
+            )
+        horizon_errors_path = os.path.join(
+            mvp_output_dir, f"{category_filter}_per_horizon_errors.json"
+        )
+        with open(horizon_errors_path, "w", encoding="utf-8") as f:
+            json.dump(per_horizon_errors, f, ensure_ascii=False, indent=2)
+        print(f"  - Saved per-horizon error breakdown to: {horizon_errors_path}")
+
+        # 4) Residuals time series (date, residual, weekday, month, is_spike, split)
+        residuals_df = predictions_df[
+            ["date", "residual", "weekday", "month", "is_spike", "split"]
+        ].copy()
+        residuals_path = os.path.join(
+            mvp_output_dir, f"{category_filter}_residuals_timeseries.csv"
+        )
+        residuals_df.to_csv(residuals_path, index=False)
+        print(f"  - Saved residuals time series to: {residuals_path}")
 
     # --- Advanced performance metrics (residual stats, percentile errors, spike classification) ---
     advanced_metrics = {}

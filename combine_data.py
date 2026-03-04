@@ -201,9 +201,9 @@ def combine_yearly_data(
     # Process each year separately
     for year in sorted(years):
         if year not in files_by_year:
-            print(f"[⚠] No files found for year {year}")
+            print(f"[WARN] No files found for year {year}")
             continue
-        
+
         year_files = files_by_year[year]
         print(f"\n[Year {year}] Found {len(year_files)} file(s):")
 
@@ -212,12 +212,12 @@ def combine_yearly_data(
             try:
                 print(f"  Loading: {filepath.name}...", end=" ")
                 data = pd.read_csv(filepath)
-                print(f"✓ ({len(data)} rows)")
-                
+                print(f"[OK] ({len(data)} rows)")
+
                 year_data.append(data)
                 total_files_loaded += 1
             except Exception as e:
-                print(f"✗ ERROR: {e}")
+                print(f"[ERROR] {e}")
                 failed_files.append((filepath, str(e)))
 
         # Attach any rows that were carried over from other years into this one
@@ -477,7 +477,7 @@ def combine_yearly_data(
         print(f"  Saving to: {output_file}")
         year_combined.to_csv(output_file, index=False)
         saved_files[year] = output_file
-        print(f"  ✓ Saved {len(year_combined):,} rows to {output_file.name}")
+        print(f"  [OK] Saved {len(year_combined):,} rows to {output_file.name}")
     
     # Print summary
     print("\n" + "="*60)
@@ -769,8 +769,8 @@ def main():
             time_col=args.time_col,
             sort_by_time=not args.no_sort
         )
-        print("\n✓ Data combination completed successfully!")
-        print(f"✓ Created {len(saved_files)} year file(s) in {args.output_dir}")
+        print("\n[OK] Data combination completed successfully!")
+        print(f"[OK] Created {len(saved_files)} year file(s) in {args.output_dir}")
         
         # Upload to Google Sheets (default behavior)
         if not args.no_upload:
@@ -804,14 +804,14 @@ def main():
                     credentials_path=args.credentials,
                     data_df=pivot_summary  # Pass the pivot summary DataFrame directly
                 )
-            
-            print("\n✓ Google Sheets upload completed!")
+
+            print("\n[OK] Google Sheets upload completed!")
         else:
             print("\n[Skip] Google Sheets upload skipped (--no-upload flag set)")
         
         return 0
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n[ERROR] {e}")
         return 1
 
 
