@@ -1,0 +1,74 @@
+{
+  "training_config": {
+    "epochs": 50,
+    "batch_size": 32,
+    "learning_rate": 0.0003,
+    "loss_function": "spike_aware_mse",
+    "device": "cpu"
+  },
+  "model_config": {
+    "name": "RNNWithCategory",
+    "num_categories": 1,
+    "cat_emb_dim": 5,
+    "input_dim": 22,
+    "hidden_size": 32,
+    "n_layers": 2,
+    "output_dim": 30,
+    "dropout_prob": 0.1,
+    "use_layer_norm": true
+  },
+  "data_config": {
+    "years": [
+      2023,
+      2024
+    ],
+    "cat_col": "CATEGORY",
+    "category_filter": "DRY",
+    "feature_cols": [
+      "month_sin",
+      "month_cos",
+      "dayofmonth_sin",
+      "dayofmonth_cos",
+      "holiday_indicator",
+      "days_until_next_holiday",
+      "days_since_holiday",
+      "is_weekend",
+      "day_of_week_sin",
+      "day_of_week_cos",
+      "weekday_volume_tier",
+      "is_high_volume_weekday",
+      "Is_Monday",
+      "is_EOM",
+      "days_until_month_end",
+      "early_month_low_tier",
+      "is_early_month_low",
+      "is_first_5_days",
+      "is_first_3_days",
+      "days_from_month_start",
+      "post_peak_signal",
+      "is_high_vol_weekday_AND_early_month"
+    ],
+    "target_col": "Total CBM",
+    "daily_aggregation": true,
+    "scaling": {
+      "method": "StandardScaler",
+      "scaler_mean": 523.0895431687447,
+      "scaler_scale": 335.9224722373021
+    }
+  },
+  "window_config": {
+    "input_size": 28,
+    "horizon": 30
+  },
+  "training_results": {
+    "final_train_loss": 2.9442358732223513,
+    "final_val_loss": 2.691272020339966,
+    "best_val_loss": 2.681046485900879,
+    "test_loss": 1.9219295183817546,
+    "training_time_seconds": 17.061017513275146,
+    "mae": 251.7659454345703,
+    "rmse": 324.9141845703125
+  },
+  "log_summary": "Category mode: single\nCategory filter: DRY\nNumber of categories: 1\nCategory mapping: {'DRY': 0}\nBest validation loss: 2.6810\nTest loss: 1.9219\nTraining time (seconds): 17.06\nTest samples: 90",
+  "training_timestamp": "2026-02-10 09:02:45"
+}

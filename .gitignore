@@ -26,19 +26,19 @@ ENV/
 Thumbs.db
 
 # Model checkpoints and outputs
-*.pth
 *.pt
 *.h5
 *.ckpt
 checkpoints/
-models/
-outputs/
 logs/
 
-# Allow artifacts in the dedicated output directory to be versioned
+# Allow artifacts in the dedicated output directories to be versioned
 !output/**/*.pth
 !output/**/*.json
 !output/**/*.pkl
+!outputs/**/*.pth
+!outputs/**/*.json
+!outputs/**/*.pkl
 
 # Jupyter Notebook
 .ipynb_checkpoints

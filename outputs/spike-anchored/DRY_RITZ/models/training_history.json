@@ -1,0 +1,871 @@
+{
+  "runs": [
+    {
+      "run_index": 1,
+      "training_timestamp": "2026-02-10 16:43:26",
+      "metadata": {
+        "model_variant": "spike-anchored",
+        "description": "DRY spike-anchored model, trained on [2023, 2024, 2025] data",
+        "config_source": {
+          "base_config": "C:\\workspace\\mdlz_forecasting_spike-anchored\\config\\config.yaml",
+          "category_config": "C:\\workspace\\mdlz_forecasting_spike-anchored\\config\\config_DRY.yaml"
+        },
+        "training_config": {
+          "epochs": 50,
+          "batch_size": 64,
+          "learning_rate": 0.0003,
+          "loss_function": "spike_aware_mse",
+          "device": "cpu",
+          "optimizer_details": {
+            "name": "Adam",
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 1e-05
+          },
+          "lr_dynamics": {
+            "scheduler": "ReduceLROnPlateau",
+            "lr_reductions_count": 5,
+            "lr_reduction_epochs": [
+              25,
+              31,
+              37,
+              43,
+              49
+            ],
+            "final_learning_rate": 1e-05
+          }
+        },
+        "model_config": {
+          "name": "RNNWithCategory",
+          "num_categories": 1,
+          "cat_emb_dim": 5,
+          "input_dim": 25,
+          "hidden_size": 32,
+          "n_layers": 2,
+          "output_dim": 30,
+          "dropout_prob": 0.1,
+          "use_layer_norm": true
+        },
+        "layer_activations": {
+          "h0_fc": "tanh",
+          "fc": "linear"
+        },
+        "data_config": {
+          "years": [
+            2023,
+            2024,
+            2025
+          ],
+          "cat_col": "CATEGORY",
+          "category_filter": "DRY",
+          "category_mapping": {
+            "DRY": 0
+          },
+          "categorical_encoding_details": {
+            "mapping": {
+              "DRY": 0
+            },
+            "num_categories": 1
+          },
+          "feature_cols": [
+            "month_sin",
+            "month_cos",
+            "dayofmonth_sin",
+            "dayofmonth_cos",
+            "holiday_indicator",
+            "days_until_next_holiday",
+            "days_since_holiday",
+            "is_weekend",
+            "day_of_week_sin",
+            "day_of_week_cos",
+            "weekday_volume_tier",
+            "is_high_volume_weekday",
+            "Is_Monday",
+            "is_EOM",
+            "days_until_month_end",
+            "mid_month_peak_tier",
+            "is_mid_month_peak",
+            "days_to_mid_month_peak",
+            "early_month_low_tier",
+            "is_early_month_low",
+            "is_first_5_days",
+            "is_first_3_days",
+            "days_from_month_start",
+            "post_peak_signal",
+            "is_high_vol_weekday_AND_early_month"
+          ],
+          "features_removed": [],
+          "features_added": [],
+          "target_col": "Total CBM",
+          "daily_aggregation": true,
+          "scaling": {
+            "method": "StandardScaler",
+            "scaler_mean": 3.610608868748721,
+            "scaler_scale": 3.3349930724350214
+          },
+          "feature_min_max": {
+            "month_sin": {
+              "min": -1.0,
+              "max": 1.0
+            },
+            "month_cos": {
+              "min": -1.0,
+              "max": 1.0
+            },
+            "dayofmonth_sin": {
+              "min": -0.9987165071710528,
+              "max": 0.9987165071710528
+            },
+            "dayofmonth_cos": {
+              "min": -0.9948693233918952,
+              "max": 1.0
+            },
+            "holiday_indicator": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_until_next_holiday": {
+              "min": 1.0,
+              "max": 246.0
+            },
+            "days_since_holiday": {
+              "min": 0.0,
+              "max": 365.0
+            },
+            "is_weekend": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "day_of_week_sin": {
+              "min": -0.9749279121818236,
+              "max": 0.9749279121818236
+            },
+            "day_of_week_cos": {
+              "min": -0.9009688679024191,
+              "max": 1.0
+            },
+            "weekday_volume_tier": {
+              "min": -1.0,
+              "max": 2.0
+            },
+            "is_high_volume_weekday": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "Is_Monday": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "is_EOM": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_until_month_end": {
+              "min": 0.0,
+              "max": 30.0
+            },
+            "mid_month_peak_tier": {
+              "min": 0.0,
+              "max": 5.0
+            },
+            "is_mid_month_peak": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_to_mid_month_peak": {
+              "min": -22.0,
+              "max": 8.0
+            },
+            "early_month_low_tier": {
+              "min": -10.0,
+              "max": 2.0
+            },
+            "is_early_month_low": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "is_first_5_days": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "is_first_3_days": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_from_month_start": {
+              "min": 0.0,
+              "max": 30.0
+            },
+            "post_peak_signal": {
+              "min": 0.00012340980408667956,
+              "max": 1.0
+            },
+            "is_high_vol_weekday_AND_early_month": {
+              "min": -5.0,
+              "max": 0.0
+            }
+          },
+          "data_hash_md5": "8b6ce4889178e4aaeca28cb89e59f9eb",
+          "data_slice_name": "DRY_[2023, 2024, 2025]",
+          "raw_file_paths": [
+            "./dataset/data_cat\\data_2023.csv",
+            "./dataset/data_cat\\data_2024.csv",
+            "./dataset/data_cat\\data_2025.csv"
+          ],
+          "date_ranges": {
+            "train": [
+              "2023-01-02",
+              "2025-02-06"
+            ],
+            "validation": [
+              "2025-02-07",
+              "2025-05-25"
+            ],
+            "test": [
+              "2025-05-26",
+              "2025-12-31"
+            ]
+          },
+          "sample_counts": {
+            "train_days": 766,
+            "val_days": 109,
+            "test_days": 220,
+            "train_windows": 709,
+            "val_windows": 52,
+            "test_windows": 163
+          }
+        },
+        "window_config": {
+          "input_size": 28,
+          "horizon": 30
+        },
+        "category_training_params": {
+          "learning_rate": 0.0003,
+          "weight_decay": "1e-5",
+          "patience": 5,
+          "loss_weight": 1.0,
+          "monday_loss_weight": 3.0,
+          "wednesday_loss_weight": 4.0,
+          "friday_loss_weight": 4.0,
+          "use_asymmetric_penalty": true,
+          "over_pred_penalty": 0.6,
+          "under_pred_penalty": 1.0,
+          "apply_mean_error_constraint": true,
+          "mean_error_weight": 0.1,
+          "use_dynamic_early_month_weight": true,
+          "dynamic_early_month_base_weight": 100
+        },
+        "segmented_error_analysis": {
+          "spike_vs_non_spike": {
+            "threshold_y_true": 7.654991149902344,
+            "spike_count": 977,
+            "non_spike_count": 3913,
+            "spike_mae": 5.817924499511719,
+            "spike_rmse": 7.220932960510254,
+            "non_spike_mae": 2.609466791152954,
+            "non_spike_rmse": 3.2803092002868652
+          },
+          "prediction_bias": {
+            "over_pred_count": 3058,
+            "under_pred_count": 1832,
+            "over_pred_pct": 62.535787321063395,
+            "under_pred_pct": 37.464212678936605
+          },
+          "weekday_performance": {
+            "monday_mae": 2.458472967147827,
+            "monday_rmse": 3.181053638458252,
+            "monday_count": 24,
+            "wednesday_mae": 3.2762367725372314,
+            "wednesday_rmse": 3.993457555770874,
+            "wednesday_count": 23,
+            "friday_mae": 2.525212526321411,
+            "friday_rmse": 3.2236759662628174,
+            "friday_count": 23,
+            "high_volume_days_mae": 2.7490956783294678,
+            "high_volume_days_rmse": 3.481940269470215
+          }
+        },
+        "advanced_performance_metrics": {
+          "residual_statistics": {
+            "residual_skewness": 1.4844820378575632,
+            "residual_kurtosis": 3.846542322829368,
+            "residual_mean": -0.5787400007247925,
+            "residual_std": 4.323576927185059
+          },
+          "percentile_errors": {
+            "p90_abs_error": 6.304683589935303,
+            "p95_abs_error": 7.303822016716006
+          },
+          "spike_classification": {
+            "spike_precision": 0.2222222222222222,
+            "spike_recall": 0.0040941658137154556,
+            "spike_f1_score": 0.008040201005025126,
+            "spike_threshold": 7.654991149902344,
+            "spike_tp": 4,
+            "spike_fp": 14,
+            "spike_fn": 973,
+            "spike_tn": 3899,
+            "spike_support": 977
+          }
+        },
+        "feature_impact_scores": {
+          "month_sin": 1.089482,
+          "month_cos": 1.17605,
+          "dayofmonth_sin": 1.204131,
+          "dayofmonth_cos": 1.136432,
+          "holiday_indicator": 1.140466,
+          "days_until_next_holiday": 1.123877,
+          "days_since_holiday": 0.920947,
+          "is_weekend": 1.160692,
+          "day_of_week_sin": 1.135512,
+          "day_of_week_cos": 1.113277,
+          "weekday_volume_tier": 1.195311,
+          "is_high_volume_weekday": 1.142898,
+          "Is_Monday": 1.131314,
+          "is_EOM": 0.899888,
+          "days_until_month_end": 1.093603,
+          "mid_month_peak_tier": 1.168652,
+          "is_mid_month_peak": 0.973802,
+          "days_to_mid_month_peak": 1.188528,
+          "early_month_low_tier": 1.172296,
+          "is_early_month_low": 1.095264,
+          "is_first_5_days": 0.946559,
+          "is_first_3_days": 0.924371,
+          "days_from_month_start": 1.154025,
+          "post_peak_signal": 1.027903,
+          "is_high_vol_weekday_AND_early_month": 1.077271
+        },
+        "training_dynamics": {
+          "lr_reduction_epochs": [
+            25,
+            31,
+            37,
+            43,
+            49
+          ],
+          "gradient_norm_snapshot": {
+            "epoch_indices": [
+              1,
+              6,
+              11,
+              16,
+              21,
+              26,
+              31,
+              36,
+              41,
+              46
+            ],
+            "avg_gradient_norm": [
+              18.17562040531772,
+              9.918998904828127,
+              10.995965274117252,
+              9.972411830179226,
+              10.41703352121769,
+              10.034872660339563,
+              13.115473916983545,
+              9.835027906777542,
+              11.440996888086966,
+              12.079637328171271
+            ]
+          },
+          "epochs_to_95pct_best_val_loss": 14
+        },
+        "external_metadata": {
+          "error_attribution_tags": [],
+          "hardware_profiling": {
+            "device": "cpu",
+            "peak_ram_mb": null
+          },
+          "model_complexity": {
+            "trainable_parameters": 17891
+          }
+        },
+        "convergence_metrics": {
+          "best_epoch": 19,
+          "epochs_to_95pct_best_val_loss": 14,
+          "loss_history_snapshot": {
+            "epoch_indices": [
+              1,
+              6,
+              11,
+              16,
+              21,
+              26,
+              31,
+              36,
+              41,
+              46
+            ],
+            "train_loss": [
+              6.345799366633098,
+              4.617784837881724,
+              4.565752764542897,
+              3.909045934677124,
+              3.8256078561147056,
+              3.7494267225265503,
+              4.092550992965698,
+              3.5305654803911843,
+              3.7670805255572,
+              3.6248216331005096
+            ],
+            "val_loss": [
+              4.124791502952576,
+              3.2147120237350464,
+              2.853753387928009,
+              2.662095844745636,
+              2.626182496547699,
+              2.644578129053116,
+              2.651859164237976,
+              2.666208118200302,
+              2.6665496826171875,
+              2.668579190969467
+            ]
+          },
+          "avg_seconds_per_epoch": 0.45761545181274416,
+          "device": "cpu"
+        },
+        "training_results": {
+          "final_train_loss": 3.88975723584493,
+          "final_val_loss": 2.690815031528473,
+          "best_val_loss": 2.6116169095039368,
+          "test_loss": 9.635453787716953,
+          "training_time_seconds": 22.880772590637207,
+          "mae": 3.250502347946167,
+          "rmse": 4.362138748168945
+        },
+        "log_summary": "Category mode: single\nCategory filter: DRY\nNumber of categories: 1\nCategory mapping: {'DRY': 0}\nBest validation loss: 2.6116\nTest loss: 9.6355\nTraining time (seconds): 22.88\nTest samples: 163",
+        "training_timestamp": "2026-02-10 16:43:26"
+      }
+    },
+    {
+      "run_index": 2,
+      "training_timestamp": "2026-02-24 22:23:27",
+      "metadata": {
+        "model_variant": "spike-anchored",
+        "description": "DRY spike-anchored model, trained on [2024, 2025] data",
+        "config_source": {
+          "base_config": "C:\\workspace\\mdlz_forecasting_spike-anchored\\config\\config.yaml",
+          "category_config": "C:\\workspace\\mdlz_forecasting_spike-anchored\\config\\config_DRY.yaml"
+        },
+        "training_config": {
+          "epochs": 50,
+          "batch_size": 64,
+          "learning_rate": 0.0003,
+          "loss_function": "spike_aware_mse",
+          "device": "cpu",
+          "optimizer_details": {
+            "name": "Adam",
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "weight_decay": 1e-05
+          },
+          "lr_dynamics": {
+            "scheduler": "ReduceLROnPlateau",
+            "lr_reductions_count": 0,
+            "lr_reduction_epochs": [],
+            "final_learning_rate": 0.0003
+          }
+        },
+        "model_config": {
+          "name": "RNNWithCategory",
+          "num_categories": 1,
+          "cat_emb_dim": 5,
+          "input_dim": 25,
+          "hidden_size": 32,
+          "n_layers": 2,
+          "output_dim": 30,
+          "dropout_prob": 0.1,
+          "use_layer_norm": true
+        },
+        "layer_activations": {
+          "h0_fc": "tanh",
+          "fc": "linear"
+        },
+        "data_config": {
+          "years": [
+            2024,
+            2025
+          ],
+          "cat_col": "CATEGORY",
+          "category_filter": "DRY",
+          "category_mapping": {
+            "DRY": 0
+          },
+          "categorical_encoding_details": {
+            "mapping": {
+              "DRY": 0
+            },
+            "num_categories": 1
+          },
+          "feature_cols": [
+            "month_sin",
+            "month_cos",
+            "dayofmonth_sin",
+            "dayofmonth_cos",
+            "holiday_indicator",
+            "days_until_next_holiday",
+            "days_since_holiday",
+            "is_weekend",
+            "day_of_week_sin",
+            "day_of_week_cos",
+            "weekday_volume_tier",
+            "is_high_volume_weekday",
+            "Is_Monday",
+            "is_EOM",
+            "days_until_month_end",
+            "mid_month_peak_tier",
+            "is_mid_month_peak",
+            "days_to_mid_month_peak",
+            "early_month_low_tier",
+            "is_early_month_low",
+            "is_first_5_days",
+            "is_first_3_days",
+            "days_from_month_start",
+            "post_peak_signal",
+            "is_high_vol_weekday_AND_early_month"
+          ],
+          "features_removed": [],
+          "features_added": [],
+          "target_col": "Total CBM",
+          "daily_aggregation": true,
+          "scaling": {
+            "method": "StandardScaler",
+            "scaler_mean": 4.19669400755202,
+            "scaler_scale": 3.730331789055043
+          },
+          "feature_min_max": {
+            "month_sin": {
+              "min": -1.0,
+              "max": 1.0
+            },
+            "month_cos": {
+              "min": -1.0,
+              "max": 1.0
+            },
+            "dayofmonth_sin": {
+              "min": -0.9987165071710528,
+              "max": 0.9987165071710528
+            },
+            "dayofmonth_cos": {
+              "min": -0.9948693233918952,
+              "max": 1.0
+            },
+            "holiday_indicator": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_until_next_holiday": {
+              "min": 1.0,
+              "max": 246.0
+            },
+            "days_since_holiday": {
+              "min": 0.0,
+              "max": 365.0
+            },
+            "is_weekend": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "day_of_week_sin": {
+              "min": -0.9749279121818236,
+              "max": 0.9749279121818236
+            },
+            "day_of_week_cos": {
+              "min": -0.9009688679024191,
+              "max": 1.0
+            },
+            "weekday_volume_tier": {
+              "min": -1.0,
+              "max": 2.0
+            },
+            "is_high_volume_weekday": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "Is_Monday": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "is_EOM": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_until_month_end": {
+              "min": 0.0,
+              "max": 30.0
+            },
+            "mid_month_peak_tier": {
+              "min": 0.0,
+              "max": 5.0
+            },
+            "is_mid_month_peak": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_to_mid_month_peak": {
+              "min": -22.0,
+              "max": 8.0
+            },
+            "early_month_low_tier": {
+              "min": -10.0,
+              "max": 2.0
+            },
+            "is_early_month_low": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "is_first_5_days": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "is_first_3_days": {
+              "min": 0.0,
+              "max": 1.0
+            },
+            "days_from_month_start": {
+              "min": 0.0,
+              "max": 30.0
+            },
+            "post_peak_signal": {
+              "min": 0.00012340980408667956,
+              "max": 1.0
+            },
+            "is_high_vol_weekday_AND_early_month": {
+              "min": -5.0,
+              "max": 0.0
+            }
+          },
+          "data_hash_md5": "022faca6c6f34b9c97e1cd25295595f5",
+          "data_slice_name": "DRY_[2024, 2025]",
+          "raw_file_paths": [
+            "./dataset/data_cat\\data_2024.csv",
+            "./dataset/data_cat\\data_2025.csv"
+          ],
+          "date_ranges": {
+            "train": [
+              "2024-01-02",
+              "2025-05-25"
+            ],
+            "validation": [
+              "2025-05-26",
+              "2025-08-06"
+            ],
+            "test": [
+              "2025-08-07",
+              "2025-12-31"
+            ]
+          },
+          "sample_counts": {
+            "train_days": 511,
+            "val_days": 73,
+            "test_days": 147,
+            "train_windows": 454,
+            "val_windows": 16,
+            "test_windows": 90
+          }
+        },
+        "window_config": {
+          "input_size": 28,
+          "horizon": 30
+        },
+        "category_training_params": {
+          "learning_rate": 0.0003,
+          "weight_decay": "1e-5",
+          "patience": 5,
+          "loss_weight": 1.0,
+          "monday_loss_weight": 3.0,
+          "wednesday_loss_weight": 4.0,
+          "friday_loss_weight": 4.0,
+          "use_asymmetric_penalty": true,
+          "over_pred_penalty": 0.6,
+          "under_pred_penalty": 1.0,
+          "apply_mean_error_constraint": true,
+          "mean_error_weight": 0.1,
+          "use_dynamic_early_month_weight": true,
+          "dynamic_early_month_base_weight": 100
+        },
+        "segmented_error_analysis": {
+          "spike_vs_non_spike": {
+            "threshold_y_true": 8.556413650512695,
+            "spike_count": 533,
+            "non_spike_count": 2167,
+            "spike_mae": 6.8442888259887695,
+            "spike_rmse": 8.297544479370117,
+            "non_spike_mae": 2.981908082962036,
+            "non_spike_rmse": 3.7202327251434326
+          },
+          "prediction_bias": {
+            "over_pred_count": 1807,
+            "under_pred_count": 893,
+            "over_pred_pct": 66.92592592592592,
+            "under_pred_pct": 33.07407407407407
+          },
+          "weekday_performance": {
+            "monday_mae": 3.0763068199157715,
+            "monday_rmse": 3.577131509780884,
+            "monday_count": 13,
+            "wednesday_mae": 1.4446916580200195,
+            "wednesday_rmse": 1.950340986251831,
+            "wednesday_count": 12,
+            "friday_mae": 2.0157670974731445,
+            "friday_rmse": 2.97424578666687,
+            "friday_count": 13,
+            "high_volume_days_mae": 2.1982436180114746,
+            "high_volume_days_rmse": 2.9334371089935303
+          }
+        },
+        "advanced_performance_metrics": {
+          "residual_statistics": {
+            "residual_skewness": 1.432264790715862,
+            "residual_kurtosis": 2.8075977290520964,
+            "residual_mean": -0.781091034412384,
+            "residual_std": 4.908078193664551
+          },
+          "percentile_errors": {
+            "p90_abs_error": 7.377561330795287,
+            "p95_abs_error": 9.788814926147456
+          },
+          "spike_classification": {
+            "spike_precision": 0.18181818181818182,
+            "spike_recall": 0.02626641651031895,
+            "spike_f1_score": 0.04590163934426231,
+            "spike_threshold": 8.556413650512695,
+            "spike_tp": 14,
+            "spike_fp": 63,
+            "spike_fn": 519,
+            "spike_tn": 2104,
+            "spike_support": 533
+          }
+        },
+        "feature_impact_scores": {
+          "month_sin": 1.176368,
+          "month_cos": 1.175246,
+          "dayofmonth_sin": 1.165878,
+          "dayofmonth_cos": 1.245252,
+          "holiday_indicator": 1.117298,
+          "days_until_next_holiday": 1.091862,
+          "days_since_holiday": 0.939819,
+          "is_weekend": 1.127981,
+          "day_of_week_sin": 1.271599,
+          "day_of_week_cos": 1.11695,
+          "weekday_volume_tier": 1.128249,
+          "is_high_volume_weekday": 1.124386,
+          "Is_Monday": 1.088944,
+          "is_EOM": 1.131801,
+          "days_until_month_end": 1.115607,
+          "mid_month_peak_tier": 1.096096,
+          "is_mid_month_peak": 1.049532,
+          "days_to_mid_month_peak": 1.248165,
+          "early_month_low_tier": 1.079564,
+          "is_early_month_low": 1.10573,
+          "is_first_5_days": 1.112197,
+          "is_first_3_days": 1.155383,
+          "days_from_month_start": 1.234597,
+          "post_peak_signal": 1.071231,
+          "is_high_vol_weekday_AND_early_month": 1.114509
+        },
+        "training_dynamics": {
+          "lr_reduction_epochs": [],
+          "gradient_norm_snapshot": {
+            "epoch_indices": [
+              1,
+              6,
+              11,
+              16,
+              21,
+              26,
+              31,
+              36,
+              41,
+              46
+            ],
+            "avg_gradient_norm": [
+              26.137091491831008,
+              12.205046968395493,
+              11.279715439975737,
+              17.768009229263434,
+              15.66465656566685,
+              10.11996732945795,
+              13.663510627602665,
+              9.828173260819781,
+              10.549377200753371,
+              19.367310742921912
+            ]
+          },
+          "epochs_to_95pct_best_val_loss": 37
+        },
+        "external_metadata": {
+          "error_attribution_tags": [],
+          "hardware_profiling": {
+            "device": "cpu",
+            "peak_ram_mb": null
+          },
+          "model_complexity": {
+            "trainable_parameters": 17891
+          }
+        },
+        "convergence_metrics": {
+          "best_epoch": 48,
+          "epochs_to_95pct_best_val_loss": 37,
+          "loss_history_snapshot": {
+            "epoch_indices": [
+              1,
+              6,
+              11,
+              16,
+              21,
+              26,
+              31,
+              36,
+              41,
+              46
+            ],
+            "train_loss": [
+              5.300249218940735,
+              4.252524375915527,
+              3.80861559510231,
+              3.776584357023239,
+              3.5008503794670105,
+              3.392488479614258,
+              3.1554127037525177,
+              2.9850550442934036,
+              2.955895707011223,
+              3.413993239402771
+            ],
+            "val_loss": [
+              4.424978256225586,
+              3.111330270767212,
+              2.632570266723633,
+              2.3099288940429688,
+              2.208524465560913,
+              2.130882501602173,
+              1.928460955619812,
+              1.8724644184112549,
+              1.7979590892791748,
+              1.8791799545288086
+            ]
+          },
+          "avg_seconds_per_epoch": 0.23136459350585936,
+          "device": "cpu"
+        },
+        "training_results": {
+          "final_train_loss": 2.792199745774269,
+          "final_val_loss": 1.7870659828186035,
+          "best_val_loss": 1.7687159776687622,
+          "test_loss": 6.716382523377736,
+          "training_time_seconds": 11.568229675292969,
+          "mae": 3.744370698928833,
+          "rmse": 4.969842910766602
+        },
+        "log_summary": "Category mode: single\nCategory filter: DRY\nNumber of categories: 1\nCategory mapping: {'DRY': 0}\nBest validation loss: 1.7687\nTest loss: 6.7164\nTraining time (seconds): 11.57\nTest samples: 90",
+        "training_timestamp": "2026-02-24 22:23:27"
+      }
+    }
+  ],
+  "total_runs": 2
+}

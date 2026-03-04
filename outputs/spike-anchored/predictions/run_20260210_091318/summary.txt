@@ -1,0 +1,60 @@
+Prediction Comparison: Teacher Forcing vs Recursive
+======================================================================
+
+Run ID: run_20260210_091318
+Timestamp: 2026-02-10 09:13:30
+Model: outputs\spike-anchored\DRY\models\best_model.pth
+Data: 2025-01-01 to 2025-12-31, DRY category only
+Data source: dataset/test/data_2025.csv
+
+Teacher Forcing Mode (Test Evaluation):
+----------------------------------------------------------------------
+  Description: Uses actual ground truth Total CBM values from 2025 as features
+  Suitable for: Model evaluation on test set
+  Number of predictions: 0
+  Date range: N/A (no prediction windows available)
+  MSE:  nan
+  MAE:  nan
+  RMSE: nan
+
+Recursive Mode (Production Forecast):
+----------------------------------------------------------------------
+  Description: Uses model's own predictions as inputs
+  Suitable for: Production forecasting of unknown future dates
+  Number of predictions: 358
+  Date range: 2025-01-01 to 2025-12-30
+  MSE:  113508.8486
+  MAE:  241.4826
+  RMSE: 336.9107
+  Accuracy: 81.59%
+
+Comparison:
+----------------------------------------------------------------------
+  MAE increase:  nan%
+  RMSE increase: nan%
+  MSE increase:  nan%
+
+  Note: Recursive mode shows higher error due to error accumulation.
+  This is expected and represents true production forecast performance.
+
+
+Historical Comparison Table
+========================================================================================================================
+Run ID             Loss Function        TF MAE       TF RMSE      TF MSE       REC MAE      REC RMSE     REC MSE     
+------------------------------------------------------------------------------------------------------------------------
+20260209_172405    spike_aware_mse      nan          nan          nan          246.0379     346.3397     119951.1549 
+20260209_194140    spike_aware_mse      nan          nan          nan          244.8753     339.0492     114954.3720 
+20260209_194946    spike_aware_mse      nan          nan          nan          244.8753     339.0492     114954.3720 
+20260209_195725    spike_aware_mse      nan          nan          nan          244.8753     339.0492     114954.3720 
+20260209_201949    spike_aware_mse      nan          nan          nan          244.8753     339.0492     114954.3720 
+20260209_202000    spike_aware_mse      nan          nan          nan          244.8753     339.0492     114954.3720 
+20260209_202036    spike_aware_mse      nan          nan          nan          244.8753     339.0492     114954.3720 
+20260210_090307    spike_aware_mse      nan          nan          nan          232.3216     326.6454     106697.2466 
+20260210_090351    spike_aware_mse      nan          nan          nan          241.1379     336.8503     113468.1565 
+20260210_090442    spike_aware_mse      nan          nan          nan          241.4826     336.9107     113508.8486 
+------------------------------------------------------------------------------------------------------------------------
+run_20260210_09 (*) spike_aware_mse      nan          nan          nan          241.4826     336.9107     113508.8486 
+------------------------------------------------------------------------------------------------------------------------
+(*) Current run
+
+Unable to determine improvement (missing metrics).
