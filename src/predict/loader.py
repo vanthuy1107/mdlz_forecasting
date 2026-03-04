@@ -57,7 +57,7 @@ def load_model_for_prediction(model_path: str, config):
     if num_categories is None:
         raise ValueError("num_categories must be found in model metadata or config")
 
-    # Get category_filter from training metadata to know which category(ies) model was trained on
+    # Get category_filter and category_mapping from training metadata
     trained_category_filter = None
     trained_cat2id = None  # Training-time category mapping
     if metadata_path.exists():
@@ -65,20 +65,19 @@ def load_model_for_prediction(model_path: str, config):
             metadata = json.load(f)
         if 'data_config' in metadata and 'category_filter' in metadata['data_config']:
             trained_category_filter = metadata['data_config']['category_filter']
-        
-        # Try to extract category mapping from log_summary
-        log_summary = metadata.get('log_summary', '')
-        # Look for "Category mapping: {...}" in log_summary
-        match = re.search(r"Category mapping: ({[^}]+})", log_summary)
-        if match:
-            try:
-                # Parse the dictionary string from log_summary
-                trained_cat2id_str = match.group(1)
-                # Convert single quotes to double quotes for JSON parsing
-                trained_cat2id_str = trained_cat2id_str.replace("'", '"')
-                trained_cat2id = json.loads(trained_cat2id_str)
-            except:
-                pass
+        # Prefer direct category_mapping field (new metadata format)
+        if 'data_config' in metadata and 'category_mapping' in metadata['data_config']:
+            trained_cat2id = metadata['data_config']['category_mapping']
+        else:
+            # Fallback: extract from log_summary (legacy metadata)
+            log_summary = metadata.get('log_summary', '')
+            match = re.search(r"Category mapping: ({[^}]+})", log_summary)
+            if match:
+                try:
+                    trained_cat2id_str = match.group(1).replace("'", '"')
+                    trained_cat2id = json.loads(trained_cat2id_str)
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
     # If we have the training-time feature list, push it into the live config
     # so that window creation uses the exact same ordering and dimensionality.

@@ -47,9 +47,17 @@ class Trainer:
         
         # Best model tracking
         self.best_val_loss: float = float('inf')
+        self.best_epoch: int = 0  # Epoch (1-indexed) that achieved best_val_loss
         self.best_model_state: Optional[Dict[str, Any]] = None
-    
-    def train_epoch(self, train_loader: DataLoader) -> float:
+        
+        # LR scheduler tracking (for ReduceLROnPlateau)
+        self.lr_reductions_count: int = 0
+        self.lr_reduction_epochs: List[int] = []  # Epochs when LR was reduced
+
+        # Gradient norm monitoring (per epoch)
+        self.avg_gradient_norm_per_epoch: List[float] = []
+
+    def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
         """
         Train for one epoch.
         
@@ -57,17 +65,18 @@ class Trainer:
             train_loader: Training data loader.
         
         Returns:
-            Average training loss for the epoch.
+            Tuple of (average training loss, average gradient norm) for the epoch.
         """
         self.model.train()
         batch_losses = []
-        
+        grad_norms = []
+
         for inputs, cat, labels in train_loader:
             # Move to device
             inputs = inputs.to(self.device)
             cat = cat.to(self.device)
             labels = labels.to(self.device)
-            
+
             # Forward pass
             self.optimizer.zero_grad()
             outputs = self.model(inputs, cat)
@@ -76,9 +85,8 @@ class Trainer:
                 labels = labels.unsqueeze(-1)
             elif labels.ndim == 1:
                 labels = labels.unsqueeze(-1) if outputs.ndim > 1 else labels
-            
+
             # Pass category IDs and inputs to loss function if it accepts them
-            # Check if criterion accepts category_ids or inputs parameter
             import inspect
             sig = inspect.signature(self.criterion)
             kwargs = {}
@@ -87,17 +95,28 @@ class Trainer:
             if 'inputs' in sig.parameters:
                 kwargs['inputs'] = inputs
             loss = self.criterion(outputs, labels, **kwargs)
-            
+
             # Backward pass
             loss.backward()
+
+            # Compute gradient norm (before optimizer step)
+            total_norm = 0.0
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+            grad_norms.append(total_norm)
+
             self.optimizer.step()
-            
+
             batch_losses.append(loss.item())
-        
+
         if len(batch_losses) == 0:
             raise ValueError("Training dataloader is empty. Cannot compute average loss.")
         avg_loss = sum(batch_losses) / len(batch_losses)
-        return avg_loss
+        avg_grad_norm = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
+        return avg_loss, avg_grad_norm
     
     def evaluate(
         self,
@@ -188,13 +207,18 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
-        
+        self.best_epoch = 0
+        self.lr_reductions_count = 0
+        self.lr_reduction_epochs = []
+        self.avg_gradient_norm_per_epoch = []
+
         for epoch in range(epochs):
             self.current_epoch = epoch + 1
-            
+
             # Train
-            train_loss = self.train_epoch(train_loader)
+            train_loss, avg_grad_norm = self.train_epoch(train_loader)
             self.train_losses.append(train_loss)
+            self.avg_gradient_norm_per_epoch.append(avg_grad_norm)
             
             # Validate
             # NOTE: In some small-data or edge-case configurations, the validation
@@ -215,14 +239,20 @@ class Trainer:
             
             # Update learning rate scheduler
             if self.scheduler is not None:
+                prev_lr = self.optimizer.param_groups[0]['lr']
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_loss)
                 else:
                     self.scheduler.step()
+                # Track LR reductions (ReduceLROnPlateau decreases LR when plateau)
+                if self.optimizer.param_groups[0]['lr'] < prev_lr:
+                    self.lr_reductions_count += 1
+                    self.lr_reduction_epochs.append(self.current_epoch)
             
             # Save best model
             if save_best and val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                self.best_epoch = self.current_epoch
                 self.best_model_state = self.model.state_dict().copy()
                 
                 if self.save_dir:
@@ -248,7 +278,17 @@ class Trainer:
             self.model.load_state_dict(self.best_model_state)
             if verbose:
                 print(f"\nBest validation loss: {self.best_val_loss:.4f}")
-        
+
+        # Compute epochs to reach 95% of best_val_loss (convergence speed)
+        # First epoch where val_loss <= 1.05 * best_val_loss (within 5% of best)
+        self.epochs_to_95pct_best_val_loss = None
+        if self.val_losses and self.best_val_loss < float('inf'):
+            threshold = 1.05 * self.best_val_loss
+            for i, vl in enumerate(self.val_losses):
+                if vl <= threshold:
+                    self.epochs_to_95pct_best_val_loss = i + 1  # 1-indexed
+                    break
+
         return self.train_losses, self.val_losses
     
     def predict(

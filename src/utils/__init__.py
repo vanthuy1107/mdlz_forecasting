@@ -3,7 +3,14 @@ from .losses import spike_aware_mse, focal_loss, huber_loss, quantile_loss, Quan
 from .visualization import plot_difference, plot_learning_curve
 from .saving import save_pred_actual_txt, save_window_samples
 from .google_sheets import upload_to_google_sheets, GSPREAD_AVAILABLE
-from .evaluation import quantile_coverage, calculate_forecast_metrics
+from .evaluation import (
+    quantile_coverage,
+    calculate_forecast_metrics,
+    calculate_segmented_metrics,
+    residual_statistics,
+    percentile_errors,
+    spike_classification_metrics,
+)
 from .lunar_utils import (
     solar_to_lunar_date,
     find_gregorian_date_for_lunar_date,
@@ -28,6 +35,10 @@ __all__ = [
     'GSPREAD_AVAILABLE',
     'quantile_coverage',
     'calculate_forecast_metrics',
+    'calculate_segmented_metrics',
+    'residual_statistics',
+    'percentile_errors',
+    'spike_classification_metrics',
     'solar_to_lunar_date',
     'find_gregorian_date_for_lunar_date',
     'find_lunar_aligned_date_from_previous_year',

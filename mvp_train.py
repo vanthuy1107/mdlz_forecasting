@@ -7,6 +7,7 @@ This script verifies the entire pipeline using a small subset of data:
 - Uses Vietnamese holidays (Tet, Mid-Autumn Festival, etc.)
 - Generates test predictions and plots
 """
+import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -17,6 +18,7 @@ import numpy as np
 import time
 import json
 import pickle
+import hashlib
 from datetime import date, timedelta
 from typing import List, Tuple
 
@@ -50,7 +52,18 @@ from src.data.preprocessing import (
 )
 from src.models import RNNWithCategory
 from src.training import Trainer
-from src.utils import plot_difference, spike_aware_mse, quantile_loss, QuantileLoss, quantile_coverage, calculate_forecast_metrics
+from src.utils import (
+    plot_difference,
+    spike_aware_mse,
+    quantile_loss,
+    QuantileLoss,
+    quantile_coverage,
+    calculate_forecast_metrics,
+    calculate_segmented_metrics,
+    residual_statistics,
+    percentile_errors,
+    spike_classification_metrics,
+)
 
 
 ###############################################################################
@@ -744,16 +757,17 @@ def add_days_to_mid_autumn_feature(
     return df
 
 
-def train_single_model(data, config, category_filter, output_suffix=""):
+def train_single_model(data, config, category_filter, output_suffix="", run_name=None):
     """
     Train a single model for a specific category.
-    
+
     Args:
         data: Full DataFrame with all data
         config: Configuration object (should be category-specific config)
         category_filter: Category name to filter (required - system now operates in category-specific mode)
         output_suffix: Suffix for output directories (typically empty as directory is category-specific)
-    
+        run_name: Optional label for this run (e.g. from train_orchestrator); stored in training_history.json
+
     Returns:
         Dictionary with training results and metadata
     """
@@ -2461,36 +2475,269 @@ def train_single_model(data, config, category_filter, output_suffix=""):
         f"Training time (seconds): {training_time:.2f}",
         f"Test samples: {len(y_true)}",
     ]
+    # Compute date ranges for analyst visibility (JSON-serializable strings)
+    def _date_range_str(df, col):
+        if df is None or len(df) == 0 or col not in df.columns:
+            return None
+        d = pd.to_datetime(df[col])
+        return [d.min().strftime('%Y-%m-%d'), d.max().strftime('%Y-%m-%d')]
+    train_date_range = _date_range_str(train_data, time_col)
+    val_date_range = _date_range_str(val_data, time_col)
+    test_date_range = _date_range_str(test_data, time_col)
+    # Config source paths (for reproducibility)
+    config_base_path = str(config.config_path) if hasattr(config, 'config_path') else None
+    config_category_path = None
+    if hasattr(config, 'category') and config.category and config_base_path:
+        cat_config = Path(config_base_path).parent / f"config_{config.category}.yaml"
+        config_category_path = str(cat_config) if cat_config.exists() else None
+    # Category-specific training params (key loss/training params for analyst reference)
+    cat_params = get_category_params(category_specific_params, category_filter)
+    category_training_params = {k: v for k, v in cat_params.items() if k in (
+        'loss_weight', 'monday_loss_weight', 'wednesday_loss_weight', 'friday_loss_weight',
+        'use_asymmetric_penalty', 'over_pred_penalty', 'under_pred_penalty',
+        'apply_mean_error_constraint', 'mean_error_weight',
+        'use_dynamic_early_month_weight', 'dynamic_early_month_base_weight',
+        'learning_rate', 'weight_decay', 'patience'
+    )}
+    # Ensure category_mapping keys are strings (JSON serializable)
+    category_mapping = {str(k): int(v) for k, v in cat2id.items()}
+    # --- Segmented error analysis (spike vs non-spike, weekday, prediction bias) ---
+    y_true_flat = y_true_original.reshape(-1) if y_true_original.ndim > 1 else y_true_original
+    y_pred_flat = y_pred_original.reshape(-1) if y_pred_original.ndim > 1 else y_pred_original
+    test_start_idx = len(train_data) + len(val_data)
+    test_end_idx = test_start_idx + len(test_dataset)
+    test_data_subset_meta = filtered_data.iloc[test_start_idx:test_end_idx]
+    day_of_week_arr = None
+    if y_true_original.ndim == 2:
+        n_w, hor = y_true_original.shape
+        dow_list = []
+        for i in range(n_w):
+            if i < len(test_data_subset_meta):
+                start_dt = pd.to_datetime(test_data_subset_meta.iloc[i][time_col])
+                for h in range(hor):
+                    pred_dt = start_dt + pd.Timedelta(days=h + 1)
+                    dow_list.append(pred_dt.weekday())  # 0=Mon, 6=Sun
+            else:
+                dow_list.extend([-1] * hor)
+        day_of_week_arr = np.array(dow_list)
+    else:
+        dow_list = []
+        for i in range(len(y_true_original)):
+            if i < len(test_data_subset_meta):
+                dt = pd.to_datetime(test_data_subset_meta.iloc[i][time_col])
+                dow_list.append(dt.weekday())
+            else:
+                dow_list.append(-1)
+        day_of_week_arr = np.array(dow_list)
+    segmented = calculate_segmented_metrics(y_true_flat, y_pred_flat, day_of_week=day_of_week_arr)
+
+    # --- Advanced performance metrics (residual stats, percentile errors, spike classification) ---
+    advanced_metrics = {}
+    try:
+        advanced_metrics['residual_statistics'] = residual_statistics(y_true_flat, y_pred_flat)
+        advanced_metrics['percentile_errors'] = percentile_errors(y_true_flat, y_pred_flat)
+        spike_threshold = segmented.get('spike_vs_non_spike', {}).get('threshold_y_true')
+        advanced_metrics['spike_classification'] = spike_classification_metrics(
+            y_true_flat, y_pred_flat, threshold=spike_threshold
+        )
+    except Exception as e:
+        advanced_metrics['_error'] = str(e)
+
+    # --- Feature importance (LSTM input weight magnitude per feature) ---
+    feature_impact = {}
+    try:
+        if hasattr(model, 'lstm') and hasattr(model.lstm, 'weight_ih_l0'):
+            w = model.lstm.weight_ih_l0.detach().cpu().numpy()  # (4*hidden, input_dim+cat_emb)
+            input_dim = model.input_dim
+            for idx, fname in enumerate(feature_cols):
+                if idx < input_dim:
+                    col_norm = float(np.sqrt(np.sum(w[:, idx] ** 2)))
+                    feature_impact[fname] = round(col_norm, 6)
+    except Exception as e:
+        feature_impact = {'_error': str(e)}
+    # --- Data versioning: MD5 hash + raw file paths ---
+    try:
+        cols_to_hash = [time_col] + feature_cols + [target_col_for_model]
+        cols_avail = [c for c in cols_to_hash if c in train_data.columns]
+        train_repr = train_data[cols_avail].sort_values(time_col).to_csv(index=False)
+        data_hash = hashlib.md5(train_repr.encode('utf-8')).hexdigest()
+    except Exception as e:
+        data_hash = f"error:{e}"
+    # Data slice name and raw file paths for lineage
+    data_dir = data_config.get('data_dir', '')
+    file_pattern = data_config.get('file_pattern', 'data_{year}.csv')
+    data_slice_name = f"{category_filter}_{data_config['years']}"
+    raw_file_paths = [
+        os.path.join(data_dir, file_pattern.format(year=y))
+        for y in data_config['years']
+    ] if data_dir and '{year}' in file_pattern else []
+
+    # --- Features removed/added vs previous run ---
+    features_removed = []
+    features_added = []
+    history_path_pre = os.path.join(save_dir, 'training_history.json')
+    if os.path.exists(history_path_pre):
+        try:
+            with open(history_path_pre, 'r', encoding='utf-8') as f:
+                hist = json.load(f)
+            if hist.get('runs'):
+                prev_features = set(
+                    hist['runs'][-1].get('metadata', {}).get('data_config', {}).get('feature_cols', [])
+                )
+                curr_features = set(feature_cols)
+                features_removed = sorted(prev_features - curr_features)
+                features_added = sorted(curr_features - prev_features)
+        except (json.JSONDecodeError, IOError, KeyError):
+            pass
+    # --- Feature min/max before scaling (features are not scaled; target scaling already applied) ---
+    feature_min_max = {}
+    try:
+        for c in feature_cols:
+            if c in train_data.columns:
+                v = train_data[c].dropna()
+                if len(v) > 0:
+                    feature_min_max[c] = {
+                        'min': float(v.min()),
+                        'max': float(v.max()),
+                    }
+    except Exception as e:
+        feature_min_max = {'_error': str(e)}
+    # --- Optimizer state (Adam betas, final weight_decay) ---
+    opt_params = optimizer.param_groups[0]
+    optimizer_details = {
+        'name': 'Adam',
+        'betas': list(opt_params.get('betas', (0.9, 0.999))),
+        'weight_decay': float(opt_params.get('weight_decay', 0)),
+    }
+    # --- LR dynamics (ReduceLROnPlateau) ---
+    final_lr = float(optimizer.param_groups[0]['lr'])
+    sched_cfg = training_config.get('scheduler', {})
+    lr_dynamics = {
+        'scheduler': sched_cfg.get('name', 'ReduceLROnPlateau'),
+        'lr_reductions_count': getattr(trainer, 'lr_reductions_count', 0),
+        'lr_reduction_epochs': getattr(trainer, 'lr_reduction_epochs', []),
+        'final_learning_rate': final_lr,
+    }
+    # --- Training dynamics: gradient norms, convergence speed ---
+    grad_norms = getattr(trainer, 'avg_gradient_norm_per_epoch', [])
+    step_g = max(1, len(grad_norms) // 10) if grad_norms else 1
+    gradient_norm_snapshot = {
+        'epoch_indices': [i + 1 for i in range(0, len(grad_norms), step_g)][:15],
+        'avg_gradient_norm': [float(grad_norms[i]) for i in range(0, len(grad_norms), step_g)][:15],
+    } if grad_norms else {}
+    training_dynamics = {
+        'lr_reduction_epochs': getattr(trainer, 'lr_reduction_epochs', []),
+        'gradient_norm_snapshot': gradient_norm_snapshot,
+        'epochs_to_95pct_best_val_loss': getattr(trainer, 'epochs_to_95pct_best_val_loss', None),
+    }
+    # --- Hardware profiling & model complexity ---
+    hardware_profiling = {}
+    try:
+        if torch.cuda.is_available():
+            hardware_profiling['peak_vram_mb'] = float(torch.cuda.max_memory_allocated() / 1024 / 1024)
+            hardware_profiling['device'] = str(torch.cuda.get_device_name(0))
+        else:
+            hardware_profiling['device'] = 'cpu'
+        try:
+            import psutil
+            proc = psutil.Process()
+            hardware_profiling['peak_ram_mb'] = float(proc.memory_info().rss / 1024 / 1024)
+        except ImportError:
+            hardware_profiling['peak_ram_mb'] = None
+    except Exception as e:
+        hardware_profiling['_error'] = str(e)
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    model_complexity = {'trainable_parameters': trainable_params}
+    # --- Layer activation metadata (h0_fc: tanh, fc: linear) ---
+    layer_activations = {
+        'h0_fc': 'tanh',
+        'fc': 'linear',
+    }
+    # --- Loss history snapshot (every 5 epochs or so) ---
+    n_epochs = len(train_losses)
+    step = max(1, n_epochs // 10) if n_epochs > 0 else 1
+    loss_history = {
+        'epoch_indices': [i + 1 for i in range(0, n_epochs, step)][:15],
+        'train_loss': [float(train_losses[i]) for i in range(0, n_epochs, step)][:15],
+        'val_loss': [float(val_losses[i]) for i in range(0, n_epochs, step)][:15],
+    }
     metadata = {
+        'model_variant': 'spike-anchored',
+        'description': f"{category_filter} spike-anchored model, trained on {data_config['years']} data",
+        'config_source': {
+            'base_config': config_base_path,
+            'category_config': config_category_path,
+        },
         'training_config': {
             'epochs': training_config['epochs'],
             'batch_size': training_config['batch_size'],
             'learning_rate': training_config['learning_rate'],
             'loss_function': training_config['loss'],
-            'device': training_config['device']
+            'device': training_config['device'],
+            'optimizer_details': optimizer_details,
+            'lr_dynamics': lr_dynamics,
         },
         'model_config': dict(model_config),
+        'layer_activations': layer_activations,
         'data_config': {
             'years': data_config['years'],
             'cat_col': data_config['cat_col'],
-            'category_filter': category_filter,  # Record which category was used (None means all)
+            'category_filter': category_filter,
+            'category_mapping': category_mapping,
+            'categorical_encoding_details': {'mapping': category_mapping, 'num_categories': num_categories},
             'feature_cols': data_config['feature_cols'],
+            'features_removed': features_removed,
+            'features_added': features_added,
             'target_col': data_config['target_col'],
-            'daily_aggregation': True,  # Flag indicating daily aggregation was used
+            'daily_aggregation': True,
             'scaling': {
                 'method': 'StandardScaler',
                 'scaler_mean': float(scaler.mean_[0]),
                 'scaler_scale': float(scaler.scale_[0])
-            }
+            },
+            'feature_min_max': feature_min_max,
+            'data_hash_md5': data_hash,
+            'data_slice_name': data_slice_name,
+            'raw_file_paths': raw_file_paths,
+            'date_ranges': {
+                'train': train_date_range,
+                'validation': val_date_range,
+                'test': test_date_range,
+            },
+            'sample_counts': {
+                'train_days': len(train_data),
+                'val_days': len(val_data),
+                'test_days': len(test_data),
+                'train_windows': len(train_dataset),
+                'val_windows': len(val_dataset),
+                'test_windows': len(test_dataset),
+            },
         },
         'window_config': dict(window_config),
+        'category_training_params': category_training_params,
+        'segmented_error_analysis': segmented,
+        'advanced_performance_metrics': advanced_metrics,
+        'feature_impact_scores': feature_impact,
+        'training_dynamics': training_dynamics,
+        'external_metadata': {
+            'error_attribution_tags': [],
+            'hardware_profiling': hardware_profiling,
+            'model_complexity': model_complexity,
+        },
+        'convergence_metrics': {
+            'best_epoch': getattr(trainer, 'best_epoch', 0),
+            'epochs_to_95pct_best_val_loss': getattr(trainer, 'epochs_to_95pct_best_val_loss', None),
+            'loss_history_snapshot': loss_history,
+            'avg_seconds_per_epoch': training_time / max(1, n_epochs),
+            'device': str(training_config['device']),
+        },
         'training_results': {
             'final_train_loss': train_losses[-1] if train_losses else None,
             'final_val_loss': val_losses[-1] if val_losses else None,
             'best_val_loss': trainer.best_val_loss,
             'test_loss': float(test_loss),
             'training_time_seconds': training_time,
-            **training_results  # Include quantile coverage or traditional metrics
+            **training_results
         },
         'log_summary': "\n".join(log_summary_lines),
         'training_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
@@ -2500,7 +2747,28 @@ def train_single_model(data, config, category_filter, output_suffix=""):
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
     print(f"  - Metadata saved to: {metadata_path}")
-    
+    # Append to training history (record of all runs)
+    history_path = os.path.join(save_dir, 'training_history.json')
+    history = {'runs': [], 'total_runs': 0}
+    if os.path.exists(history_path):
+        try:
+            with open(history_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    run_index = history['total_runs'] + 1
+    record = {
+        'run_index': run_index,
+        'training_timestamp': metadata['training_timestamp'],
+        'metadata': metadata,
+    }
+    if run_name is not None:
+        record['run_name'] = run_name
+    history['runs'].append(record)
+    history['total_runs'] = run_index
+    with open(history_path, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+    print(f"  - Training history appended to: {history_path} (run #{run_index}" + (f", run_name={run_name!r}" if run_name else "") + ")")
     # Generate prediction plot
     print("\n" + "=" * 80)
     print("GENERATING PLOTS")
@@ -2609,13 +2877,32 @@ def main():
     (DRY, TET, FRESH, etc.) is treated as a standalone task with its own unique
     architectural and training parameters loaded from category-specific config files.
     """
+    parser = argparse.ArgumentParser(description="MDLZ Category-Specific Training Pipeline")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a merged config YAML. When set, this config is used as-is (e.g. from train_orchestrator) and category-specific merge is skipped.",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Label for this run (e.g. from train_orchestrator). Recorded in training_history.json.",
+    )
+    args = parser.parse_args()
+
     print("=" * 80)
     print("MDLZ FORECASTING: Category-Specific Independent Training Pipeline")
     print("=" * 80)
     
     # Load base configuration
     print("\n[1/8] Loading base configuration...")
-    base_config = load_config()
+    if args.config:
+        base_config = load_config(config_path=args.config)
+        print(f"  - Loaded config from: {args.config}")
+    else:
+        base_config = load_config()
     
     # Override configuration for training
     print("\n[2/8] Applying training overrides...")
@@ -2696,16 +2983,20 @@ def main():
         print(f"{'=' * 80}")
         
         try:
-            # Load category-specific config (merges with base config)
-            print(f"\n[Loading category-specific config for {category}...]")
-            category_config = load_config(category=category)
+            # Load category-specific config (merges with base config), or use base when --config was provided
+            if args.config:
+                print(f"\n[Using provided config for {category}...]")
+                category_config = base_config
+            else:
+                print(f"\n[Loading category-specific config for {category}...]")
+                category_config = load_config(category=category)
             
             # Only override training loss if not explicitly set to "quantile"
             # This allows MOONCAKE to use quantile loss while other categories use spike_aware_mse
             if category_config.training.get('loss', 'spike_aware_mse') != 'quantile':
                 category_config.set('training.loss', 'spike_aware_mse')
             
-            # Create isolated output directory for this category directly under the spike-anchored root
+            # Single output dir per category (all runs update same metadata; history tracks run_name)
             category_output_dir = os.path.join("outputs", "spike-anchored", category)
             category_models_dir = os.path.join(category_output_dir, "models")
             os.makedirs(category_output_dir, exist_ok=True)
@@ -2713,12 +3004,13 @@ def main():
             category_config.set('output.output_dir', category_output_dir)
             category_config.set('output.model_dir', category_models_dir)
             
-            # Train model for this category
+            # Train model for this category (pass run_name when from orchestrator for training_history.json)
             result = train_single_model(
-                data, 
-                category_config, 
-                category_filter=category, 
-                output_suffix=""  # No suffix needed, directory is category-specific
+                data,
+                category_config,
+                category_filter=category,
+                output_suffix="",
+                run_name=args.run_name,
             )
             results.append(result)
             

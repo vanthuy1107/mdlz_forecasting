@@ -1111,6 +1111,7 @@ def aggregate_daily(
         agg_dict["Total QTY"] = "sum"
     
     # For temporal/holiday/weekend features, take first value (should be same for all rows on same date)
+    # Include DRY/FRESH and other category-specific features so prediction pipeline keeps them after aggregation
     feature_cols_to_keep = [
         'month_sin', 'month_cos', 'dayofmonth_sin', 'dayofmonth_cos',
         'holiday_indicator', 'days_until_next_holiday', 'days_since_holiday',
@@ -1121,17 +1122,20 @@ def aggregate_daily(
         'lunar_month_sin', 'lunar_month_cos', 'lunar_day_sin', 'lunar_day_cos',
         'days_to_tet', 'days_to_mid_autumn',  # Tet and Mid-Autumn countdown features
         'is_active_season', 'days_until_peak', 'is_golden_window',  # Seasonal active-window features
-        # Lunar cyclical encodings and Tet countdown should also persist after aggregation
-        'lunar_month_sin', 'lunar_month_cos',
-        'lunar_day_sin', 'lunar_day_cos',
-        'days_to_tet',
-        # EOM (End-of-Month) surge features
+        'lunar_month_sin', 'lunar_month_cos', 'lunar_day_sin', 'lunar_day_cos',
         'is_EOM', 'days_until_month_end',
-        # Seasonal active-window features
-        'is_active_season', 'days_until_peak',
-        # NEW: Gregorian-Anchored Peak Alignment features for MOONCAKE
-        'days_until_lunar_08_01',  # Countdown to Lunar 08-01
-        'is_august',  # Binary feature for Gregorian August (month == 8)
+        'days_until_lunar_08_01', 'is_august',
+        # Mid-month peak (DRY/FRESH)
+        'mid_month_peak_tier', 'is_mid_month_peak', 'days_to_mid_month_peak',
+        # Early month low volume (DRY) - required for Teacher Forcing when model uses config_DRY features
+        'early_month_low_tier', 'is_early_month_low', 'is_first_5_days', 'is_first_3_days',
+        'days_from_month_start', 'post_peak_signal', 'is_high_vol_weekday_AND_early_month',
+        # Holiday surge
+        'pre_holiday_surge_tier', 'is_pre_holiday_surge',
+        # Volume month
+        'high_volume_month_tier', 'is_high_volume_month', 'is_low_volume_month',
+        # MOONCAKE / seasonal
+        'is_peak_loss_window',
     ]
     
     for col in feature_cols_to_keep:

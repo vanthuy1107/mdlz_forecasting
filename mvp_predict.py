@@ -62,6 +62,15 @@ from src.predict import (
     get_historical_window_data
 )
 
+# Quiet mode: suppress all log/output (e.g. python mvp_predict.py --quiet)
+import sys
+import warnings
+if "--quiet" in sys.argv or "--no-log" in sys.argv:
+    sys.argv = [a for a in sys.argv if a not in ("--quiet", "--no-log")]
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
+    warnings.filterwarnings("ignore")
+
 
 ###############################################################################
 # Holiday and Lunar Calendar Utilities
@@ -2347,138 +2356,169 @@ def main():
     # ========================================================================
     # MODE 1: TEACHER FORCING (Test Evaluation) - Uses actual prediction data values
     # ========================================================================
+    tf_skip_reason = None  # Reason Teacher Forcing metrics are N/A (for metrics table)
     print("\n" + "=" * 80)
     print("MODE 1: TEACHER FORCING (Test Evaluation)")
     print("=" * 80)
-    # Category-Specific Mode: Skip Teacher Forcing, only Recursive mode processes categories
-    print("[NOTE] Teacher Forcing is skipped in Category-Specific Mode. Only Recursive mode processes categories.")
-    print("       This is expected - Recursive mode will handle all categories independently.")
-    
-    # Skip Teacher Forcing for Category-Specific Mode
-    if True:  # Always skip in category-specific mode
-        print("  - Skipping Teacher Forcing evaluation for 'each' mode")
+    # Category-Specific Mode: Teacher Forcing support
+    # For "each" mode with a single category (e.g., DRY), we can safely run a
+    # standard teacher‑forcing evaluation by creating prediction windows on that
+    # category's prediction data using the same model and scaler as training.
+    # For multi‑category runs, we still skip and report N/A for Teacher Forcing.
+    if len(categories_to_predict) == 1:
+        current_cat_tf = categories_to_predict[0]
+        print(f"[NOTE] Teacher Forcing enabled for single-category 'each' mode: {current_cat_tf}")
+
+        # Prepare scaled prediction data for this category (matching training pipeline)
+        data_config = config.data
+        cat_col = data_config['cat_col']
+
+        # Filter reference and prediction data to this category
+        ref_data_tf = ref_data[ref_data[cat_col] == current_cat_tf].copy()
+        prediction_data_tf = prediction_data[prediction_data[cat_col] == current_cat_tf].copy()
+
+        # Use trained_cat2id mapping when available; otherwise fall back to prediction-time cat2id
+        cat2id_fallback = trained_cat2id if trained_cat2id is not None else cat2id
+
+        print("  - Preparing historical data for Teacher Forcing (scaled)...")
+        historical_data_prepared_tf = prepare_prediction_data(
+            ref_data_tf,
+            config,
+            cat2id_fallback,
+            scaler,
+            trained_cat2id,
+            current_category=current_cat_tf
+        )
+
+        print("  - Preparing prediction-period data for Teacher Forcing (scaled)...")
+        prediction_data_prepared_tf = prepare_prediction_data(
+            prediction_data_tf,
+            config,
+            cat2id_fallback,
+            scaler,
+            trained_cat2id,
+            current_category=current_cat_tf
+        )
+
+        # Create prediction windows for Teacher Forcing evaluation
+        try:
+            print("  - Creating Teacher Forcing prediction windows...")
+            X_pred, y_actual, cat_pred, pred_dates = create_prediction_windows(
+                prediction_data_prepared_tf,
+                config
+            )
+
+            # Create dataset and dataloader
+            pred_dataset = ForecastDataset(X_pred, y_actual, cat_pred)
+            pred_loader = DataLoader(
+                pred_dataset,
+                batch_size=config.training['test_batch_size'],
+                shuffle=False
+            )
+
+            # If there are no prediction windows (e.g., prediction period with large input_size/horizon),
+            # skip teacher-forcing evaluation to avoid division-by-zero in the trainer.
+            if len(pred_dataset) == 0:
+                tf_skip_reason = "no prediction windows for the prediction period"
+                print("  [WARNING] No prediction windows available for Teacher Forcing. Skipping Mode 1 evaluation.")
+                y_true_tf = np.array([])
+                y_pred_tf = np.array([])
+                y_true_tf_unscaled = np.array([])
+                y_pred_tf_unscaled = np.array([])
+                mse_tf = np.nan
+                mae_tf = np.nan
+                rmse_tf = np.nan
+                accuracy_tf = np.nan
+                # Also initialize detailed accuracy variants to avoid UnboundLocalError
+                accuracy_tf_abs = np.nan
+                accuracy_tf_sum = np.nan
+            else:
+                # Create trainer for prediction
+                trainer = Trainer(
+                    model=model,
+                    criterion=nn.MSELoss(),
+                    optimizer=torch.optim.Adam(model.parameters()),
+                    device=device
+                )
+
+                y_true_tf, y_pred_tf = trainer.predict(pred_loader)
+
+                print(f"  - Predictions made: {len(y_pred_tf)} samples")
+                if len(pred_dates) > 0:
+                    print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
+                else:
+                    print("  - Prediction date range: N/A (no prediction windows)")
+
+                # Inverse transform and compute TF metrics (single-category success path)
+                if scaler is not None:
+                    print("  - Inverse transforming scaled predictions to original scale...")
+                    y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
+                    y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
+                else:
+                    y_true_tf_unscaled = y_true_tf.flatten()
+                    y_pred_tf_unscaled = y_pred_tf.flatten()
+                negative_count = np.sum(y_pred_tf_unscaled < 0)
+                if negative_count > 0:
+                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
+                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
+                if len(pred_dates) > 0 and len(y_pred_tf_unscaled) == len(pred_dates):
+                    print("  - Applying Sunday-to-Monday demand carryover to teacher-forcing predictions...")
+                    tf_pred_df = pd.DataFrame({'date': pred_dates, 'predicted': y_pred_tf_unscaled})
+                    if len(cat_pred) == len(tf_pred_df):
+                        tf_pred_df['category_id'] = cat_pred
+                        tf_pred_df = tf_pred_df.groupby('category_id', group_keys=False).apply(
+                            lambda g: apply_sunday_to_monday_carryover_predictions(g, date_col='date', pred_col='predicted')
+                        ).reset_index(drop=True)
+                    else:
+                        tf_pred_df = apply_sunday_to_monday_carryover_predictions(
+                            tf_pred_df, date_col='date', pred_col='predicted'
+                        )
+                    y_pred_tf_unscaled = tf_pred_df['predicted'].values
+                    print("    - Sunday predictions set to 0, Sunday values added to following Monday")
+                mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
+                mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
+                rmse_tf = np.sqrt(mse_tf)
+                accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
+                accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
+                accuracy_tf = accuracy_tf_abs
+                print(f"\n  - MSE:  {mse_tf:.4f}")
+                print(f"  - MAE:  {mae_tf:.4f}")
+                print(f"  - RMSE: {rmse_tf:.4f}")
+                if not np.isnan(accuracy_tf_abs):
+                    print(f"  - Accuracy (Sum|err|):       {accuracy_tf_abs:.2f}%")
+                if not np.isnan(accuracy_tf_sum):
+                    print(f"  - Accuracy (|Sum err|):      {accuracy_tf_sum:.2f}%")
+        except Exception as e:
+            tf_skip_reason = f"evaluation failed: {e}"
+            print(f"  [WARNING] Teacher Forcing window creation/evaluation failed: {e}. Skipping Mode 1 evaluation.")
+            y_true_tf = np.array([])
+            y_pred_tf = np.array([])
+            y_true_tf_unscaled = np.array([])
+            y_pred_tf_unscaled = np.array([])
+            pred_dates = []
+            mse_tf = np.nan
+            mae_tf = np.nan
+            rmse_tf = np.nan
+            accuracy_tf = np.nan
+            accuracy_tf_abs = np.nan
+            accuracy_tf_sum = np.nan
+    else:
+        # Multi-category "each" mode: still skip Teacher Forcing (recursive only)
+        tf_skip_reason = "multiple categories (Teacher Forcing runs only for single-category)"
+        print("[NOTE] Teacher Forcing is skipped for multi-category 'each' mode.")
+        print("       All categories will be processed in Recursive mode with their respective models.")
         y_true_tf = np.array([])
         y_pred_tf = np.array([])
         y_true_tf_unscaled = np.array([])
         y_pred_tf_unscaled = np.array([])
+        pred_dates = []
         mse_tf = np.nan
         mae_tf = np.nan
         rmse_tf = np.nan
         accuracy_tf = np.nan
         accuracy_tf_abs = np.nan
         accuracy_tf_sum = np.nan
-    else:
-        # Create dataset and dataloader
-        pred_dataset = ForecastDataset(X_pred, y_actual, cat_pred)
-        pred_loader = DataLoader(
-            pred_dataset,
-            batch_size=config.training['test_batch_size'],
-            shuffle=False
-        )
 
-        # If there are no prediction windows (e.g., prediction period with large input_size/horizon),
-        # skip teacher-forcing evaluation to avoid division-by-zero in the trainer.
-        if len(pred_dataset) == 0:
-            print("  [WARNING] No prediction windows available for Teacher Forcing. Skipping Mode 1 evaluation.")
-            y_true_tf = np.array([])
-            y_pred_tf = np.array([])
-            y_true_tf_unscaled = np.array([])
-            y_pred_tf_unscaled = np.array([])
-            mse_tf = np.nan
-            mae_tf = np.nan
-            rmse_tf = np.nan
-            accuracy_tf = np.nan
-            # Also initialize detailed accuracy variants to avoid UnboundLocalError
-            accuracy_tf_abs = np.nan
-            accuracy_tf_sum = np.nan
-        else:
-            # Create trainer for prediction
-            trainer = Trainer(
-                model=model,
-                criterion=nn.MSELoss(),
-                optimizer=torch.optim.Adam(model.parameters()),
-                device=device
-            )
-
-            y_true_tf, y_pred_tf = trainer.predict(pred_loader)
-
-            print(f"  - Predictions made: {len(y_pred_tf)} samples")
-            if len(pred_dates) > 0:
-                print(f"  - Prediction date range: {pred_dates.min()} to {pred_dates.max()}")
-            else:
-                print("  - Prediction date range: N/A (no prediction windows)")
-
-        # Inverse transform predictions and actuals if scaler is available
-        # Only do this if we have actual predictions (arrays are not empty)
-        if len(y_true_tf) > 0 and len(y_pred_tf) > 0:
-            if scaler is not None:
-                print("  - Inverse transforming scaled predictions to original scale...")
-                y_true_tf_unscaled = inverse_transform_scaling(y_true_tf.flatten(), scaler)
-                y_pred_tf_unscaled = inverse_transform_scaling(y_pred_tf.flatten(), scaler)
-                # Clip negative predictions to 0 (QTY cannot be negative)
-                negative_count = np.sum(y_pred_tf_unscaled < 0)
-                if negative_count > 0:
-                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
-            else:
-                y_true_tf_unscaled = y_true_tf.flatten()
-                y_pred_tf_unscaled = y_pred_tf.flatten()
-                # Clip negative predictions to 0 even if no scaler
-                negative_count = np.sum(y_pred_tf_unscaled < 0)
-                if negative_count > 0:
-                    print(f"  [WARNING] Clipping {negative_count} negative predictions to 0 (QTY must be >= 0)")
-                    y_pred_tf_unscaled = np.maximum(y_pred_tf_unscaled, 0.0)
-            
-            # Apply Sunday-to-Monday carryover rule to teacher-forcing predictions
-            if len(pred_dates) > 0 and len(y_pred_tf_unscaled) == len(pred_dates):
-                print("  - Applying Sunday-to-Monday demand carryover to teacher-forcing predictions...")
-                # Create temporary DataFrame for processing
-                tf_pred_df = pd.DataFrame({
-                    'date': pred_dates,
-                    'predicted': y_pred_tf_unscaled
-                })
-                # Apply carryover (grouped by category if cat_pred is available)
-                if len(cat_pred) == len(tf_pred_df):
-                    tf_pred_df['category_id'] = cat_pred
-                    def apply_carryover_per_cat_tf(group):
-                        return apply_sunday_to_monday_carryover_predictions(
-                            group,
-                            date_col='date',
-                            pred_col='predicted'
-                        )
-                    tf_pred_df = tf_pred_df.groupby('category_id', group_keys=False).apply(
-                        apply_carryover_per_cat_tf
-                    ).reset_index(drop=True)
-                else:
-                    tf_pred_df = apply_sunday_to_monday_carryover_predictions(
-                        tf_pred_df,
-                        date_col='date',
-                        pred_col='predicted'
-                    )
-                y_pred_tf_unscaled = tf_pred_df['predicted'].values
-                print("    - Sunday predictions set to 0, Sunday values added to following Monday")
-
-            # Calculate metrics on unscaled values
-            mse_tf = np.mean((y_true_tf_unscaled - y_pred_tf_unscaled) ** 2)
-            mae_tf = np.mean(np.abs(y_true_tf_unscaled - y_pred_tf_unscaled))
-            rmse_tf = np.sqrt(mse_tf)
-            # Two accuracy views:
-            #  - accuracy_tf_abs: Σ|error| / Σ|actual|  (daily abs before sum)
-            #  - accuracy_tf_sum: |Σ error| / Σ|actual| (sum before abs)
-            accuracy_tf_abs = calculate_accuracy(y_true_tf_unscaled, y_pred_tf_unscaled)
-            accuracy_tf_sum = calculate_accuracy_sum_before_abs(y_true_tf_unscaled, y_pred_tf_unscaled)
-        # If arrays are empty, metrics are already set to np.nan above
-        # Preserve existing variable name for downstream compatibility
-        accuracy_tf = accuracy_tf_abs
-        
-        print(f"\n  - MSE:  {mse_tf:.4f}")
-        print(f"  - MAE:  {mae_tf:.4f}")
-        print(f"  - RMSE: {rmse_tf:.4f}")
-        if not np.isnan(accuracy_tf_abs):
-            print(f"  - Accuracy (Sum|err|):       {accuracy_tf_abs:.2f}%")
-        if not np.isnan(accuracy_tf_sum):
-            print(f"  - Accuracy (|Sum err|):      {accuracy_tf_sum:.2f}%")
-    
     # ========================================================================
     # MODE 2: RECURSIVE (Production Forecast) - Uses model's own predictions
     # ========================================================================
@@ -3164,25 +3204,73 @@ def main():
     
     # Compare metrics
     print(f"\nMetrics Comparison:")
+    if tf_skip_reason:
+        print(f"  (Categories to predict: {len(categories_to_predict)} {categories_to_predict})")
+        print(f"  (Teacher Forcing = N/A: {tf_skip_reason})")
     print(f"{'Metric':<15} {'Teacher Forcing':<20} {'Recursive':<20} {'Difference':<20}")
     print("-" * 75)
+
+    # Helper formatting for possible NaN teacher-forcing metrics
+    def _fmt_or_na(value, fmt=".4f"):
+        if value is None or (isinstance(value, (float, np.floating)) and np.isnan(value)):
+            return "N/A"
+        return f"{value:{fmt}}"
+
     if not np.isnan(mae_rec):
-        print(f"{'MAE':<15} {mae_tf:<20.4f} {mae_rec:<20.4f} {mae_rec - mae_tf:<20.4f}")
-        print(f"{'RMSE':<15} {rmse_tf:<20.4f} {rmse_rec:<20.4f} {rmse_rec - rmse_tf:<20.4f}")
-        print(f"{'MSE':<15} {mse_tf:<20.4f} {mse_rec:<20.4f} {mse_rec - mse_tf:<20.4f}")
-        if not np.isnan(accuracy_tf) and not np.isnan(accuracy_rec):
-            accuracy_diff = accuracy_rec - accuracy_tf
-            print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {accuracy_rec:<19.2f}% {accuracy_diff:<19.2f}%")
-        print(f"\nError increase: {(mae_rec / mae_tf - 1) * 100:.2f}% (MAE)")
-        print(f"Error increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}% (RMSE)")
-        
-        # Calculate error increase percentages for upload
-        mae_error_increase_pct = (mae_rec / mae_tf - 1) * 100 if not np.isnan(mae_tf) and mae_tf != 0 else None
-        rmse_error_increase_pct = (rmse_rec / rmse_tf - 1) * 100 if not np.isnan(rmse_tf) and rmse_tf != 0 else None
+        # At least recursive metrics are available; teacher forcing may be unavailable (NaN)
+        mae_tf_str = _fmt_or_na(mae_tf)
+        rmse_tf_str = _fmt_or_na(rmse_tf)
+        mse_tf_str = _fmt_or_na(mse_tf)
+
+        # Difference only makes sense if teacher forcing metric is valid
+        if mae_tf is not None and not (isinstance(mae_tf, (float, np.floating)) and np.isnan(mae_tf)):
+            mae_diff_str = f"{(mae_rec - mae_tf):.4f}"
+        else:
+            mae_diff_str = "N/A"
+
+        if rmse_tf is not None and not (isinstance(rmse_tf, (float, np.floating)) and np.isnan(rmse_tf)):
+            rmse_diff_str = f"{(rmse_rec - rmse_tf):.4f}"
+        else:
+            rmse_diff_str = "N/A"
+
+        if mse_tf is not None and not (isinstance(mse_tf, (float, np.floating)) and np.isnan(mse_tf)):
+            mse_diff_str = f"{(mse_rec - mse_tf):.4f}"
+        else:
+            mse_diff_str = "N/A"
+
+        print(f"{'MAE':<15} {mae_tf_str:<20} {mae_rec:<20.4f} {mae_diff_str:<20}")
+        print(f"{'RMSE':<15} {rmse_tf_str:<20} {rmse_rec:<20.4f} {rmse_diff_str:<20}")
+        print(f"{'MSE':<15} {mse_tf_str:<20} {mse_rec:<20.4f} {mse_diff_str:<20}")
+
+        if not np.isnan(accuracy_rec):
+            if accuracy_tf is not None and not (isinstance(accuracy_tf, (float, np.floating)) and np.isnan(accuracy_tf)):
+                accuracy_diff = accuracy_rec - accuracy_tf
+                print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {accuracy_rec:<19.2f}% {accuracy_diff:<19.2f}%")
+            else:
+                print(f"{'Accuracy':<15} {'N/A':<20} {accuracy_rec:<19.2f}% {'N/A':<19}")
+
+        # Only compute error increase percentages when teacher forcing metrics are valid
+        if mae_tf is not None and not (isinstance(mae_tf, (float, np.floating)) and (np.isnan(mae_tf) or mae_tf == 0)):
+            print(f"\nError increase: {(mae_rec / mae_tf - 1) * 100:.2f}% (MAE)")
+            mae_error_increase_pct = (mae_rec / mae_tf - 1) * 100
+        else:
+            print("\nError increase: N/A (Teacher Forcing metrics unavailable) (MAE)")
+            mae_error_increase_pct = None
+
+        if rmse_tf is not None and not (isinstance(rmse_tf, (float, np.floating)) and (np.isnan(rmse_tf) or rmse_tf == 0)):
+            print(f"Error increase: {(rmse_rec / rmse_tf - 1) * 100:.2f}% (RMSE)")
+            rmse_error_increase_pct = (rmse_rec / rmse_tf - 1) * 100
+        else:
+            print("Error increase: N/A (Teacher Forcing metrics unavailable) (RMSE)")
+            rmse_error_increase_pct = None
     else:
-        print(f"{'MAE':<15} {mae_tf:<20.4f} {'N/A':<20}")
-        print(f"{'RMSE':<15} {rmse_tf:<20.4f} {'N/A':<20}")
-        if not np.isnan(accuracy_tf):
+        # Recursive metrics are not available; fall back to any teacher-forcing-only metrics
+        mae_tf_str = _fmt_or_na(mae_tf)
+        rmse_tf_str = _fmt_or_na(rmse_tf)
+
+        print(f"{'MAE':<15} {mae_tf_str:<20} {'N/A':<20}")
+        print(f"{'RMSE':<15} {rmse_tf_str:<20} {'N/A':<20}")
+        if accuracy_tf is not None and not (isinstance(accuracy_tf, (float, np.floating)) and np.isnan(accuracy_tf)):
             print(f"{'Accuracy':<15} {accuracy_tf:<20.2f}% {'N/A':<20}")
         
         # Set error increase to None if recursive metrics are not available

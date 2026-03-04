@@ -8,7 +8,7 @@ window:
 
 # Model Configuration - DRY-specific architecture
 model:
-  hidden_size: 64
+  hidden_size: 32
   n_layers: 2
   dropout_prob: 0.1  # Lower dropout for stable patterns
   use_layer_norm: true
@@ -47,7 +47,7 @@ category_specific_params:
     
     # Asymmetric Penalty: Over-predictions penalized more heavily in non-peak periods
     use_asymmetric_penalty: true  # Enable asymmetric penalty for balanced distribution
-    over_pred_penalty: 0.8  # 2.0x penalty for over-prediction in non-peak periods (REDUCED from 3.0)
+    over_pred_penalty: 0.6  # 2.0x penalty for over-prediction in non-peak periods (REDUCED from 3.0)
     under_pred_penalty: 1.0  # 1.0x penalty for under-prediction (standard)
     # Rationale: 2.0x ratio (reduced from 3.0) provides bias correction without causing severe under-prediction
     # This balances early month suppression with overall volume accuracy
@@ -82,13 +82,13 @@ special_case_override:
   enabled: true
   overrides:
     - brand: "AFC"
-      days: [23,24]
+      days: [22,23]
       base: 0
-      multiplier: 1.5
+      multiplier: 1
     - brand: "SLIDE"
       days: [23]
       base: 0
-      multiplier: 2.0
+      multiplier: 1
 
 # Seasonal configuration - DRY is not seasonal
 data:
