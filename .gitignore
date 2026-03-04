@@ -35,6 +35,11 @@ models/
 outputs/
 logs/
 
+# Allow artifacts in the dedicated output directory to be versioned
+!output/**/*.pth
+!output/**/*.json
+!output/**/*.pkl
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
